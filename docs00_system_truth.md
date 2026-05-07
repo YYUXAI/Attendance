@@ -378,3 +378,28 @@ temporary_qc_exemption_list 的写入必须满足：
 判定准确性（时间窗口）
 
 ---
+
+## 十四、质检任务超时收口规则（强约束）
+
+目标：
+
+1. 只要进入 `qc_task_queue`，任务必须在固定 15 分钟内收口
+2. 未送达也视为未完成
+3. 不允许因为“没有成功私信送达”而让任务长期停留在非终态，从而阻塞单轮完结公告与班次汇总公告
+
+规则（15 分钟硬期限）：
+
+1. 已送达任务：
+   - 计时起点 = `qc_task_queue.first_private_notify_sent_at`（首条私信成功发出时间）
+   - 截止时间 = `first_private_notify_sent_at` + 15 分钟
+
+2. 未送达任务：
+   - 条件：任务仍处于 `PENDING` 且 `first_private_notify_sent_at` 为空
+   - 兜底计时起点 = `qc_task_queue.created_at`
+   - 截止时间 = `created_at` + 15 分钟
+
+到期后的收口结果（两类任务一致）：
+
+- `qc_task_queue.status = TIMEOUT`
+- `qc_task_queue.task_result = TIMEOUT`
+- 并按实现尽量写入 `qc_results.result = TIMEOUT`（若组织绑定缺失则允许仅收口任务表并记录日志）

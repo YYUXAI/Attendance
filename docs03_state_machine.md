@@ -1,6 +1,6 @@
 # 状态机定义
 
-⚠️ 本文件可能不是最新口径，请以 docs/00_system_truth.md 为唯一真相入口
+⚠️ 本文件可能不是最新口径，请以 docs00_system_truth.md 为唯一真相入口
 
 ---
 
@@ -93,7 +93,8 @@ CHECKOUT
 
 ## 过程态时间与候选附件（与 docs02 一致）
 
-* `first_private_notify_sent_at`：首条质检私信**成功发出**时间（UTC），写入后**不刷新**；**15 分钟总超时**唯一起点。
+* `first_private_notify_sent_at`：首条质检私信**成功发出**时间（UTC），写入后**不刷新**；用于「已送达任务」的 15 分钟硬期限计时起点。
+* `created_at`：任务创建时间（UTC）；用于「未送达任务」的 15 分钟硬期限兜底计时起点（见下方 TIMEOUT 规则）。
 * `pending_confirm_file_id`：待二次确认的**候选** Telegram `file_id`，可被新的有效上传**覆盖**；**仅**在二次确认通过后，才把最终附件写入 `qc_results.attachment_id`。
 
 ## 中间附件规则（强约束）
@@ -129,7 +130,10 @@ NONE
 ### 1. 首次【取消】（流程前期：未进入或未通过二次确认）
 
 * 语义：用户拒绝配合本轮质检（首轮操作中的取消）。
-* **失败终态**：任务进入与失败一致的终态组合（具体 `status` / `task_result` 取值以实现与 docs02 CHECK 一致为准，例如 `task_result = FAIL` 且 `status` 为终态）；并应在 `qc_results` 写入本轮失败类最终结果（若业务要求每人每轮必有结果行）。
+* **失败终态（固定口径）**：
+  - `qc_task_queue.status = CANCELLED`
+  - `qc_task_queue.task_result = FAIL`
+  - 并写入 `qc_results.result = FAIL`
 * **不得**将首次取消与「二次确认阶段取消」混同。
 
 ### 2. 二次确认阶段【取消】
@@ -141,7 +145,27 @@ NONE
 
 ### 3. TIMEOUT
 
-* 由 **worker / 轮询**依据 `first_private_notify_sent_at` 与固定时长**主动判定**并落库（`status` / `task_result` 与 `qc_results` 以 docs02 为准）。
+**统一收口口径（15 分钟硬期限，必须严格执行）：**
+
+1. 已送达任务（进入 NOTIFIED / WAITING_SUBMISSION / SUBMITTED 等阶段）：
+   - 超时起点 = `first_private_notify_sent_at`
+   - 截止时间 = `first_private_notify_sent_at` + 固定 15 分钟
+
+2. 未送达任务（仍处于 PENDING 且 `first_private_notify_sent_at` IS NULL）：
+   - 超时兜底起点 = `created_at`
+   - 截止时间 = `created_at` + 固定 15 分钟
+
+3. 到期后的收口结果（两类任务一致）：
+   - `qc_task_queue.status = TIMEOUT`
+   - `qc_task_queue.task_result = TIMEOUT`
+   - 并按实现尽量写入 `qc_results.result = TIMEOUT`（若组织绑定缺失则允许仅收口任务表并记录日志）
+
+**目的：**
+- 保证单轮必收口（进入 `qc_task_queue` 后不得长期悬挂在非终态）
+- 保证未送达 = 未完成（单轮完结公告与班次汇总公告均应将其归入未完成）
+- 保证单轮完结公告不会因 PENDING 悬挂而不触发
+
+* 由 **worker / 轮询**依据上述规则与固定时长**主动判定**并落库（`status` / `task_result` 与 `qc_results` 以 docs02 为准）。
 * **禁止**仅依赖用户在 handler 内操作才触发超时。
 
 ### 4. 二次确认【确认】通过

@@ -204,6 +204,33 @@ notification_queue 只负责：
 
 ---
 
+## 5. 质检未送达超时收口（强约束）
+
+背景：
+
+质检任务一旦进入 `qc_task_queue`，就必须在固定时限后收口，避免任务悬挂导致单轮完结公告与班次汇总公告无法触发。
+
+必须遵守（15 分钟硬期限，口径以 `docs00_system_truth.md` / `docs02_database_schema.md` / `docs03_state_machine.md` 为准）：
+
+收口定义：
+必须进入终态集合（如 COMPLETED / TIMEOUT / CANCELLED 等），不得停留在中间状态。
+
+1. 所有进入 `qc_task_queue` 的任务，**15 分钟内必须收口**，不得长期停留在非终态。
+2. 已送达任务：
+   - 计时起点 = `first_private_notify_sent_at`
+   - 截止时间 = `first_private_notify_sent_at` + 15 分钟
+3. 未送达任务：
+   - 条件：`status = PENDING` 且 `first_private_notify_sent_at IS NULL`
+   - 兜底计时起点 = `created_at`
+   - 截止时间 = `created_at` + 15 分钟
+4. 未送达 = 未完成：
+   - 单轮完结公告与班次汇总公告不得忽略“未送达且无 qc_results”的员工，必须归入未完成口径。
+
+禁止：
+
+* 将 timeout 收口逻辑再次收窄为“只处理已送达任务（仅依赖 `first_private_notify_sent_at`）”
+* 允许任务长期停留在 `PENDING` 并阻塞单轮完结（以 “未送达 / 未触发超时 / 无结果” 为理由悬挂）
+
 # 五、审计模块规则
 
 ## 1. 当前有效阶段

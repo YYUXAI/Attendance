@@ -33,13 +33,18 @@ def _process_one_timeout(*, task_id: int, now_utc: datetime) -> None:
         row = qc_task_queue_repo.lock_task_by_id_cur(cur, task_id=int(task_id))
         if not row:
             return
-        if row.first_private_notify_sent_at is None:
-            return
-        if row.status not in ("NOTIFIED", "WAITING_SUBMISSION", "SUBMITTED"):
-            return
-        sent = _instant_as_utc_aware(row.first_private_notify_sent_at)
-        if sent + timedelta(minutes=15) > now_utc:
-            return
+        if row.status == "PENDING" and row.first_private_notify_sent_at is None:
+            created = _instant_as_utc_aware(row.created_at)
+            if created + timedelta(minutes=15) > now_utc:
+                return
+        else:
+            if row.first_private_notify_sent_at is None:
+                return
+            if row.status not in ("NOTIFIED", "WAITING_SUBMISSION", "SUBMITTED"):
+                return
+            sent = _instant_as_utc_aware(row.first_private_notify_sent_at)
+            if sent + timedelta(minutes=15) > now_utc:
+                return
         n = qc_task_queue_repo.mark_timeout_terminal_cur(cur, task_id=int(task_id))
         if n != 1:
             return

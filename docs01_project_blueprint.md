@@ -1,4 +1,4 @@
-⚠️ 本文件可能不是最新口径，请以 docs/00_system_truth.md 为唯一真相入口
+⚠️ 本文件可能不是最新口径，请以 docs00_system_truth.md 为唯一真相入口
 
 # 项目蓝图（Attendance System）
 

@@ -43,13 +43,14 @@ class QcTaskQueueRowLocked:
     task_result: str
     first_private_notify_sent_at: Any
     pending_confirm_file_id: Optional[str]
+    created_at: Any
 
 
 def lock_task_by_id_cur(cur: Cursor, *, task_id: int) -> Optional[QcTaskQueueRowLocked]:
     cur.execute(
         """
         SELECT id, log_id, employee_id, shift_id, qc_date, qc_round, status, task_result,
-               first_private_notify_sent_at, pending_confirm_file_id
+               first_private_notify_sent_at, pending_confirm_file_id, created_at
         FROM public.qc_task_queue
         WHERE id = %s
         FOR UPDATE
@@ -277,13 +278,19 @@ def list_task_ids_due_for_timeout(*, now_utc: Any, limit: int) -> List[int]:
             """
             SELECT id
             FROM public.qc_task_queue
-            WHERE first_private_notify_sent_at IS NOT NULL
-              AND first_private_notify_sent_at + INTERVAL '15 minutes' <= %s
-              AND status IN ('NOTIFIED', 'WAITING_SUBMISSION', 'SUBMITTED')
+            WHERE (
+                first_private_notify_sent_at IS NOT NULL
+                AND first_private_notify_sent_at + INTERVAL '15 minutes' <= %s
+                AND status IN ('NOTIFIED', 'WAITING_SUBMISSION', 'SUBMITTED')
+            ) OR (
+                status = 'PENDING'
+                AND first_private_notify_sent_at IS NULL
+                AND created_at + INTERVAL '15 minutes' <= %s
+            )
             ORDER BY id ASC
             LIMIT %s
             """,
-            (now_utc, lim),
+            (now_utc, now_utc, lim),
         )
         rows = cur.fetchall() or []
     return [int(r[0]) for r in rows if r and r[0] is not None]
@@ -296,7 +303,10 @@ def mark_timeout_terminal_cur(cur: Cursor, *, task_id: int) -> int:
         SET status = 'TIMEOUT',
             task_result = 'TIMEOUT'
         WHERE id = %s
-          AND status IN ('NOTIFIED', 'WAITING_SUBMISSION', 'SUBMITTED')
+          AND (
+              status IN ('NOTIFIED', 'WAITING_SUBMISSION', 'SUBMITTED')
+              OR (status = 'PENDING' AND first_private_notify_sent_at IS NULL)
+          )
         """,
         (int(task_id),),
     )

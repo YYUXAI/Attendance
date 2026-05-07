@@ -97,10 +97,19 @@ def try_enqueue_shift_qc_summary_for_pair(*, shift_id: int, qc_date: date, now_u
     if not rounds:
         return
 
-    employee_ids = qc_task_queue_repo.list_employee_ids_for_shift_qc_date_from_tasks(
-        shift_id=int(shift_id), qc_date=qc_date
-    )
-    if not employee_ids:
+    all_employee_ids: List[str] = []
+    seen: set[str] = set()
+    for rno in rounds:
+        eids = qc_task_queue_repo.list_employee_ids_for_shift_qc_date_round(
+            shift_id=int(shift_id), qc_date=qc_date, qc_round=int(rno)
+        )
+        for eid in eids:
+            key = str(eid)
+            if key in seen:
+                continue
+            seen.add(key)
+            all_employee_ids.append(key)
+    if not all_employee_ids:
         return
 
     result_rows = qc_results_repo.list_for_shift_and_qc_date(shift_id=int(shift_id), qc_date=qc_date)
@@ -108,7 +117,7 @@ def try_enqueue_shift_qc_summary_for_pair(*, shift_id: int, qc_date: date, now_u
     for r in result_rows:
         snap[(str(r.employee_id), int(r.qc_round))] = str(r.result)
 
-    reg_by_eid = _registration_map(employee_ids=employee_ids)
+    reg_by_eid = _registration_map(employee_ids=all_employee_ids)
 
     round_sections: List[Tuple[int, List[str], List[str]]] = []
     for rno in rounds:
