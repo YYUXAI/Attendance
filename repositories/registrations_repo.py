@@ -20,6 +20,28 @@ class RegistrationRow:
     shift_id: Optional[int]
 
 
+def get_by_tg_username(tg_username: str) -> Optional[RegistrationRow]:
+    key = (tg_username or "").strip().lstrip("@").lower()
+    if not key:
+        return None
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, employee_id, tg_id, english_name, tg_username, registered_chat_id,
+                   organization_id, shift_id
+            FROM public.registrations
+            WHERE LOWER(TRIM(BOTH '@' FROM COALESCE(tg_username, ''))) = %s
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (key,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return RegistrationRow(*row)
+
+
 def get_by_tg_id(tg_id: int) -> Optional[RegistrationRow]:
     with get_cursor() as cur:
         cur.execute(
@@ -119,3 +141,22 @@ def list_by_shift_id_cur(cur: Cursor, *, shift_id: int) -> List[RegistrationRow]
 def list_by_shift_id(*, shift_id: int) -> List[RegistrationRow]:
     with get_cursor() as cur:
         return list_by_shift_id_cur(cur, shift_id=shift_id)
+
+
+def update_assignment_by_tg_id(
+    *,
+    tg_id: int,
+    shift_id: Optional[int],
+    organization_id: Optional[int],
+) -> int:
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            UPDATE public.registrations
+            SET shift_id = %s,
+                organization_id = %s
+            WHERE tg_id = %s
+            """,
+            (shift_id, organization_id, int(tg_id)),
+        )
+        return int(cur.rowcount or 0)

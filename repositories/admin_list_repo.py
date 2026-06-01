@@ -21,3 +21,33 @@ def is_admin_by_tg_id(*, tg_id: int) -> bool:
         )
         row = cur.fetchone()
     return bool(row and row[0])
+
+
+def grant_admin_by_employee_id(*, employee_id: str) -> bool:
+    """将工号加入 admin_list；已存在则跳过。返回是否新插入。"""
+    eid = str(employee_id).strip()
+    if not eid:
+        return False
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO public.admin_list (admin_employee_id)
+            VALUES (%s)
+            ON CONFLICT (admin_employee_id) DO NOTHING
+            RETURNING id
+            """,
+            (eid,),
+        )
+        row = cur.fetchone()
+    return bool(row and row[0] is not None)
+
+
+def grant_admin_by_tg_username(*, tg_username: str) -> tuple[bool, str | None]:
+    """按 Telegram 用户名授权管理员。返回 (成功与否, employee_id)。"""
+    from repositories.registrations_repo import get_by_tg_username
+
+    reg = get_by_tg_username(tg_username)
+    if reg is None:
+        return False, None
+    grant_admin_by_employee_id(employee_id=str(reg.employee_id))
+    return True, str(reg.employee_id)

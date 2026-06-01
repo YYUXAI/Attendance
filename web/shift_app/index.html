@@ -1,0 +1,1300 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+
+<head>
+
+  <meta charset="UTF-8" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+
+  <title>班次配置</title>
+
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+
+  <style>
+
+    :root {
+
+      --brand-blue: #2481cc;
+
+      --brand-blue-dark: #1a6aad;
+
+      --bg: var(--tg-theme-bg-color, #fff);
+
+      --text: var(--tg-theme-text-color, #111);
+
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+
+      margin: 0;
+
+      font-family: system-ui, -apple-system, sans-serif;
+
+      background: var(--bg);
+
+      color: var(--text);
+
+      padding: 12px;
+
+      padding-bottom: 58px;
+
+    }
+
+    h1 { font-size: 17px; margin: 0 0 8px; font-weight: 600; }
+
+    .meta { font-size: 12px; opacity: 0.75; margin-bottom: 10px; }
+
+    .toolbar {
+
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+
+      display: flex; gap: 6px;
+
+      padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+
+      background: var(--bg);
+
+      border-top: 1px solid rgba(36, 129, 204, 0.25);
+
+      box-shadow: 0 -2px 8px rgba(36, 129, 204, 0.12);
+
+    }
+
+    .toolbar button {
+
+      flex: 1; border: none; border-radius: 6px;
+
+      padding: 8px 6px; font-size: 13px; font-weight: 600;
+
+      line-height: 1.2; cursor: pointer; min-height: 36px;
+
+    }
+
+    .btn-primary { background: var(--brand-blue); color: #fff; }
+
+    .btn-primary:active { background: var(--brand-blue-dark); }
+
+    .btn-outline {
+
+      background: #fff; color: var(--brand-blue);
+
+      border: 1px solid var(--brand-blue);
+
+    }
+
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+
+    th, td { border: 1px solid rgba(0,0,0,.12); padding: 6px 4px; vertical-align: top; }
+
+    th { background: rgba(0,0,0,.04); position: sticky; top: 0; z-index: 1; }
+
+    input.cell {
+
+      width: 100%; border: none; background: transparent;
+
+      color: inherit; font-size: 12px; padding: 2px;
+
+    }
+
+    input.cell:read-only { opacity: 0.95; }
+
+    input.cell:read-only:focus { outline: none; }
+
+    .col-del { width: 28px; text-align: center; }
+
+    .btn-del {
+
+      border: none; background: transparent; color: #c00;
+
+      font-size: 16px; cursor: pointer; padding: 0 4px;
+
+    }
+
+    .status { margin: 8px 0; font-size: 13px; }
+
+    .err { color: #c00; }
+
+    .ok { color: #080; }
+
+    .modal-backdrop {
+
+      display: none; position: fixed; inset: 0; z-index: 100;
+
+      background: rgba(0,0,0,.45); align-items: center; justify-content: center;
+
+      padding: 16px;
+
+    }
+
+    .modal-backdrop.open { display: flex; }
+
+    .modal-card {
+
+      background: var(--bg); border-radius: 10px;
+
+      width: 100%; max-width: 360px; padding: 16px;
+
+      box-shadow: 0 8px 24px rgba(0,0,0,.2);
+
+    }
+
+    .modal-card h2 { font-size: 16px; margin: 0 0 14px; text-align: center; }
+
+    .import-line {
+
+      display: flex; align-items: center; gap: 8px;
+
+      margin-bottom: 14px; font-size: 13px; flex-wrap: wrap;
+
+    }
+
+    .import-line .label { flex: 0 0 auto; }
+
+    .icon-btn {
+
+      border: none; background: transparent; cursor: pointer;
+
+      font-size: 22px; padding: 4px; line-height: 1;
+
+    }
+
+    .link-btn {
+
+      border: none; background: transparent; color: var(--brand-blue);
+
+      cursor: pointer; font-size: 13px; text-decoration: underline;
+
+      padding: 0;
+
+    }
+
+    .file-name { font-size: 12px; opacity: 0.8; word-break: break-all; }
+
+    .modal-actions { display: flex; gap: 8px; margin-top: 8px; }
+
+    .modal-actions button { flex: 1; min-height: 40px; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; }
+
+    .hidden { display: none !important; }
+
+    tr.row-new td { background: rgba(36, 129, 204, 0.06); }
+
+  </style>
+
+</head>
+
+<body>
+
+  <h1>班次配置（全局）</h1>
+
+  <div class="meta" id="ymLabel">月份：—</div>
+
+  <div class="status" id="status">加载中…</div>
+
+  <div style="overflow-x:auto">
+
+    <table>
+
+      <thead>
+
+        <tr id="headRow">
+
+          <th class="col-del hidden" id="thDel"></th>
+
+          <th>工号</th>
+
+          <th>英文名</th>
+
+          <th>班次</th>
+
+          <th>上班时间</th>
+
+          <th>下班时间</th>
+
+          <th>月休</th>
+
+        </tr>
+
+      </thead>
+
+      <tbody id="tbody"></tbody>
+
+    </table>
+
+  </div>
+
+
+
+  <div class="toolbar">
+
+    <button type="button" class="btn-outline" id="btnEdit">编辑</button>
+
+    <button type="button" class="btn-primary" id="btnUpload">上传</button>
+
+  </div>
+
+
+
+  <div class="modal-backdrop" id="importModal" aria-hidden="true">
+
+    <div class="modal-card">
+
+      <h2>新增员工班次</h2>
+
+      <div class="import-line">
+
+        <span class="label">下载导入模板（发到私聊）：</span>
+
+        <button type="button" class="icon-btn" id="btnTemplate" title="将 CSV 模板发到与机器人的私聊">⬇️</button>
+
+      </div>
+
+      <div class="import-line">
+
+        <span class="label">批量导入/上传：</span>
+
+        <button type="button" class="icon-btn" id="btnPickFile" title="选择文件">📤</button>
+
+        <button type="button" class="link-btn" id="btnPickFileLink">选择文件</button>
+
+      </div>
+
+      <div class="file-name" id="fileName">未选择文件</div>
+
+      <input type="file" id="fileInput" class="hidden" accept=".xlsx,.xls,.csv" />
+
+      <div class="modal-actions">
+
+        <button type="button" class="btn-outline" id="btnImportCancel">取消操作</button>
+
+        <button type="button" class="btn-primary" id="btnImportConfirm">确认上传</button>
+
+      </div>
+
+    </div>
+
+  </div>
+
+
+
+  <script>
+
+    const tg = window.Telegram?.WebApp;
+
+    if (tg) {
+
+      tg.ready();
+
+      tg.expand();
+
+      try {
+
+        tg.setHeaderColor('#2481cc');
+
+        tg.setBackgroundColor('#ffffff');
+
+      } catch (e) { /* ignore */ }
+
+    }
+
+
+
+    const params = new URLSearchParams(location.search);
+
+    const yearMonth = params.get('year_month') || '';
+
+    const webSession = params.get('web_session') || '';
+
+    let sessionToken = webSession;
+
+    const devApiToken = params.get('api_token') || '';
+
+    document.getElementById('ymLabel').textContent = '月份：' + (yearMonth || '（未指定）');
+
+
+
+    let rows = [];
+
+    let editMode = false;
+
+    let dirty = false;
+
+    let telegramInitData = '';
+
+    let stagedImportRows = null;
+
+    let stagedFileName = '';
+
+
+
+    const FIELDS = ['employee_id', 'english_name', 'shift_time_range', 'shift_checkin_time', 'shift_checkout_time', 'monthly_rest_days'];
+
+
+
+    function emptyRow() {
+
+      return {
+
+        employee_id: '', english_name: '', shift_time_range: '',
+
+        shift_checkin_time: '', shift_checkout_time: '', monthly_rest_days: '',
+
+        _isNew: true,
+
+      };
+
+    }
+
+
+
+    function resolveInitData() {
+
+      if (tg?.initData && String(tg.initData).length > 0) return tg.initData;
+
+      const hash = (location.hash || '').replace(/^#/, '');
+
+      if (hash && hash.includes('hash=')) return hash;
+
+      const hp = new URLSearchParams(hash);
+
+      return hp.get('tgWebAppData') || params.get('initData') || params.get('init_data') || '';
+
+    }
+
+
+
+    function hasAuthMaterial() {
+
+      return !!(sessionToken || telegramInitData || devApiToken);
+
+    }
+
+
+
+    async function waitInitData(maxMs) {
+
+      const limit = maxMs || 2500;
+
+      const step = 120;
+
+      for (let t = 0; t < limit; t += step) {
+
+        const d = resolveInitData();
+
+        if (d) return d;
+
+        if (tg) {
+
+          try { tg.ready(); } catch (e) { /* ignore */ }
+
+        }
+
+        await new Promise((r) => setTimeout(r, step));
+
+      }
+
+      return resolveInitData();
+
+    }
+
+
+
+    async function exchangeSessionFromInitData() {
+
+      if (!telegramInitData) return false;
+
+      try {
+
+        const res = await fetch(apiUrl('/api/v1/shift-config/exchange-session'), {
+
+          method: 'POST',
+
+          headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' },
+
+          body: JSON.stringify({ init_data: telegramInitData }),
+
+        });
+
+        const data = await res.json();
+
+        if (res.ok && data.ok && data.web_session) {
+
+          sessionToken = data.web_session;
+
+          return true;
+
+        }
+
+      } catch (e) { /* ignore */ }
+
+      return false;
+
+    }
+
+
+
+    async function ensureAuth() {
+
+      telegramInitData = await waitInitData();
+
+      if (telegramInitData && !sessionToken) {
+
+        await exchangeSessionFromInitData();
+
+      }
+
+      return hasAuthMaterial();
+
+    }
+
+
+
+    function setStatus(msg, isErr) {
+
+      const el = document.getElementById('status');
+
+      el.textContent = msg;
+
+      el.className = 'status ' + (isErr ? 'err' : 'ok');
+
+    }
+
+
+
+    function apiHeaders() {
+
+      const h = { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' };
+
+      if (sessionToken) h['X-Web-Session'] = sessionToken;
+
+      if (telegramInitData) h['X-Telegram-Init-Data'] = telegramInitData;
+
+      else if (devApiToken) h['X-API-Key'] = devApiToken;
+
+      return h;
+
+    }
+
+
+
+    function apiUrl(path) {
+
+      let url = path;
+
+      if (sessionToken) {
+        url += (url.includes('?') ? '&' : '?') + 'web_session=' + encodeURIComponent(sessionToken);
+      }
+
+      return url;
+
+    }
+
+
+
+    function rowIsEmpty(r) {
+
+      return !FIELDS.some(f => String(r[f] || '').trim());
+
+    }
+
+
+
+    function ensureNewRowAtBottom() {
+
+      if (!editMode) return;
+
+      const last = rows[rows.length - 1];
+
+      if (!last || !last._isNew || !rowIsEmpty(last)) {
+
+        rows.push(emptyRow());
+
+      }
+
+    }
+
+
+
+    function render() {
+
+      const tb = document.getElementById('tbody');
+
+      const thDel = document.getElementById('thDel');
+
+      thDel.classList.toggle('hidden', !editMode);
+
+      tb.innerHTML = '';
+
+      if (editMode) ensureNewRowAtBottom();
+
+
+
+      rows.forEach((r, i) => {
+
+        const tr = document.createElement('tr');
+
+        if (r._isNew) tr.classList.add('row-new');
+
+
+
+        if (editMode) {
+
+          const tdDel = document.createElement('td');
+
+          tdDel.className = 'col-del';
+
+          const btn = document.createElement('button');
+
+          btn.type = 'button';
+
+          btn.className = 'btn-del';
+
+          btn.textContent = '×';
+
+          btn.title = '删除该行';
+
+          btn.addEventListener('click', () => {
+
+            rows.splice(i, 1);
+
+            dirty = true;
+
+            render();
+
+          });
+
+          tdDel.appendChild(btn);
+
+          tr.appendChild(tdDel);
+
+        }
+
+
+
+        FIELDS.forEach(f => {
+
+          const td = document.createElement('td');
+
+          const inp = document.createElement('input');
+
+          inp.className = 'cell';
+
+          inp.value = r[f] ?? '';
+
+          inp.readOnly = !editMode;
+
+          inp.addEventListener('input', () => {
+
+            rows[i][f] = inp.value;
+
+            dirty = true;
+
+            if (r._isNew && f === 'employee_id' && inp.value.trim()) {
+
+              const hasAnotherNew = rows.some((x, j) => j !== i && x._isNew && rowIsEmpty(x));
+
+              if (!hasAnotherNew) rows.push(emptyRow());
+
+            }
+
+          });
+
+          td.appendChild(inp);
+
+          tr.appendChild(td);
+
+        });
+
+        tb.appendChild(tr);
+
+      });
+
+
+
+      const n = rows.filter(r => !rowIsEmpty(r)).length;
+
+      if (editMode) {
+
+        setStatus('编辑模式：共 ' + n + ' 条，可改删；底部空行可新增。点「编辑」完成并保存。', false);
+
+      } else {
+
+        setStatus('共 ' + n + ' 条。点「编辑」修改表格；点「上传」批量导入。', false);
+
+      }
+
+    }
+
+
+
+    async function load(authRetry) {
+
+      if (!yearMonth) {
+
+        setStatus('缺少 year_month 参数', true);
+
+        return;
+
+      }
+
+      if (!authRetry) {
+
+        const ok = await ensureAuth();
+
+        if (!ok) {
+
+          setStatus('无法验证身份：请关闭本页，在私聊里发 /start 后点底部「班次」。', true);
+
+          return;
+
+        }
+
+      }
+
+      const res = await fetch(
+        apiUrl('/api/v1/shift-config?year_month=' + encodeURIComponent(yearMonth) + '&_=' + Date.now()),
+        { headers: apiHeaders(), cache: 'no-store' },
+      );
+
+      const data = await res.json();
+
+      if (!res.ok || !data.ok) {
+
+        if (!authRetry && res.status === 401) {
+
+          telegramInitData = await waitInitData(800);
+
+          if (telegramInitData) await exchangeSessionFromInitData();
+
+          if (hasAuthMaterial()) return load(true);
+
+        }
+
+        setStatus(data.message || '加载失败', true);
+
+        return;
+
+      }
+
+      rows = (data.rows || []).map(r => ({ ...r, _isNew: false }));
+
+      dirty = false;
+
+      render();
+
+    }
+
+
+
+    function rowsForSave() {
+
+      return rows
+
+        .filter(r => !rowIsEmpty(r))
+
+        .map(r => {
+
+          const o = {};
+
+          FIELDS.forEach(f => { o[f] = String(r[f] || '').trim(); });
+
+          return o;
+
+        });
+
+    }
+
+
+
+    async function saveTable() {
+
+      const payload = rowsForSave();
+
+      if (!payload.length) {
+
+        if (!confirm('将清空本月全部班次配置，确认？')) return false;
+
+      }
+
+      setStatus('保存中…', false);
+
+      const res = await fetch(apiUrl('/api/v1/shift-config'), {
+
+        method: 'POST',
+
+        headers: apiHeaders(),
+
+        body: JSON.stringify({ year_month: yearMonth, rows: payload }),
+
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.ok) {
+
+        setStatus(data.message || '保存失败', true);
+
+        return false;
+
+      }
+
+      dirty = false;
+
+      await load();
+
+      if (tg?.showAlert) tg.showAlert('已保存 ' + (data.saved || 0) + ' 条');
+
+      else alert('已保存 ' + (data.saved || 0) + ' 条');
+
+      return true;
+
+    }
+
+
+
+    function setEditMode(on) {
+
+      editMode = on;
+
+      document.getElementById('btnEdit').textContent = on ? '完成编辑' : '编辑';
+
+      if (!on) {
+
+        rows = rows.filter(r => !r._isNew || !rowIsEmpty(r));
+
+        rows.forEach(r => { delete r._isNew; });
+
+      }
+
+      render();
+
+    }
+
+
+
+    async function toggleEdit() {
+
+      if (!editMode) {
+
+        setEditMode(true);
+
+        return;
+
+      }
+
+      if (dirty) {
+
+        if (!confirm('保存当前表格修改到数据库？')) {
+
+          await load();
+
+          setEditMode(false);
+
+          return;
+
+        }
+
+        const ok = await saveTable();
+
+        if (!ok) return;
+
+      }
+
+      setEditMode(false);
+
+    }
+
+
+
+    function openImportModal() {
+
+      document.getElementById('importModal').classList.add('open');
+
+      document.getElementById('importModal').setAttribute('aria-hidden', 'false');
+
+    }
+
+
+
+    function closeImportModal() {
+
+      document.getElementById('importModal').classList.remove('open');
+
+      document.getElementById('importModal').setAttribute('aria-hidden', 'true');
+
+      stagedImportRows = null;
+
+      stagedFileName = '';
+
+      document.getElementById('fileName').textContent = '未选择文件';
+
+      document.getElementById('fileInput').value = '';
+
+    }
+
+
+
+    function templateFileName() {
+
+      return 'shift_template_' + yearMonth + '.csv';
+
+    }
+
+
+
+    function isNgrokHost() {
+
+      return /ngrok-free\.(app|dev)|\.ngrok\.io/i.test(location.hostname || '');
+
+    }
+
+
+
+    /** 本地生成模板（与后端 template 一致），避免 ngrok 二次请求返回拦截页 HTML。 */
+
+    function buildTemplateCsvText(ym) {
+
+      const row = [ym, '17025', 'Brucewillis', '13:00~22:00', '13:00', '22:00', '1,2,3'];
+
+      return '\ufeff' + [
+
+        '日期,工号,英文名,班次,上班时间,下班时间,月休',
+
+        row.join(','),
+
+      ].join('\n');
+
+    }
+
+
+
+    function makeTemplateBlob() {
+
+      return new Blob([buildTemplateCsvText(yearMonth)], { type: 'text/csv;charset=utf-8' });
+
+    }
+
+
+
+    async function tryShareCsvFile(blob, fileName) {
+
+      if (!navigator.share) return false;
+
+      try {
+
+        const file = new File([blob], fileName, { type: 'text/csv' });
+
+        if (navigator.canShare && !navigator.canShare({ files: [file] })) return false;
+
+        await navigator.share({ files: [file], title: fileName });
+
+        setStatus('请选择「存储到文件」或 AirDrop 保存', false);
+
+        return true;
+
+      } catch (e) {
+
+        if (e && e.name === 'AbortError') return true;
+
+        return false;
+
+      }
+
+    }
+
+
+
+    function downloadViaBlobLink(blob, fileName) {
+
+      const a = document.createElement('a');
+
+      a.href = URL.createObjectURL(blob);
+
+      a.download = fileName;
+
+      a.rel = 'noopener';
+
+      document.body.appendChild(a);
+
+      a.click();
+
+      a.remove();
+
+      setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+
+    }
+
+
+
+    async function postSendTemplate(path) {
+
+      return fetch(apiUrl(path), {
+
+        method: 'POST',
+
+        headers: apiHeaders(),
+
+        body: JSON.stringify({ year_month: yearMonth }),
+
+      });
+
+    }
+
+
+
+    async function sendTemplateToTelegram() {
+
+      setStatus('正在发送模板到私聊…', false);
+
+      const paths = [
+
+        '/api/v1/shift-config/send-template',
+
+        '/api/v1/shift-config/template/send',
+
+      ];
+
+      let res = null;
+
+      for (const path of paths) {
+
+        const r = await postSendTemplate(path);
+
+        if (r.status !== 404) {
+
+          res = r;
+
+          break;
+
+        }
+
+      }
+
+      if (!res) {
+
+        res = await fetch(apiUrl('/api/v1/shift-config'), {
+
+          method: 'POST',
+
+          headers: apiHeaders(),
+
+          body: JSON.stringify({ action: 'send_template', year_month: yearMonth }),
+
+        });
+
+      }
+
+      let data = {};
+
+      try { data = await res.json(); } catch (e) { /* ignore */ }
+
+      if (!res.ok || !data.ok) {
+
+        let msg = data.message || '发送失败';
+
+        if (res.status === 404) {
+
+          msg = '接口未加载(404)：请重启考勤 Bot（python main.py）后重试';
+
+        }
+
+        setStatus(msg, true);
+
+        return false;
+
+      }
+
+      const msg = '模板已发到与机器人的私聊。\n请关闭本页，在私聊里点 CSV 文件保存或转发。';
+
+      setStatus('已发到私聊，请返回机器人对话下载文件', false);
+
+      if (tg?.showAlert) {
+
+        tg.showAlert(msg);
+
+      } else {
+
+        alert(msg);
+
+      }
+
+      return true;
+
+    }
+
+
+
+    async function downloadTemplate() {
+
+      if (tg) {
+
+        if (await sendTemplateToTelegram()) return;
+
+      }
+
+
+
+      const fileName = templateFileName();
+
+      const blob = makeTemplateBlob();
+
+
+
+      if (await tryShareCsvFile(blob, fileName)) return;
+
+
+
+      downloadViaBlobLink(blob, fileName);
+
+      setStatus('已触发本地下载', false);
+
+    }
+
+
+
+    function sheetToRows(workbook) {
+
+      const name = workbook.SheetNames[0];
+
+      const sheet = workbook.Sheets[name];
+
+      return XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+    }
+
+
+
+    function parseCsvText(text) {
+
+      const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(l => l.trim());
+
+      if (!lines.length) return [];
+
+      const splitLine = (line) => {
+
+        const out = [];
+
+        let cur = '';
+
+        let inQ = false;
+
+        for (let i = 0; i < line.length; i++) {
+
+          const c = line[i];
+
+          if (c === '"') { inQ = !inQ; continue; }
+
+          if (c === ',' && !inQ) { out.push(cur); cur = ''; continue; }
+
+          cur += c;
+
+        }
+
+        out.push(cur);
+
+        return out.map(s => s.trim());
+
+      };
+
+      const headers = splitLine(lines[0]);
+
+      const rowsOut = [];
+
+      for (let i = 1; i < lines.length; i++) {
+
+        const cells = splitLine(lines[i]);
+
+        const obj = {};
+
+        headers.forEach((h, j) => { obj[h] = cells[j] ?? ''; });
+
+        rowsOut.push(obj);
+
+      }
+
+      return rowsOut;
+
+    }
+
+
+
+    async function onFileSelected(file) {
+
+      if (!file) return;
+
+      stagedFileName = file.name;
+
+      document.getElementById('fileName').textContent = file.name;
+
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+
+      try {
+
+        if (ext === 'csv') {
+
+          const text = await file.text();
+
+          stagedImportRows = parseCsvText(text);
+
+        } else if (ext === 'xlsx' || ext === 'xls') {
+
+          const buf = await file.arrayBuffer();
+
+          const wb = XLSX.read(buf, { type: 'array' });
+
+          stagedImportRows = sheetToRows(wb);
+
+        } else {
+
+          setStatus('仅支持 .xlsx / .xls / .csv', true);
+
+          stagedImportRows = null;
+
+          return;
+
+        }
+
+        const n = (stagedImportRows || []).filter(r => Object.values(r).some(v => String(v).trim())).length;
+
+        document.getElementById('fileName').textContent = file.name + '（' + n + ' 行待导入）';
+
+        setStatus('已选择文件，点「确认上传」写入数据库', false);
+
+      } catch (e) {
+
+        stagedImportRows = null;
+
+        setStatus('文件解析失败: ' + e.message, true);
+
+      }
+
+    }
+
+
+
+    async function confirmImport() {
+
+      if (!stagedImportRows || !stagedImportRows.length) {
+
+        setStatus('请先选择 .xlsx / .xls / .csv 文件', true);
+
+        return;
+
+      }
+
+      setStatus('导入中…', false);
+
+      const res = await fetch(apiUrl('/api/v1/shift-config/import-batch'), {
+
+        method: 'POST',
+
+        headers: apiHeaders(),
+
+        body: JSON.stringify({ year_month: yearMonth, rows: stagedImportRows }),
+
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.ok) {
+
+        setStatus(data.message || '导入失败', true);
+
+        return;
+
+      }
+
+      closeImportModal();
+
+      if (Array.isArray(data.rows)) {
+
+        rows = data.rows.map(r => ({ ...r, _isNew: false }));
+
+        dirty = false;
+
+        render();
+
+      } else {
+
+        await load();
+
+      }
+
+      const shown = rows.filter(r => !rowIsEmpty(r)).length;
+
+      const saved = data.saved || 0;
+
+      let msg = '导入成功，共 ' + saved + ' 条';
+
+      if (shown !== saved) {
+
+        msg += '（列表显示 ' + shown + ' 条，请下拉刷新或重新打开页面）';
+
+      }
+
+      setStatus(msg, shown !== saved);
+
+      if (tg?.showAlert) tg.showAlert(msg);
+
+      else alert(msg);
+
+    }
+
+
+
+    document.getElementById('btnEdit').addEventListener('click', toggleEdit);
+
+    document.getElementById('btnUpload').addEventListener('click', openImportModal);
+
+    document.getElementById('btnTemplate').addEventListener('click', downloadTemplate);
+
+    document.getElementById('btnPickFile').addEventListener('click', () => document.getElementById('fileInput').click());
+
+    document.getElementById('btnPickFileLink').addEventListener('click', () => document.getElementById('fileInput').click());
+
+    document.getElementById('fileInput').addEventListener('change', (e) => {
+
+      const f = e.target.files && e.target.files[0];
+
+      onFileSelected(f);
+
+    });
+
+    document.getElementById('btnImportCancel').addEventListener('click', closeImportModal);
+
+    document.getElementById('btnImportConfirm').addEventListener('click', confirmImport);
+
+    document.getElementById('importModal').addEventListener('click', (e) => {
+
+      if (e.target.id === 'importModal') closeImportModal();
+
+    });
+
+
+
+    async function boot() {
+
+      if (tg) {
+
+        try { tg.ready(); } catch (e) { /* ignore */ }
+
+      }
+
+      await load();
+
+    }
+
+    boot();
+
+  </script>
+
+</body>
+
+</html>
+
+

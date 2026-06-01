@@ -160,12 +160,9 @@ def _build_temporary_leave_dispatch_html(
 
 
 def begin_temporary_leave_application(*, tg_id: int) -> ServiceResult:
-    from services import rest_service
-
     got = _ensure_registered_with_org_shift(tg_id=tg_id)
     if isinstance(got, ServiceResult):
         return got
-    rest_service.clear_leave_session(tg_id=tg_id)
     clear_temporary_leave_session(tg_id=tg_id)
     _tleave_phase[tg_id] = STATE_WAIT_START
     _tleave_draft[tg_id] = TemporaryLeaveDraft()

@@ -6,9 +6,8 @@ from aiogram import F, Router
 from aiogram.filters import BaseFilter
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from keyboards.main_menu import PRIVATE_REPLY_MENU_TEXTS
 from services import register_service
-from services import rest_service
-from services import temporary_leave_service
 
 
 router = Router()
@@ -16,7 +15,7 @@ log = logging.getLogger(__name__)
 
 
 class RegisterPrivateInputFilter(BaseFilter):
-    """仅在私聊且正在等待注册输入、且不因休假文本冲突时匹配；只读判断，无副作用。"""
+    """仅在私聊且正在等待注册输入时匹配；只读判断，无副作用。"""
 
     async def __call__(self, message: Message) -> bool:
         if message.chat.type != "private":
@@ -27,11 +26,23 @@ class RegisterPrivateInputFilter(BaseFilter):
         tid = user.id
         if not register_service.is_waiting_register_input(tg_id=tid):
             return False
-        if rest_service.is_leave_flow_expecting_text(tg_id=tid):
-            return False
-        if temporary_leave_service.is_temporary_leave_flow_expecting_text(tg_id=tid):
+        text = (message.text or "").strip()
+        if text in PRIVATE_REPLY_MENU_TEXTS:
             return False
         return True
+
+
+async def _begin_register_in_private(*, message: Message, tg_id: int) -> None:
+    register_service.mark_waiting_register_input(tg_id=tg_id)
+    await message.reply(text="请输入：英文名$工号\n示例：Jeffery$72694")
+
+
+@router.message(F.text == "注册")
+async def register_begin_message(message: Message) -> None:
+    user = message.from_user
+    if not user or message.chat.type != "private":
+        return
+    await _begin_register_in_private(message=message, tg_id=int(user.id))
 
 
 @router.callback_query(F.data == "reg:begin")
@@ -46,12 +57,7 @@ async def register_begin_callback(callback: CallbackQuery) -> None:
         await callback.message.reply(text="请先私聊机器人，再点击【注册】完成注册。")
         return
 
-    rest_service.clear_leave_session(tg_id=user.id)
-    temporary_leave_service.clear_temporary_leave_session(tg_id=user.id)
-    register_service.mark_waiting_register_input(tg_id=user.id)
-    await callback.message.reply(
-        text="请输入：英文名$工号\n示例：Jeffery$72694",
-    )
+    await _begin_register_in_private(message=callback.message, tg_id=int(user.id))
 
 
 @router.callback_query(F.data.startswith("reg:confirm:"))
@@ -106,10 +112,6 @@ async def register_input_message_handler(message: Message) -> None:
     if not register_service.is_waiting_register_input(tg_id=message.from_user.id):
         log.info("[REGISTER_HANDLER_RETURN] tg_id=%s reason=not_waiting_register", tid)
         return
-    if rest_service.is_leave_flow_expecting_text(tg_id=message.from_user.id):
-        log.info("[REGISTER_HANDLER_RETURN] tg_id=%s reason=leave_flow_expecting_yield", tid)
-        return
-
     text = message.text or ""
     preview_or_err = register_service.preview_register(tg_id=message.from_user.id, text=text)
     if not hasattr(preview_or_err, "token"):

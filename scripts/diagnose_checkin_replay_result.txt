@@ -1,0 +1,52 @@
+============================================================
+打卡识别复现对比
+============================================================
+来源: telegram:AgACAgUAAyEFAAS-vNSdAAIB…
+raw_sha256=5c85db001d25e21f  prepared_sha256=93b56ba9d639cc32
+尺寸: 1280x463  bytes=43508
+配置: backend=ocr_text_llm name_verify=ocr clock_fallback=False skew_max=60m
+登记用户: tg=1302377984 username=benrenxing
+期望: user=benrenxing clock≈20:31:04
+
+--- 裁切区 ---
+  full: 42KB
+  name: 26KB
+  name_panel: 22KB
+  name_panel_bottom: 23KB
+  name_panel_overlay: 18KB
+  name_panel_row: 15KB
+  name_panel_tight: 8KB
+  time: 21KB
+  time_center: 13KB
+  time_clock: 31KB
+  time_digits: 17KB
+  time_main: 21KB
+  time_panel: 21KB
+  time_top: 29KB
+
+--- 姓名 OCR 分步 ---
+  [name_panel_overlay] avail=True hint=None raw=''
+  [name_panel_bottom] avail=True hint='benrenxing' raw='2026年5/\nB\nonstitution Day / International\nAgainst 卜\n太阳:\n个\n04:56\n1\n19:25 (14时29分)'
+  [name_panel_row] avail=True hint='benrenxing' raw='@\n@\nB\nInternational Day Against 卜\n4:56\n1\n19:25 (14时29分)\n更多\nbenrenxing\nSet Emoji '
+  [name_panel_tight] avail=True hint='benrenxing' raw='5/\n8\nISt 卜\n更多\nbenrenxing\nSet Emoji Status\n2.7\nbenrenxine 5/\n8\nISt |\n更多\nbenrenxin'
+  [name_panel] avail=True hint='benrenxing' raw='2026年5/\nB\ntion\n/ International\nAgainst 卜\n太阳:\n04:56\n19:25 (14时29分) -更多\nbenrenxing'
+  [hunt_parallel] hint='benrenxing' raw='2026年5/\nB\nonstitution Day / International\nAgainst 卜\n太阳:\n个\n04:56\n1\n19:25 (14时29分)'
+  [thorough] hint='benrenxing'
+
+--- 时间 OCR 分步 ---
+  [time_main] clock=None skew_min=None accept=False
+  [time_digits] clock=None skew_min=None accept=False
+  [time_clock] clock=None skew_min=None accept=False
+  [time_panel] clock=None skew_min=None accept=False
+  [time_top] clock=None skew_min=None accept=False
+  [ocr_clock_from_regions] => ('19:25:00', False)
+
+--- 完整 extract_checkin_from_image ---
+  OK (25.1s) user='benrenxing' clock='19:25:00' date='2053-05-31'
+
+--- validate_extraction_for_checkin ---
+  validate FAIL [AI_DATE_MISMATCH] 打卡失败：日期不一致。
+
+--- 与期望对比 ---
+  姓名: 期望=benrenxing 实际='benrenxing'  OK
+  时间: 期望=20:31:04 实际='19:25:00'  MISMATCH

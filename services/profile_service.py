@@ -144,11 +144,6 @@ def get_my_profile_by_tg_id(*, tg_id: int, now_utc: Optional[datetime] = None) -
     cout = str(prof.checkout_time)
     shift_time_display = f"{cin} - {cout}（{tz_name}）"
 
-    if leave_days:
-        leave_lines = "\n".join(_yyyymmdd(d0) for d0 in leave_days)
-    else:
-        leave_lines = "无"
-
     # 输出尽量稳定，避免 HTML 依赖；仅做 escape 防止异常字符破坏显示
     msg = (
         f"姓名：{html.escape(english_name)}\n"
@@ -161,10 +156,7 @@ def get_my_profile_by_tg_id(*, tg_id: int, now_utc: Optional[datetime] = None) -
         f"本月已出勤天数：{attendance_days}天\n"
         f"本月缺卡次数：{missing_clock_count}次\n"
         f"迟到/早退次数：{late_early_count}次\n"
-        f"缺勤次数：{daily_absent_count}次\n"
-        "-----------------------\n"
-        "本月已审批通过假期：\n"
-        f"{leave_lines}"
+        f"缺勤次数：{daily_absent_count}次"
     )
     return ServiceResult(ok=True, message=msg)
 

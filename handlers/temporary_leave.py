@@ -7,7 +7,6 @@ from aiogram.filters import BaseFilter
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from services import register_service
-from services import rest_service
 from services import temporary_leave_service
 
 router = Router()
@@ -25,8 +24,6 @@ class TemporaryLeavePrivateFlowExpectingTextFilter(BaseFilter):
         if not user:
             return False
         if register_service.is_waiting_register_input(tg_id=user.id):
-            return False
-        if rest_service.is_leave_flow_expecting_text(tg_id=user.id):
             return False
         return temporary_leave_service.is_temporary_leave_flow_expecting_text(tg_id=user.id)
 

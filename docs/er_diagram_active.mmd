@@ -1,0 +1,55 @@
+%% 考勤 Bot — 当前启用功能精简 ER
+%% 预览：https://mermaid.live  粘贴本文件内容即可导出 PNG/SVG
+
+erDiagram
+    organizations ||--o{ registrations : "所属部门"
+    shifts ||--o{ registrations : "所属班次"
+
+    registrations ||--o{ clock_records : "打卡"
+    shifts ||--o{ clock_records : "班次规则"
+
+    registrations ||--o{ audit_results : "审计结果"
+    shifts ||--o{ audit_results : ""
+    organizations ||--o{ audit_results : ""
+
+    organizations {
+        bigint id PK
+        string department_name
+    }
+
+    shifts {
+        bigint id PK
+        time checkin_time
+        time checkout_time
+        string timezone
+        bigint attendance_group_id "绑定TG考勤群"
+    }
+
+    registrations {
+        bigint id PK
+        string employee_id UK "工号"
+        bigint tg_id UK
+        string english_name
+        string tg_username
+        bigint organization_id FK
+        bigint shift_id FK
+    }
+
+    clock_records {
+        bigint id PK
+        bigint chat_id "群ID"
+        string employee_id FK
+        bigint shift_id FK
+        timestamptz clock_time "识别出的打卡时刻UTC"
+        text file_id "截图"
+    }
+
+    audit_results {
+        bigint id PK
+        string employee_id FK
+        bigint shift_id FK
+        date audit_date
+        string audit_stage "CHECKIN或CHECKOUT"
+        string result "NORMAL/LATE/ABSENT等"
+        timestamptz valid_clock_time
+    }

@@ -4,6 +4,8 @@ from typing import Any
 
 from psycopg2.extensions import cursor as Cursor
 
+from infra.db import get_cursor
+
 
 def insert_notification_triggered(
     cur: Cursor,
@@ -115,6 +117,42 @@ def claim_qc_round_closeout_processed_at_cur(
     )
     row = cur.fetchone()
     return bool(row and row[0] is not None)
+
+
+DAILY_ATTENDANCE_REPORT_EVENT = "DAILY_ATTENDANCE_REPORT_SENT"
+DAILY_ATTENDANCE_REPORT_RELATED = "daily_attendance_report"
+
+
+def daily_report_already_sent(*, report_day_key: int) -> bool:
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM public.event_logs
+            WHERE event_name = %s
+              AND related_event_name = %s
+              AND related_event_id = %s
+            LIMIT 1
+            """,
+            (
+                DAILY_ATTENDANCE_REPORT_EVENT,
+                DAILY_ATTENDANCE_REPORT_RELATED,
+                int(report_day_key),
+            ),
+        )
+        return cur.fetchone() is not None
+
+
+def mark_daily_report_sent(*, report_day_key: int, created_at_utc: Any) -> int:
+    with get_cursor() as cur:
+        return insert_event(
+            cur,
+            event_name=DAILY_ATTENDANCE_REPORT_EVENT,
+            related_event_name=DAILY_ATTENDANCE_REPORT_RELATED,
+            related_event_id=int(report_day_key),
+            result="SENT",
+            created_at_utc=created_at_utc,
+        )
 
 
 def rollback_qc_round_closeout_processed_at_cur(

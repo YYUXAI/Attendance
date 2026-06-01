@@ -2,100 +2,145 @@ from __future__ import annotations
 
 import logging
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.types import Message
 
-from services import checkin_service
+from domain.clock_matter import parse_matter_from_text
+from services import checkin_ai_orchestrator, checkin_service
+from services.checkin_recognition_log import log_checkin_recognition
+from services.checkin_wrong_group_reply import reply_wrong_group_hint
 
 
 router = Router()
 log = logging.getLogger(__name__)
 
+
 def _extract_file_id(message: Message) -> str | None:
     if message.document:
         return message.document.file_id
     if message.photo:
-        largest = max(message.photo, key=lambda p: (p.file_size or 0, p.width, p.height))
+        # Telegram 按尺寸升序排列，末尾为最大分辨率（勿仅按 file_size，避免选到压扁预览图）
+        largest = max(
+            message.photo,
+            key=lambda p: ((p.width or 0) * (p.height or 0), p.file_size or 0),
+        )
         return largest.file_id
     return None
 
 
-def _has_checkin_tag(message: Message) -> bool:
-    text = message.text or ""
-    caption = message.caption or ""
-    return ("#打卡" in text) or ("#打卡" in caption)
-
-
-async def _handle_checkin_message(message: Message) -> None:
+async def _handle_checkin_message(message: Message, bot: Bot) -> None:
     if not message.from_user:
         log.info("[CHECKIN_HANDLER_RETURN] tg_id=None reason=no_from_user")
         return
 
-    text = message.text or message.caption or ""
-    has_hashtag = "#打卡" in text
     file_id = _extract_file_id(message)
+    if not file_id:
+        log.info("[CHECKIN_HANDLER_RETURN] tg_id=%s reason=no_attachment", message.from_user.id)
+        return
 
-    prepared = checkin_service.validate_and_prepare(
-        tg_id=message.from_user.id,
-        chat_id=message.chat.id,
-        has_hashtag=has_hashtag,
-        file_id=file_id,
-    )
-
-    if not isinstance(prepared, tuple):
-        await message.reply(text=prepared.message)
+    matter = parse_matter_from_text(message.caption)
+    if matter not in {"签到", "签退"}:
         log.info(
-            "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=validate_failed_replied",
+            "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=no_matter_in_caption_skip",
             message.from_user.id,
         )
         return
 
-    employee_id, shift_id, english_name, department_name, cin, cout, tz = prepared
-    clock_time_utc = checkin_service.persist_clock_record(
+    prepared = checkin_service.validate_and_prepare(
         tg_id=message.from_user.id,
         chat_id=message.chat.id,
-        file_id=file_id,  # type: ignore[arg-type]
+        file_id=file_id,
+    )
+
+    if not isinstance(prepared, tuple):
+        if prepared.error_code == "WRONG_GROUP":
+            await reply_wrong_group_hint(message=message, bot=bot, result=prepared)
+        else:
+            await message.reply(text=prepared.message)
+        log.info(
+            "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=validate_failed_replied code=%s",
+            message.from_user.id,
+            prepared.error_code,
+        )
+        return
+
+    employee_id, shift_id, _english_name, _department_name, _cin, _cout, _tz = prepared
+
+    sent_utc = message.date
+    if sent_utc is not None and sent_utc.tzinfo is None:
+        from datetime import timezone
+
+        sent_utc = sent_utc.replace(tzinfo=timezone.utc)
+    # 按业务要求：截图时间统一按北京时间校验，不跟随班次时区。
+    ai_out = await checkin_ai_orchestrator.resolve_clock_time_with_ai(
+        bot=bot,
+        file_id=file_id,
+        tg_id=message.from_user.id,
+        shift_timezone="Asia/Shanghai",
+        message_sent_utc=sent_utc,
+        caption=message.caption,
+    )
+    if not isinstance(ai_out, checkin_ai_orchestrator.CheckinAiResolveResult):
+        try:
+            await message.reply(text=ai_out.message)
+        except Exception:
+            await message.answer(text=ai_out.message)
+        log_checkin_recognition(
+            stage="handler_rejected",
+            tg_id=int(message.from_user.id),
+            employee_id=employee_id,
+            error_code=ai_out.error_code,
+        )
+        log.info(
+            "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=ai_failed_replied code=%s",
+            message.from_user.id,
+            ai_out.error_code,
+        )
+        return
+
+    checkin_service.persist_clock_record(
+        tg_id=message.from_user.id,
+        chat_id=message.chat.id,
+        file_id=file_id,
         employee_id=employee_id,
         shift_id=shift_id,
+        clock_time_utc=ai_out.clock_time_utc,
+        clock_action=matter,
     )
-    body = checkin_service.format_success_message(
-        english_name=english_name,
+    log_checkin_recognition(
+        stage="saved",
+        tg_id=int(message.from_user.id),
+        extraction=ai_out.extraction,
         employee_id=employee_id,
-        department_name=department_name,
-        shift_checkin_time=cin,
-        shift_checkout_time=cout,
-        timezone_name=tz,
-        clock_time_utc=clock_time_utc,
-        file_id=file_id,  # type: ignore[arg-type]
+        clock_time_utc=ai_out.clock_time_utc,
+        matter=matter,
     )
-    await message.reply(text=body)
-    log.info("[CHECKIN_HANDLER_RETURN] tg_id=%s reason=success_replied", message.from_user.id)
+    log.info(
+        "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=success_silent clock_time_utc=%s",
+        message.from_user.id,
+        ai_out.clock_time_utc,
+    )
 
 
-CHECKIN_FILTER = F.chat.type.in_({"group", "supergroup"}) & (
-    F.text.contains("#打卡") | F.caption.contains("#打卡")
-)
+CHECKIN_FILTER = F.chat.type.in_({"group", "supergroup"}) & (F.photo | F.document)
 
 
 @router.message(CHECKIN_FILTER)
-async def checkin_message_handler(message: Message) -> None:
+async def checkin_message_handler(message: Message, bot: Bot) -> None:
     tid = message.from_user.id if message.from_user else None
     log.info(
-        "[CHECKIN_HANDLER_ENTER] tg_id=%s chat_type=%s chat_id=%s has_text=%s has_caption=%s",
+        "[CHECKIN_HANDLER_ENTER] tg_id=%s chat_type=%s chat_id=%s has_photo=%s has_document=%s",
         tid,
         message.chat.type,
         message.chat.id,
-        message.text is not None,
-        message.caption is not None,
+        message.photo is not None,
+        message.document is not None,
     )
-    if not _has_checkin_tag(message):
-        log.info("[CHECKIN_HANDLER_RETURN] tg_id=%s reason=no_checkin_tag", tid)
-        return
-    await _handle_checkin_message(message)
+    await _handle_checkin_message(message, bot)
 
 
 @router.edited_message(CHECKIN_FILTER)
-async def checkin_edited_message_handler(message: Message) -> None:
+async def checkin_edited_message_handler(message: Message, bot: Bot) -> None:
     tid = message.from_user.id if message.from_user else None
     log.info(
         "[CHECKIN_EDIT_HANDLER_ENTER] tg_id=%s chat_type=%s chat_id=%s",
@@ -103,7 +148,4 @@ async def checkin_edited_message_handler(message: Message) -> None:
         message.chat.type,
         message.chat.id,
     )
-    if not _has_checkin_tag(message):
-        log.info("[CHECKIN_EDIT_HANDLER_RETURN] tg_id=%s reason=no_checkin_tag", tid)
-        return
-    await _handle_checkin_message(message)
+    await _handle_checkin_message(message, bot)

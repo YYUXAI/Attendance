@@ -60,3 +60,23 @@ def list_all_shifts() -> List[ShiftRow]:
         )
         rows = cur.fetchall()
     return [ShiftRow(*r) for r in rows]
+
+
+def list_by_attendance_group_id(*, attendance_group_id: int) -> List[ShiftRow]:
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, checkin_time, checkout_time, timezone, is_overnight, attendance_group_id,
+                   attendance_flex_interval, max_late_early_tolerance,
+                   qc_enabled,
+                   qc_trigger_interval,
+                   qc_draw_count,
+                   qc_example_file_id
+            FROM public.shifts
+            WHERE attendance_group_id = %s
+            ORDER BY id ASC
+            """,
+            (int(attendance_group_id),),
+        )
+        rows = cur.fetchall() or []
+    return [ShiftRow(*r) for r in rows]

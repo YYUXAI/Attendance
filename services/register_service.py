@@ -63,9 +63,12 @@ def confirm_register(
 ) -> ServiceResult:
     preview = _pending.get(token)
     if not preview:
+        clear_waiting_register_input(tg_id=tg_id)
         return ServiceResult(ok=False, message="确认已失效，请重新点击【注册】。", error_code="EXPIRED")
 
     if registrations_repo.get_by_tg_id(tg_id):
+        _pending.pop(token, None)
+        clear_waiting_register_input(tg_id=tg_id)
         return ServiceResult(
             ok=False,
             message="该 Telegram 账户已绑定其他员工，请联系管理员处理",
@@ -73,6 +76,8 @@ def confirm_register(
         )
 
     if registrations_repo.get_by_employee_id(preview.employee_id):
+        _pending.pop(token, None)
+        clear_waiting_register_input(tg_id=tg_id)
         return ServiceResult(
             ok=False,
             message="该工号已绑定其他 Telegram 账户，请联系管理员处理",

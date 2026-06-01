@@ -10,3 +10,5 @@ class ServiceResult:
     message: str
     error_code: Optional[str] = None
     leave_application_id: Optional[int] = None
+    expected_attendance_group_id: Optional[int] = None
+    current_attendance_group_id: Optional[int] = None

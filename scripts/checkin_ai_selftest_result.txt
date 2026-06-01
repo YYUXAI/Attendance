@@ -1,0 +1,16 @@
+
+=== 单元回归 ===
+  [PASS] unit.against_raw_has_benrenxing: hint='benrenxing' code=None
+  [PASS] unit.against_is_garbage_token: garbage=True filtered_display=None
+  [PASS] unit.reject_nayxua_handle: code=AI_USER_OTHER_PERSON
+  [PASS] unit.config_strict_name: trust_sender=False verify=ocr
+  [PASS] unit.config_extract_backend: backend=ocr_text_llm text_model=qwen2.5:3b verify=ocr clock_fallback=False
+  [PASS] unit.ocr_mode_requires_inclusion: ok=False code=AI_NAME_NOT_FOUND
+  [PASS] unit.clock_inclusion_pick: pick='13:54:36' best='13:54:36'
+  [PASS] unit.resolve_registered_from_raw: resolved='benrenxing'
+  [PASS] unit.identity_alnum_loose: cases=5/5
+
+=== 汇总 ===
+  通过 9 | 失败 0 | 跳过 0
+
+结果: OK

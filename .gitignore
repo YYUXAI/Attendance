@@ -3,3 +3,8 @@ __pycache__/
 *.pyo
 *.pyd
 .venv/
+.env
+.env.*
+!.env.example
+_debug_*.jpg
+*.log

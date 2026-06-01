@@ -1,0 +1,17 @@
+config name_verify=both trust_sender=False
+account=benrenxing
+--- OCR (单块 name_panel_bottom) ---
+OCR A群聊_考勤群错: img=960x755 crop=393x557 33.0s ok=True hint=None disp=None
+OCR B群聊_发Nayxua图: img=960x922 crop=480x557 33.5s ok=True hint=None disp=None
+OCR C相册_benrenxing: img=960x772 crop=402x557 29.6s ok=True hint=None disp=None
+OCR D相册_Nayxua: img=1024x416 crop=217x594 19.9s ok=True hint=None disp=None
+--- FULL pipeline ---
+FULL A群聊_考勤群错 start...
+FULL A群聊_考勤群错: FAIL [AI_NAME_NOT_FOUND] 打卡失败：未能从截图识别 Slack 浮窗姓名。 (91s)
+FULL B群聊_发Nayxua图 start...
+FULL B群聊_发Nayxua图: FAIL [AI_NAME_NOT_FOUND] 打卡失败：未能从截图识别 Slack 浮窗姓名。 (47s)
+FULL C相册_benrenxing start...
+FULL C相册_benrenxing: FAIL [AI_NAME_NOT_FOUND] 打卡失败：未能从截图识别 Slack 浮窗姓名。 (55s)
+FULL D相册_Nayxua start...
+FULL D相册_Nayxua: FAIL [AI_NAME_NOT_FOUND] 打卡失败：未能从截图识别 Slack 浮窗姓名。 (33s)
+=== DONE ===

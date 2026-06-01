@@ -1,0 +1,23 @@
+config: name_verify=both trust_sender=False
+account: benrenxing
+
+=== 0. 回归（Against 误读）===
+  REGRESSION Against: PASS -> benrenxing
+
+=== 1. 时间 OCR（仅 Tesseract）===
+  OCR钟 A_群聊_考勤群错: 960x755 time_main=True -> '18:41:33' (1.4s)
+  OCR钟 B_群聊_发Nayxua: 960x922 time_main=True -> '18:41:33' (0.6s)
+  OCR钟 C_相册_benrenxing: 960x772 time_main=True -> '13:53:08' (0.5s)
+  OCR钟 D_相册_Nayxua: 1024x416 time_main=True -> None (0.7s)
+  OCR钟 E_用户20:31图: 960x861 time_main=True -> '20:31:04' (0.6s)
+  OCR钟 F_日志扁图20:31: 960x861 time_main=True -> '20:31:04' (0.6s)
+
+=== 2. 完整流水线（相册图 C、E，应 PASS）===
+  FULL C_相册_benrenxing: FAIL [AI_NAME_NOT_FOUND] 打卡失败：截图中未包含您的 Slack 登记姓名。 (4s)
+  FULL E_用户20:31图: PASS clock='20:31:04' ident='benrenxing' (1s)
+  FULL F_日志扁图20:31: PASS clock='20:31:04' ident='benrenxing' (1s)
+
+=== 3. 完整流水线（Nayxua 图 D，应拒绝他人）===
+  FULL D_相册_Nayxua: FAIL [AI_USER_OTHER_PERSON] 打卡失败：Slack 浮窗识别为他人。 (3s)
+
+=== DONE ===

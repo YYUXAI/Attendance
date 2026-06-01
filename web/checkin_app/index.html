@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>打卡</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root { --blue: #2481cc; --blue-dark: #1a6aad; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: system-ui, -apple-system, sans-serif;
+      background: var(--tg-theme-bg-color, #fff);
+      color: var(--tg-theme-text-color, #111);
+      padding: 14px 14px 72px;
+    }
+    h1 { font-size: 18px; margin: 0 0 12px; font-weight: 600; }
+    .card {
+      background: rgba(36,129,204,0.08); border-radius: 10px;
+      padding: 12px; margin-bottom: 14px; font-size: 14px; line-height: 1.7;
+    }
+    .card b { color: var(--blue); }
+    .drop {
+      border: 2px dashed rgba(36,129,204,0.45); border-radius: 10px;
+      min-height: 160px; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; text-align: center;
+      padding: 16px; cursor: pointer; background: rgba(36,129,204,0.04);
+    }
+    .drop.has-img { padding: 8px; min-height: auto; }
+    .drop p { margin: 6px 0; font-size: 13px; opacity: 0.85; }
+    .preview { max-width: 100%; max-height: 280px; border-radius: 8px; display: none; }
+    .preview.show { display: block; }
+    .toolbar {
+      position: fixed; left: 0; right: 0; bottom: 0;
+      padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+      background: var(--tg-theme-bg-color, #fff);
+      border-top: 1px solid rgba(36,129,204,0.2);
+      display: flex; gap: 8px;
+    }
+    .toolbar button {
+      flex: 1; border: none; border-radius: 8px;
+      padding: 10px 8px; font-size: 14px; font-weight: 600; color: #fff;
+      background: var(--blue); min-height: 40px;
+    }
+    .toolbar button:disabled { opacity: 0.45; }
+    .toolbar button.secondary { background: var(--blue-dark); opacity: 0.85; }
+    .status { font-size: 13px; margin: 10px 0; min-height: 18px; }
+    .status.err { color: #c00; }
+    .status.ok { color: #080; }
+    #fileInput { display: none; }
+  </style>
+</head>
+<body>
+  <h1 id="pageTitle">打卡</h1>
+  <div class="card" id="infoCard">加载中…</div>
+  <div class="drop" id="dropZone">
+    <img id="preview" class="preview" alt="预览" />
+    <div id="dropHint">
+      <p><b>点击选择</b> 或 <b>Ctrl+V 粘贴</b> 截图</p>
+      <p>需含 TIME.IS 与 Slack 浮窗</p>
+    </div>
+  </div>
+  <div class="status" id="status"></div>
+  <input type="file" id="fileInput" accept="image/*" />
+  <div class="toolbar">
+    <button type="button" class="secondary" id="btnCancel">取消</button>
+    <button type="button" id="btnSend" disabled>发送到考勤群</button>
+  </div>
+  <script>
+    const tg = window.Telegram?.WebApp;
+    if (tg) { tg.ready(); tg.expand(); try { tg.setHeaderColor('#2481cc'); } catch(e) {} }
+
+    const params = new URLSearchParams(location.search);
+    const webSession = params.get('web_session') || '';
+    let imageBlob = null;
+
+    const el = (id) => document.getElementById(id);
+    const setStatus = (msg, isErr) => {
+      el('status').textContent = msg || '';
+      el('status').className = 'status ' + (isErr ? 'err' : 'ok');
+    };
+
+    function headers() {
+      const h = { 'ngrok-skip-browser-warning': '1' };
+      if (webSession) h['X-Web-Session'] = webSession;
+      return h;
+    }
+
+    async function loadContext() {
+      if (!webSession) {
+        setStatus('会话无效，请回到 Telegram 重新点「签到/签退」', true);
+        return;
+      }
+      const url = '/api/v1/checkin/context?web_session=' + encodeURIComponent(webSession);
+      const res = await fetch(url, { headers: headers() });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setStatus(data.message || '加载失败', true);
+        return;
+      }
+      el('pageTitle').textContent = data.action === '签退' ? '签退打卡' : '签到打卡';
+      el('infoCard').innerHTML =
+        '<div>事项：<b>' + data.action + '</b></div>' +
+        '<div>英文名：<b>' + data.english_name + '</b></div>' +
+        '<div>工号：<b>' + data.employee_id + '</b></div>' +
+        '<div>班次：<b>' + data.shift_time_range + '</b></div>';
+    }
+
+    function setImage(file) {
+      if (!file || !file.type.startsWith('image/')) {
+        setStatus('请选择图片文件', true);
+        return;
+      }
+      imageBlob = file;
+      const url = URL.createObjectURL(file);
+      const img = el('preview');
+      img.src = url;
+      img.classList.add('show');
+      el('dropHint').style.display = 'none';
+      el('dropZone').classList.add('has-img');
+      el('btnSend').disabled = false;
+      setStatus('已选图，点「发送到考勤群」', false);
+    }
+
+    el('dropZone').addEventListener('click', () => el('fileInput').click());
+    el('fileInput').addEventListener('change', (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (f) setImage(f);
+    });
+
+    document.addEventListener('paste', (e) => {
+      const items = e.clipboardData && e.clipboardData.items;
+      if (!items) return;
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          const f = item.getAsFile();
+          if (f) { setImage(f); e.preventDefault(); break; }
+        }
+      }
+    });
+
+    el('btnCancel').addEventListener('click', () => { if (tg?.close) tg.close(); else window.close(); });
+
+    el('btnSend').addEventListener('click', async () => {
+      if (!imageBlob) { setStatus('请先粘贴或选择截图', true); return; }
+      el('btnSend').disabled = true;
+      setStatus('识别并发送中…', false);
+      const fd = new FormData();
+      fd.append('image', imageBlob, imageBlob.name || 'checkin.jpg');
+      let url = '/api/v1/checkin/submit';
+      if (webSession) url += '?web_session=' + encodeURIComponent(webSession);
+      try {
+        const res = await fetch(url, { method: 'POST', headers: headers(), body: fd });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          setStatus(data.message || '发送失败', true);
+          el('btnSend').disabled = false;
+          return;
+        }
+        setStatus(data.message || '成功', false);
+        if (tg?.showAlert) tg.showAlert(data.message || '打卡成功');
+        setTimeout(() => { if (tg?.close) tg.close(); }, 800);
+      } catch (err) {
+        setStatus('网络错误：' + err, true);
+        el('btnSend').disabled = false;
+      }
+    });
+
+    loadContext();
+  </script>
+</body>
+</html>
