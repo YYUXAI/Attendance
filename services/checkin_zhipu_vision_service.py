@@ -1,4 +1,4 @@
-"""智谱 GLM 视觉模型识别打卡截图（全图一次，无 OCR）。"""
+"""Z.ai（智谱国际版）GLM 视觉模型识别打卡截图（全图一次，无 OCR）。"""
 from __future__ import annotations
 
 import base64
@@ -33,8 +33,8 @@ from services.checkin_user_message import MSG_DATE_MISMATCH, MSG_NAME_MISMATCH, 
 
 log = logging.getLogger(__name__)
 
-ZHIPU_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
-ZHIPU_DEFAULT_MODEL = "glm-4v-flash"
+ZHIPU_DEFAULT_BASE_URL = "https://api.z.ai/api/paas/v4"
+ZHIPU_DEFAULT_MODEL = "glm-4.6v"
 
 _ZHIPU_EXTRACT_PROMPT = """你是考勤截图 OCR。只抄写图片里肉眼可见的文字，禁止推断、补全、猜测。
 
@@ -356,6 +356,7 @@ async def _call_zhipu_vision(
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
+        "Accept-Language": "en-US,en",
     }
     body: dict[str, Any] = {
         "model": model,
@@ -376,8 +377,8 @@ async def _call_zhipu_vision(
             }
         ],
     }
-    # GLM-4.6V 默认走思考链，会污染 JSON；打卡 OCR 需关闭。
-    if "4.6" in model.lower():
+    # 关闭思考链，避免污染 JSON OCR 结果（4.5V / 4.6V 均支持 thinking 开关）
+    if any(tag in model.lower() for tag in ("4.5", "4.6")):
         body["thinking"] = {"type": "disabled"}
     async with httpx.AsyncClient(timeout=timeout_seconds) as client:
         resp = await client.post(url, headers=headers, json=body)
@@ -417,7 +418,7 @@ async def extract_checkin_from_zhipu_vision(
     if not (config.api_key or "").strip():
         return None, CheckinAiExtractError(
             "AI_CONFIG_MISSING",
-            "打卡失败：未配置智谱 API Key（CHECKIN_AI_API_KEY）。",
+            "打卡失败：未配置 Z.ai API Key（CHECKIN_AI_API_KEY）。",
         )
 
     prepared = _prepare_image_bytes(image_bytes)
@@ -447,38 +448,49 @@ async def extract_checkin_from_zhipu_vision(
         )
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code if exc.response is not None else 0
-        log.exception("checkin_zhipu: http %s model=%s", status, model)
+        err_body = ""
+        try:
+            if exc.response is not None:
+                err_body = exc.response.text or ""
+        except Exception:
+            pass
+        log.exception("checkin_zhipu: http %s model=%s body=%s", status, model, err_body[:200])
         if status in {401, 403}:
             return None, CheckinAiExtractError(
                 "AI_AUTH_FAILED",
-                "打卡失败：智谱 API Key 无效或已过期，请检查 CHECKIN_AI_API_KEY。",
+                "打卡失败：Z.ai API Key 无效或已过期，请检查 CHECKIN_AI_API_KEY。",
+            )
+        if "Insufficient balance" in err_body or '"code":"1113"' in err_body:
+            return None, CheckinAiExtractError(
+                "AI_BALANCE_EXHAUSTED",
+                "打卡失败：Z.ai 账户余额不足，请充值后重试。",
             )
         if status == 429:
             return None, CheckinAiExtractError(
                 "AI_RATE_LIMIT",
-                "打卡失败：智谱 API 调用频率超限，请稍后重试。",
+                "打卡失败：Z.ai API 调用频率超限，请稍后重试。",
             )
         return None, CheckinAiExtractError(
             "AI_HTTP_ERROR",
-            f"打卡失败，智谱 API 返回错误（HTTP {status}）。",
+            f"打卡失败，Z.ai API 返回错误（HTTP {status}）。",
         )
     except httpx.TimeoutException:
         log.exception("checkin_zhipu: timeout model=%s", model)
         return None, CheckinAiExtractError(
             "AI_TIMEOUT",
-            f"打卡失败，智谱识别超时（{int(config.timeout_seconds)} 秒）。请稍后重试。",
+            f"打卡失败，Z.ai 识别超时（{int(config.timeout_seconds)} 秒）。请稍后重试。",
         )
     except httpx.ConnectError:
         log.exception("checkin_zhipu: connect failed")
         return None, CheckinAiExtractError(
             "AI_SERVICE_DOWN",
-            "打卡失败：无法连接智谱 API，请检查网络。",
+            "打卡失败：无法连接 Z.ai API，请检查网络。",
         )
     except Exception:
         log.exception("checkin_zhipu: vision failed model=%s", model)
         return None, CheckinAiExtractError(
             "AI_EXTRACT_FAILED",
-            "打卡失败，智谱识别异常。请换一张更清晰的截图重试。",
+            "打卡失败，Z.ai 识别异常。请换一张更清晰的截图重试。",
         )
 
     extraction = _parse_zhipu_json_only(raw)
