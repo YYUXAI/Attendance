@@ -11,9 +11,11 @@ from aiohttp import web
 from aiogram import Bot
 
 from infra.daily_report_config import load_daily_report_api_config, load_daily_report_config
+from infra.google_sheets_config import load_google_sheets_config
 from infra.checkin_web_http import register_checkin_web_routes
 from infra.shift_web_config import load_shift_web_config
 from infra.shift_web_http import register_shift_web_routes
+from services.google_sheets_shift_sync_service import sync_shifts_from_google_sheets
 from services.daily_attendance_report_send import (
     outcome_to_json,
     parse_report_date_arg,
@@ -28,6 +30,7 @@ LEGACY_SEND_PATH = "/api/v1/daily-attendance-report/send"
 HEALTH_PATH = "/health"
 DOCS_DIR = Path(__file__).resolve().parents[1] / "docs"
 PHASE2_PRD_PATH = "/docs/phase2-prd-figma.html"
+GOOGLE_SHEETS_SYNC_PATH = "/api/v1/google-sheets/shift-sync"
 
 
 def _extract_token(request: web.Request) -> str | None:
@@ -131,6 +134,37 @@ async def _handle_send(request: web.Request) -> web.Response:
     return web.json_response(outcome_to_json(outcome), status=status)
 
 
+async def _handle_google_sheets_sync(request: web.Request) -> web.Response:
+    api_cfg = request.app["api_cfg"]
+    token = _extract_token(request)
+    if not api_cfg.token or not token or not secrets.compare_digest(token, api_cfg.token):
+        return web.json_response({"ok": False, "message": "unauthorized"}, status=401)
+
+    body = await _read_json_body(request)
+    year_month = request.query.get("year_month") or body.get("year_month")
+    try:
+        result = await asyncio.to_thread(
+            sync_shifts_from_google_sheets,
+            year_month=str(year_month).strip() if year_month else None,
+        )
+    except Exception as e:
+        log.exception("google_sheets_api: sync failed")
+        return web.json_response({"ok": False, "message": str(e)}, status=500)
+
+    status = 200 if result.ok else 400
+    return web.json_response(
+        {
+            "ok": result.ok,
+            "message": result.message,
+            "year_month": result.year_month,
+            "employee_count": result.employee_count,
+            "calendar_cells": result.calendar_cells,
+            "sheet_title": result.sheet_title,
+        },
+        status=status,
+    )
+
+
 async def _handle_health(_request: web.Request) -> web.Response:
     return web.json_response(
         {
@@ -163,6 +197,9 @@ def create_app(*, bot: Bot) -> web.Application:
     if shift_cfg.enabled:
         register_shift_web_routes(app)
         register_checkin_web_routes(app)
+    if load_google_sheets_config().enabled:
+        app.router.add_get(GOOGLE_SHEETS_SYNC_PATH, _handle_google_sheets_sync)
+        app.router.add_post(GOOGLE_SHEETS_SYNC_PATH, _handle_google_sheets_sync)
     return app
 
 
