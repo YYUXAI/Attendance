@@ -7,6 +7,8 @@ MSG_TIME_MISMATCH = "打卡失败：时间不一致。"
 MSG_DATE_MISMATCH = "打卡失败：日期不一致。"
 MSG_NAME_AND_TIME_MISMATCH = "打卡失败：姓名不一致，时间不一致。"
 MSG_AI_SERVICE_DOWN = "打卡失败：识别服务不可用，请稍后重试。"
+MSG_AI_BALANCE_EXHAUSTED = "打卡失败：Z.ai 账户余额不足，请充值后重试。"
+MSG_AI_AUTH_FAILED = "打卡失败：Z.ai API Key 无效或已过期，请联系管理员。"
 # 与 MSG_TIME_MISMATCH 相同；保留别名供旧引用
 MSG_SCREENSHOT_TIME_ABNORMAL = MSG_TIME_MISMATCH
 
@@ -56,8 +58,14 @@ _SERVICE_ERROR_CODES = frozenset(
         "AI_SERVICE_DOWN",
         "AI_TIMEOUT",
         "AI_DOWNLOAD_FAILED",
+        "AI_HTTP_ERROR",
+        "AI_RATE_LIMIT",
+        "AI_CONFIG_MISSING",
     }
 )
+
+_BALANCE_ERROR_CODES = frozenset({"AI_BALANCE_EXHAUSTED"})
+_AUTH_ERROR_CODES = frozenset({"AI_AUTH_FAILED"})
 
 
 def is_name_related_checkin_error(error_code: str | None) -> bool:
@@ -73,6 +81,10 @@ def is_name_related_checkin_error(error_code: str | None) -> bool:
 
 def user_message_for_checkin_error(error_code: str | None) -> str:
     code = (error_code or "").strip().upper()
+    if code in _BALANCE_ERROR_CODES:
+        return MSG_AI_BALANCE_EXHAUSTED
+    if code in _AUTH_ERROR_CODES:
+        return MSG_AI_AUTH_FAILED
     if code in _EXTRACT_FAILED_CODES:
         return MSG_AI_SERVICE_DOWN
     if code in _SERVICE_ERROR_CODES:
