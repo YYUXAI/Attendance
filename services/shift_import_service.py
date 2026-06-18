@@ -193,7 +193,7 @@ def template_csv_bytes(*, year_month: str) -> bytes:
             "13:00~22:00",
             "13:00",
             "22:00",
-            "1,2,3",
+            "1,2,3,4",
         ]
     )
     return codecs.BOM_UTF8 + buf.getvalue().encode("utf-8")

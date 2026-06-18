@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from aiogram import Bot, Dispatcher
@@ -21,6 +22,8 @@ from handlers.register import router as register_router
 # from handlers.qc_message import router as qc_message_router
 # from handlers.qc_closeout_group_callback import router as qc_closeout_group_callback_router
 from infra.bot_commands import register_bot_commands
+
+log = logging.getLogger(__name__)
 
 
 def build_app() -> tuple[Bot, Dispatcher]:
@@ -48,6 +51,12 @@ def build_app() -> tuple[Bot, Dispatcher]:
 
     @dp.startup()
     async def _on_startup() -> None:
-        await register_bot_commands(bot=bot)
+        try:
+            await register_bot_commands(bot=bot)
+        except Exception as e:
+            log.warning(
+                "bot_commands: register failed (%s), Bot 仍会继续轮询；可检查网络/代理后重启",
+                e,
+            )
 
     return bot, dp

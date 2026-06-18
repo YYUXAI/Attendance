@@ -10,6 +10,7 @@ from typing import Optional
 from aiogram import Bot
 
 from domain.checkin_image_extraction import CheckinImageExtraction
+from domain.clock_matter import validate_caption_identity_for_sender
 from domain.shared.result import ServiceResult
 from infra.checkin_ai_config import CheckinAiConfig, load_checkin_ai_config
 from repositories.registrations_repo import get_by_tg_id
@@ -102,6 +103,18 @@ async def resolve_clock_time_with_ai_from_bytes(
     if not reg:
         return ServiceResult(ok=False, message="打卡失败，您尚未注册", error_code="NOT_REGISTERED")
 
+    caption_err = validate_caption_identity_for_sender(
+        caption=caption,
+        english_name=reg.english_name,
+        employee_id=str(reg.employee_id),
+    )
+    if caption_err:
+        return ServiceResult(
+            ok=False,
+            message=user_message_for_checkin_error(caption_err),
+            error_code=caption_err,
+        )
+
     if not image_bytes:
         return ServiceResult(
             ok=False,
@@ -128,6 +141,7 @@ async def resolve_clock_time_with_ai_from_bytes(
         expected_english_name=reg.english_name,
         reference_utc=ref_utc,
         shift_timezone=shift_timezone,
+        tg_id=tg_id,
     )
     if ai_err is not None:
         log_checkin_recognition(
@@ -209,6 +223,8 @@ async def resolve_clock_time_with_ai_from_bytes(
             username_hint=extraction.username_hint,
         )
     )
+    # 截图时间仅用于姓名/日期/偏差校验；入库打卡时刻 = 发消息时间
+    record_utc = ref_utc if ref_utc.tzinfo else ref_utc.replace(tzinfo=timezone.utc)
     log_checkin_recognition(
         stage="validated_ok",
         tg_id=tg_id,
@@ -217,11 +233,11 @@ async def resolve_clock_time_with_ai_from_bytes(
         expected_english_name=reg.english_name,
         employee_id=str(reg.employee_id),
         composite_screenshot=composite_screenshot,
-        clock_time_utc=validated,
+        clock_time_utc=record_utc,
         shift_timezone=shift_timezone,
     )
     return CheckinAiResolveResult(
-        clock_time_utc=validated,
+        clock_time_utc=record_utc,
         used_ai_time=True,
         verified_image_user=identity_verified,
         extraction=extraction,

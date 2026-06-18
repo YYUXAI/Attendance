@@ -28,19 +28,33 @@ class CheckinAiConfig:
         return self.extract_backend == "ocr_text_llm"
 
 
+    @property
+    def zhipu(self) -> bool:
+        return self.extract_backend == "zhipu"
+
+
 def load_checkin_ai_config() -> CheckinAiConfig:
     enabled = os.getenv("CHECKIN_AI_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-    base_url = (os.getenv("CHECKIN_AI_BASE_URL") or "http://127.0.0.1:11434/v1").rstrip("/")
-    api_key = os.getenv("CHECKIN_AI_API_KEY") or "ollama"
-    model = os.getenv("CHECKIN_AI_MODEL") or "moondream"
+    extract_backend = (os.getenv("CHECKIN_AI_EXTRACT_BACKEND") or "zhipu").strip().lower()
+    if extract_backend not in {"ollama", "ocr_only", "ocr_text_llm", "zhipu"}:
+        extract_backend = "zhipu"
+
+    if extract_backend == "zhipu":
+        base_url = (os.getenv("CHECKIN_AI_BASE_URL") or "https://open.bigmodel.cn/api/paas/v4").rstrip("/")
+        api_key = (os.getenv("CHECKIN_AI_API_KEY") or os.getenv("ZHIPU_API_KEY") or "").strip()
+        model = os.getenv("CHECKIN_AI_MODEL") or "glm-4v-flash"
+    else:
+        base_url = (os.getenv("CHECKIN_AI_BASE_URL") or "http://127.0.0.1:11434/v1").rstrip("/")
+        api_key = os.getenv("CHECKIN_AI_API_KEY") or "ollama"
+        model = os.getenv("CHECKIN_AI_MODEL") or "moondream"
     # assist：仅当 CHECKIN_AI_ENABLED=false 时由调用方走服务器时间；开启后一律严格校验姓名+时间
     mode = (os.getenv("CHECKIN_AI_MODE") or "required").strip().lower()
     if mode not in {"assist", "required"}:
         mode = "required"
     try:
-        max_skew = int(os.getenv("CHECKIN_AI_MAX_CLOCK_SKEW_MINUTES") or "60")
+        max_skew = int(os.getenv("CHECKIN_AI_MAX_CLOCK_SKEW_MINUTES") or "30")
     except ValueError:
-        max_skew = 60
+        max_skew = 30
     try:
         timeout = float(os.getenv("CHECKIN_AI_TIMEOUT_SECONDS") or "300")
     except ValueError:
@@ -51,14 +65,13 @@ def load_checkin_ai_config() -> CheckinAiConfig:
         "yes",
         "on",
     }
-    extract_backend = (os.getenv("CHECKIN_AI_EXTRACT_BACKEND") or "ollama").strip().lower()
-    if extract_backend not in {"ollama", "ocr_only", "ocr_text_llm"}:
-        extract_backend = "ollama"
     text_model = (os.getenv("CHECKIN_AI_TEXT_MODEL") or os.getenv("CHECKIN_AI_MODEL") or "qwen2.5:3b").strip()
-    name_verify = (os.getenv("CHECKIN_AI_NAME_VERIFY") or "both").strip().lower()
+    name_verify = (os.getenv("CHECKIN_AI_NAME_VERIFY") or "vision").strip().lower()
     if name_verify not in {"vision", "ocr", "both"}:
-        name_verify = "both"
-    if extract_backend in {"ocr_only", "ocr_text_llm"} and name_verify == "vision":
+        name_verify = "vision"
+    if extract_backend == "zhipu":
+        name_verify = "vision"
+    elif extract_backend in {"ocr_only", "ocr_text_llm"} and name_verify == "vision":
         name_verify = "ocr"
     fallback_raw = os.getenv("CHECKIN_AI_CLOCK_FALLBACK_SEND_TIME")
     if fallback_raw is None or not fallback_raw.strip():

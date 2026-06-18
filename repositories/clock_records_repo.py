@@ -41,7 +41,7 @@ def insert_clock_record(
     file_id: str,
     tg_id: int,
     employee_id: str,
-    shift_id: int,
+    shift_id: int | None,
     clock_time_utc,
     clock_action: str | None = None,
 ) -> None:
@@ -56,6 +56,49 @@ def insert_clock_record(
             """,
             (chat_id, file_id, tg_id, employee_id, shift_id, clock_time_utc, clock_action),
         )
+
+
+def get_latest_chat_id_for_employee(*, employee_id: str) -> int | None:
+    """最近一条打卡所在群，用于无 shift_id 时的个人统计。"""
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT chat_id
+            FROM public.clock_records
+            WHERE employee_id = %s
+            ORDER BY clock_time DESC
+            LIMIT 1
+            """,
+            (str(employee_id),),
+        )
+        row = cur.fetchone()
+    if not row or row[0] is None:
+        return None
+    return int(row[0])
+
+
+def list_clock_records_by_employee_chat_in_range(
+    *,
+    employee_id: str,
+    chat_id: int,
+    start_at_utc: Any,
+    end_at_utc: Any,
+) -> List[ClockRecordRow]:
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, employee_id, shift_id, clock_time, clock_action
+            FROM public.clock_records
+            WHERE employee_id = %s
+              AND chat_id = %s
+              AND clock_time >= %s
+              AND clock_time < %s
+            ORDER BY clock_time ASC
+            """,
+            (str(employee_id), int(chat_id), start_at_utc, end_at_utc),
+        )
+        rows = cur.fetchall() or []
+    return [ClockRecordRow(*r) for r in rows]
 
 
 def list_clock_records_in_range(

@@ -7,6 +7,7 @@ from aiogram.filters import BaseFilter
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from keyboards.main_menu import PRIVATE_REPLY_MENU_TEXTS
+from repositories import registrations_repo
 from services import register_service
 
 
@@ -33,6 +34,10 @@ class RegisterPrivateInputFilter(BaseFilter):
 
 
 async def _begin_register_in_private(*, message: Message, tg_id: int) -> None:
+    if registrations_repo.get_by_tg_id(int(tg_id)) is not None:
+        register_service.clear_waiting_register_input(tg_id=tg_id)
+        await message.reply(text="您已经注册过了")
+        return
     register_service.mark_waiting_register_input(tg_id=tg_id)
     await message.reply(text="请输入：英文名$工号\n示例：Jeffery$72694")
 

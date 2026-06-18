@@ -65,6 +65,32 @@ def get_employee_english_name_by_employee_id(*, employee_id: str) -> Optional[st
 
 
 @dataclass(frozen=True)
+class EmployeeShiftConfigLite:
+    shift_checkin_time: object
+    shift_checkout_time: object
+    shift_time_range: str
+    monthly_rest_days: str
+
+
+def get_employee_shift_config_for_month(
+    *, employee_id: str, year_month: str
+) -> Optional[EmployeeShiftConfigLite]:
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT shift_checkin_time, shift_checkout_time, shift_time_range, monthly_rest_days
+            FROM public.employee_shift_config
+            WHERE employee_id = %s AND year_month = %s
+            """,
+            (str(employee_id), str(year_month)),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return EmployeeShiftConfigLite(*row)
+
+
+@dataclass(frozen=True)
 class AuditResultLiteRow:
     audit_date: date
     audit_stage: str

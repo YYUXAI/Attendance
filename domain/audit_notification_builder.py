@@ -35,10 +35,8 @@ def _list_people(title: str, people: Sequence[PersonDisplay]) -> str:
 def build_shift_start_group_notice_html(
     *,
     work_date: date,
-    department_name: str,
     shift_label: str,
     timezone_name: str,
-    leader_display_html: str,
     should_count: int,
     checked_in: Sequence[PersonDisplay],
     on_leave: Sequence[PersonDisplay],
@@ -48,21 +46,16 @@ def build_shift_start_group_notice_html(
     """
     3003 开班考勤群公告（文案组装，不访问 DB）。
     """
-    dept = department_name or "未配置"
-    leader_html = (leader_display_html or "").strip() or html.escape("未配置")
     parts: list[str] = []
     parts.append("开班考勤汇总：\n")
     parts.append(f"日期：{html.escape(str(work_date))}\n")
-    parts.append(f"部门：{html.escape(dept)}\n")
     parts.append(f"班次：{html.escape(shift_label)}\n")
-    parts.append(f"时区：{html.escape(timezone_name)}\n")
-    parts.append(f"部门负责人：{leader_html}\n\n")
+    parts.append(f"时区：{html.escape(timezone_name)}\n\n")
     parts.append(f"今日应到岗人数：{should_count}\n")
     parts.append(f"已到岗人数：{len(checked_in)}\n\n")
     parts.append(_list_people("报备休假名单", on_leave))
     parts.append(_list_people("迟到名单", late))
     parts.append(_list_people("未打卡名单", absent))
-    parts.append("\n质检即将启动，请留意通知。")
     return "".join(parts)
 
 

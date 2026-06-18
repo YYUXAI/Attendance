@@ -22,14 +22,24 @@ def build_checkin_draft(*, english_name: str, employee_id: str, action: str) -> 
 
 
 def build_leave_draft(*, english_name: str, employee_id: str) -> str:
+    """离岗模板；首行留空给 Telegram 自动填入的 @bot，#离岗报备 在第二行。"""
+    _ = employee_id
     return (
-        f"#离岗报备\n人员：{english_name}\n工号：{employee_id}\n"
-        f"时间：{_now_local_str()}\n原因："
+        f"\n#离岗报备\n"
+        f"人员：{english_name}\n"
+        f"时间：{_now_local_str()}\n"
+        f"原因："
     )
 
 
 def build_back_draft(*, english_name: str, employee_id: str) -> str:
-    return f"#返岗报备\n人员：{english_name}\n工号：{employee_id}\n时间：{_now_local_str()}"
+    _ = employee_id
+    return (
+        f"\n#返岗报备\n"
+        f"人员：{english_name}\n"
+        f"时间：{_now_local_str()}\n"
+        f"原因："
+    )
 
 
 def build_draft_for_action(*, action: str, english_name: str, employee_id: str) -> str:

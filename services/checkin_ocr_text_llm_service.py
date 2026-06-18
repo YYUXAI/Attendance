@@ -26,7 +26,9 @@ from services.checkin_image_ai_service import (
     _parse_model_content,
     _pick_clock_by_inclusion,
     _clock_candidates_from_text,
+    normalize_ocr_dot_clocks,
 )
+from services.checkin_clock_time_service import normalize_ocr_date_text
 from services.checkin_ocr_engine import ocr_backend_available, ocr_engine_name, ocr_full_image_text
 from services.checkin_ocr_executor import run_ocr_cpu
 from services.checkin_service import ALLOWED_TIMEZONES
@@ -47,11 +49,15 @@ Expected calendar day at send time ({tz_name}): {expected_date}
 
 Rules:
 - clock_time: ONLY the large main TIME.IS clock, format HH:MM:SS. Ignore city times, GMT+8 misreads, bot reply lines.
-- clock_date: TIME.IS date under the big clock only. null if absent.
-  * 佛历 25xx年M月D日: Gregorian year = Buddhist_year - 543 (佛历2569年6月1日 → 2026-06-01).
+- clock_date: TIME.IS date line under the big clock only. Output YYYY-MM-DD or null.
+  * Read date as Chinese 「几月几日」: MUST be month (1-12) + day (1-31). Example: 6月4日 = June 4, NOT "648" or "48".
+  * OCR often glues 日 onto day: 「6月4日」→「6月48」(day>31→4); 「6月1日」→「6月18」(day ends with 8→1 when matches Expected day).
+  * Do NOT change a valid 「6月18日」 to June 1 unless OCR glue pattern and Expected calendar day confirm June 1.
+  * 佛历 25xx年M月D日: Gregorian year = Buddhist_year - 543 (佛历2569年6月4日 → 2026-06-04).
   * 公历 20xx年M月D日 → YYYY-MM-DD only when that exact pattern appears.
-  * Or explicit YYYY-MM-DD in OCR. Do NOT guess from unrelated digits.
-  * If matches Expected calendar day ({expected_date}), use that YYYY-MM-DD.
+  * Reject impossible day > 31; fix glued digits (48→4, 41→4) when clearly 几月几日 under TIME.IS clock.
+  * If OCR date matches Expected calendar day ({expected_date}), use that YYYY-MM-DD.
+  * Do NOT guess date from unrelated numbers (employee id, GMT+8, etc.).
 - display_name / username_hint: Slack popup only (often Y_UX_ handle), not holidays or cities
 - timezone_iana: e.g. Asia/Shanghai if hinted, else null
 - Do NOT invent values
@@ -161,6 +167,7 @@ async def extract_checkin_from_ocr_text_llm(
     ref_utc = reference_utc or datetime.now(timezone.utc)
     tz_name = shift_timezone if shift_timezone in ALLOWED_TIMEZONES else "Asia/Shanghai"
     ref_local = ref_utc.astimezone(ZoneInfo(tz_name)).strftime("%Y-%m-%d %H:%M:%S %Z")
+    expected_date = ref_utc.astimezone(ZoneInfo(tz_name)).strftime("%Y-%m-%d")
 
     root = _ollama_root(config.base_url)
     text_model = config.text_model.strip()
@@ -197,6 +204,11 @@ async def extract_checkin_from_ocr_text_llm(
     if not (ocr_text or "").strip():
         return None, CheckinAiExtractError("AI_TIME_NOT_FOUND", MSG_TIME_MISMATCH)
 
+    ocr_text = normalize_ocr_date_text(
+        normalize_ocr_dot_clocks(ocr_text),
+        expected_date=expected_date,
+    )
+
     inclusion_pick, skew_rejected = _clock_from_ocr_text(
         ocr_text,
         reference_utc=ref_utc,
@@ -204,7 +216,6 @@ async def extract_checkin_from_ocr_text_llm(
         max_skew_minutes=config.max_clock_skew_minutes,
     )
 
-    expected_date = ref_utc.astimezone(ZoneInfo(tz_name)).strftime("%Y-%m-%d")
     prompt = _OCR_TEXT_LLM_PROMPT.format(
         ocr_text=ocr_text[:8000],
         reference_utc=ref_utc.isoformat(),

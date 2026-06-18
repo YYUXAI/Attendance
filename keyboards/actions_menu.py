@@ -10,8 +10,8 @@ from repositories import registrations_repo
 MENU_TEXT = "请选择功能（使用输入框下方按钮；输入 / 可打开命令）："
 # 群聊：输入框下方常驻四键（ReplyKeyboard）提示文案
 GROUP_REPLY_MENU_TEXT = "功能菜单（底部按钮或 /start）"
-# 群聊单键 Inline（带 ↗ 填入模板）占位
-_GROUP_INLINE_HINT = "·"
+# 群聊单键 Inline（带 ↗ 填入模板）提示
+_GROUP_INLINE_HINT = "请点击下方按钮操作"
 
 
 def build_shift_web_app_url_for_admin(*, tg_id: int) -> str | None:

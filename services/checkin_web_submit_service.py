@@ -3,14 +3,17 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 from aiogram.types import BufferedInputFile
 
 from domain.shared.result import ServiceResult
+from repositories import clock_records_repo, employee_shift_config_repo, profile_repo
 from repositories.registrations_repo import get_by_tg_id
-from repositories.shifts_repo import get_by_id as get_shift_by_id
+from repositories.shifts_repo import list_all_shifts
 from services import checkin_ai_orchestrator, checkin_service
+from services.group_attendance_summary_service import _as_time
 
 log = logging.getLogger(__name__)
 
@@ -34,29 +37,56 @@ class CheckinWebSubmitResult:
     message: str
 
 
+def _resolve_attendance_group_id(*, reg) -> int | None:
+    if reg.registered_chat_id is not None:
+        return int(reg.registered_chat_id)
+    chat_id = clock_records_repo.get_latest_chat_id_for_employee(employee_id=str(reg.employee_id))
+    if chat_id is not None:
+        return chat_id
+    for shift in list_all_shifts():
+        if shift.attendance_group_id is not None:
+            return int(shift.attendance_group_id)
+    return None
+
+
 def build_context(*, tg_id: int, action: str) -> ServiceResult | CheckinWebContext:
     reg = get_by_tg_id(int(tg_id))
     if not reg:
         return ServiceResult(ok=False, message="请先完成注册", error_code="NOT_REGISTERED")
-    if reg.shift_id is None:
-        return ServiceResult(ok=False, message="尚未分配班次，请联系管理员", error_code="NOT_CONFIGURED")
-    shift = get_shift_by_id(int(reg.shift_id))
-    if not shift or shift.attendance_group_id is None:
+
+    group_id = _resolve_attendance_group_id(reg=reg)
+    if group_id is None:
         return ServiceResult(ok=False, message="考勤群未配置", error_code="NOT_CONFIGURED")
 
-    cin = shift.checkin_time
-    cout = shift.checkout_time
-    cin_s = cin.strftime("%H:%M") if hasattr(cin, "strftime") else str(cin)
-    cout_s = cout.strftime("%H:%M") if hasattr(cout, "strftime") else str(cout)
+    tz_name = "Asia/Shanghai"
+    ym = datetime.now(ZoneInfo(tz_name)).strftime("%Y-%m")
+    employee_shift_config_repo.ensure_table()
+    cfg = profile_repo.get_employee_shift_config_for_month(
+        employee_id=str(reg.employee_id),
+        year_month=ym,
+    )
+    if cfg:
+        rng = (cfg.shift_time_range or "").strip()
+        cin_t = _as_time(cfg.shift_checkin_time)
+        cout_t = _as_time(cfg.shift_checkout_time)
+        cin_s = cin_t.strftime("%H:%M")
+        cout_s = cout_t.strftime("%H:%M")
+        shift_time_range = rng if rng else f"{cin_s}~{cout_s}"
+    else:
+        return ServiceResult(
+            ok=False,
+            message="当月班表未配置，请管理员在班表 Web 中维护您的工号",
+            error_code="NOT_CONFIGURED",
+        )
 
     return CheckinWebContext(
         english_name=(reg.english_name or "").strip() or "未命名",
         employee_id=str(reg.employee_id),
         action=action,
-        shift_time_range=f"{cin_s}~{cout_s}",
+        shift_time_range=shift_time_range,
         shift_checkin=cin_s,
         shift_checkout=cout_s,
-        group_id=int(shift.attendance_group_id),
+        group_id=group_id,
     )
 
 

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import secrets
+from pathlib import Path
 from typing import Any, Optional
 
 from aiohttp import web
@@ -25,6 +26,8 @@ log = logging.getLogger(__name__)
 SEND_PATH = "/api/v1/group-checkin-csv/send"
 LEGACY_SEND_PATH = "/api/v1/daily-attendance-report/send"
 HEALTH_PATH = "/health"
+DOCS_DIR = Path(__file__).resolve().parents[1] / "docs"
+PHASE2_PRD_PATH = "/docs/phase2-prd-figma.html"
 
 
 def _extract_token(request: web.Request) -> str | None:
@@ -134,8 +137,16 @@ async def _handle_health(_request: web.Request) -> web.Response:
             "ok": True,
             "service": "group_checkin_csv",
             "send_path": SEND_PATH,
+            "phase2_prd": PHASE2_PRD_PATH,
         }
     )
+
+
+async def _handle_phase2_prd(_request: web.Request) -> web.Response:
+    path = DOCS_DIR / "phase2-prd-figma.html"
+    if not path.is_file():
+        raise web.HTTPNotFound(text="phase2-prd-figma.html not found")
+    return web.FileResponse(path)
 
 
 def create_app(*, bot: Bot) -> web.Application:
@@ -145,6 +156,7 @@ def create_app(*, bot: Bot) -> web.Application:
     app["bot"] = bot
     app["api_cfg"] = api_cfg
     app.router.add_get(HEALTH_PATH, _handle_health)
+    app.router.add_get(PHASE2_PRD_PATH, _handle_phase2_prd)
     for path in (SEND_PATH, LEGACY_SEND_PATH):
         app.router.add_get(path, _handle_send)
         app.router.add_post(path, _handle_send)

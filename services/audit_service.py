@@ -12,7 +12,6 @@ from domain.audit_notification_builder import (
     DepartmentGroupSummaryLine,
     LeaveLineDisplay,
     PersonDisplay,
-    build_shift_end_group_reminder_plain_text,
     build_shift_start_department_head_dm_html,
     build_shift_start_group_notice_html,
     build_shift_start_leader_dm_html,
@@ -32,6 +31,7 @@ from repositories import (
     registrations_repo,
     shifts_repo,
 )
+from services import group_attendance_summary_service
 from services.leave_calendar_utils import format_utc_in_shift_timezone
 
 log = logging.getLogger(__name__)
@@ -434,13 +434,65 @@ def _enqueue_audit_notice(
         )
 
 
+def _canonical_shift_id_for_attendance_group(*, attendance_group_id: int) -> Optional[int]:
+    """多班次共用同一考勤群时，开班群公告只由 shift_id 最小的一条班次产出。"""
+    rows = shifts_repo.list_by_attendance_group_id(attendance_group_id=int(attendance_group_id))
+    if not rows:
+        return None
+    return min(int(s.id) for s in rows)
+
+
+def _person_display_from_notice_person(
+    p: group_attendance_summary_service.ShiftStartNoticePerson,
+) -> PersonDisplay:
+    return PersonDisplay(english_name=p.english_name, tg_username=p.tg_username)
+
+
+def build_shift_start_group_notice_html_for_shift(
+    *,
+    shift_id: int,
+    work_date: Optional[date] = None,
+    now_utc: Optional[datetime] = None,
+) -> Optional[str]:
+    """组装 3003 开班考勤群公告 HTML（统计口径与当日导出一致）。"""
+    shift = shifts_repo.get_by_id(int(shift_id))
+    if not shift or shift.attendance_group_id is None:
+        return None
+    now = now_utc or datetime.now(timezone.utc)
+    wd = work_date or _work_date_for_now(now_utc=now, shift=shift)
+    chat_id = int(shift.attendance_group_id)
+    year_month = wd.strftime("%Y-%m")
+    buckets = group_attendance_summary_service.compute_shift_start_notice_buckets(
+        chat_id=chat_id,
+        target_date=wd,
+        shift_id=int(shift_id),
+    )
+    shift_label = group_attendance_summary_service.distinct_shift_labels_for_group(
+        chat_id=chat_id,
+        year_month=year_month,
+    )
+    if not shift_label:
+        shift_label = _shift_label(shift=shift)
+
+    return build_shift_start_group_notice_html(
+        work_date=wd,
+        shift_label=shift_label,
+        timezone_name=shift.timezone,
+        should_count=buckets.should_count,
+        checked_in=[_person_display_from_notice_person(p) for p in buckets.arrived],
+        on_leave=[_person_display_from_notice_person(p) for p in buckets.on_rest],
+        late=[_person_display_from_notice_person(p) for p in buckets.late],
+        absent=[_person_display_from_notice_person(p) for p in buckets.absent],
+    )
+
+
 def check_and_backfill_notifications_for_shift(*, shift_id: int, now_utc: Optional[datetime] = None) -> Dict[str, str]:
     """
     通知缺失检查与补建（只补建缺失，不处理发送失败重试）。
 
     当前一期必须真正落地：
-    - 3003 开班考勤群公告
-    - 3006 下班考勤群提醒
+    - 3003 开班考勤群公告（多班次共用群时仅 shift_id 最小者发送，当前为 shift 0）
+    - 3006 下班群提醒已关闭（业务不要求 23:30 下班提醒）
     并尝试实现 3004（若 leader->tg_id 链路可用）。
     3005 仅保留接口，不强行发送。
     """
@@ -456,148 +508,43 @@ def check_and_backfill_notifications_for_shift(*, shift_id: int, now_utc: Option
         audit_rules.as_time(shift.checkin_time),
         tzinfo=tz,
     )
-    checkout_center_local = _checkout_center_local(work_date=work_date, shift=shift, tz=tz)
-
     out: Dict[str, str] = {"status": "ok"}
 
-    # 3003：开班群公告（到达上班时间）
+    # 3003：开班群公告（到达上班时间；共用群时仅 canonical shift 发送）
     if shift.attendance_group_id is not None and _is_time_reached(now_utc=now, target_local=checkin_center_local):
         gid = int(shift.attendance_group_id)
-        if not notification_queue_repo.exists_audit_notice_by_business_key(
-            shift_id=shift_id,
+        canonical_shift_id = _canonical_shift_id_for_attendance_group(attendance_group_id=gid)
+        if canonical_shift_id is None or int(shift_id) != int(canonical_shift_id):
+            out["3003"] = "skip_not_canonical_shift"
+        elif notification_queue_repo.exists_audit_notice_by_business_key(
+            shift_id=int(canonical_shift_id),
             work_date=work_date,
             notify_tg_id=gid,
             template_id=TEMPLATE_AUDIT_SHIFT_START_GROUP_NOTICE,
         ):
-            regs = registrations_repo.list_by_shift_id(shift_id=shift_id)
-            should_count = len(regs)
-            dept_name = ""
-            leader_display_html = ""
-            # docs00：3003 中“部门负责人”必须使用 organizations.highest_responsible_employee_id（而非 leader_employee_id）。
-            # 若本班次涉及多个 organization：
-            # - highest 全相同：展示该最高负责人
-            # - highest 不同：明确展示“多个负责人（...）”，并打日志，禁止静默乱取
-            org_ids = sorted({int(r.organization_id) for r in regs if r.organization_id is not None})
-            if org_ids:
-                dept_name = organizations_repo.get_department_name_by_id(int(org_ids[0])) or ""
-                org_rows = organizations_repo.list_by_ids(organization_ids=org_ids)
-                highest_set = sorted(
-                    {str(o.highest_responsible_employee_id).strip() for o in org_rows if o.highest_responsible_employee_id}
-                )
-                if len(highest_set) == 1:
-                    head_eid = highest_set[0]
-                    head_reg = registrations_repo.get_by_employee_id(head_eid)
-                    if not head_reg:
-                        leader_display_html = "（负责人未注册）"
-                    else:
-                        leader_display_html = person_display_html(
-                            english_name=head_reg.english_name,
-                            tg_username=head_reg.tg_username,
-                            missing_name_fallback="（负责人未填英文名）",
-                        )
-                elif len(highest_set) >= 2:
-                    # 明确处理：展示多个负责人（对外展示按 english_name + 可点击规则）
-                    shown: list[str] = []
-                    for eid in highest_set:
-                        r0 = registrations_repo.get_by_employee_id(eid)
-                        if not r0:
-                            shown.append("（负责人未注册）")
-                        else:
-                            shown.append(
-                                person_display_html(
-                                    english_name=r0.english_name,
-                                    tg_username=r0.tg_username,
-                                    missing_name_fallback="（负责人未填英文名）",
-                                )
-                            )
-                    leader_display_html = "多个负责人（" + "，".join(shown) + "）"
-                    log.warning(
-                        "audit_notice 3003 multiple_highest_responsible shift_id=%s work_date=%s org_ids=%s highest_ids=%s",
-                        shift_id,
-                        work_date,
-                        org_ids,
-                        highest_set,
-                    )
-                else:
-                    leader_display_html = "未配置"
-
-            # 统计：按 CHECKIN 阶段即时判定（只用有效窗口与规则，不重建任务）
-            win = audit_rules.compute_checkin_window_utc(
-                target_work_date=work_date,
-                shift_checkin_time=shift.checkin_time,
-                timezone_name=shift.timezone,
-                attendance_flex_interval=shift.attendance_flex_interval,
-            )
-            checked_in: List[PersonDisplay] = []
-            on_leave: List[PersonDisplay] = []
-            late: List[PersonDisplay] = []
-            not_clocked: List[PersonDisplay] = []
-            for r in regs:
-                clocks = _clock_times_in_window(
-                    employee_id=r.employee_id,
-                    shift_id=int(shift.id),
-                    start_utc=win.start_utc,
-                    end_utc=win.end_utc,
-                )
-                is_leave = effective_leave_days_repo.exists_leave_day(
-                    employee_id=r.employee_id,
-                    shift_id=int(shift.id),
-                    leave_date=work_date,
-                )
-                # TEMP_LEAVE 覆盖判定时点：上班时刻
-                instant_utc = _stage_instant_for_leave_check_utc(work_date=work_date, shift=shift, stage=AUDIT_STAGE_CHECKIN)
-                is_temp = effective_temporary_leaves_repo.exists_covering_instant(
-                    employee_id=r.employee_id,
-                    shift_id=int(shift.id),
-                    instant_utc=instant_utc,
-                )
-                decision = audit_rules.decide_checkin(
-                    now_utc=now,
-                    target_work_date=work_date,
-                    shift_checkin_time=shift.checkin_time,
-                    timezone_name=shift.timezone,
-                    attendance_flex_interval=shift.attendance_flex_interval,
-                    max_late_early_tolerance=shift.max_late_early_tolerance,
-                    is_on_leave=is_leave,
-                    is_temporary_leave_covering=is_temp,
-                    is_exempt=False,
-                    window_clock_times_utc=clocks,
-                )
-                p = PersonDisplay(english_name=r.english_name or "", tg_username=r.tg_username)
-                if decision.result == audit_rules.AUDIT_RESULT_ON_LEAVE:
-                    on_leave.append(p)
-                elif decision.result == audit_rules.AUDIT_RESULT_LATE:
-                    late.append(p)
-                    checked_in.append(p)
-                elif decision.result == audit_rules.AUDIT_RESULT_NORMAL:
-                    checked_in.append(p)
-                elif decision.result in (audit_rules.AUDIT_RESULT_NONE, audit_rules.AUDIT_RESULT_ABSENT):
-                    # 未到最终结论时点（NONE）也归入“未打卡”，不得算迟到
-                    not_clocked.append(p)
-
-            reply = build_shift_start_group_notice_html(
+            out["3003"] = "exists"
+        else:
+            reply = build_shift_start_group_notice_html_for_shift(
+                shift_id=int(canonical_shift_id),
                 work_date=work_date,
-                department_name=dept_name,
-                shift_label=_shift_label(shift=shift),
-                timezone_name=shift.timezone,
-                leader_display_html=leader_display_html,
-                should_count=should_count,
-                checked_in=checked_in,
-                on_leave=on_leave,
-                late=late,
-                absent=not_clocked,
-            )
-            inserted = _enqueue_audit_notice(
-                template_id=TEMPLATE_AUDIT_SHIFT_START_GROUP_NOTICE,
-                notify_tg_id=gid,
-                shift_id=shift_id,
-                work_date=work_date,
-                reply_content=reply,
                 now_utc=now,
             )
-            out["3003"] = "enqueued" if inserted else "exists"
-        else:
-            out["3003"] = "exists"
+            if not reply:
+                out["3003"] = "skip_build_failed"
+            else:
+                inserted = _enqueue_audit_notice(
+                    template_id=TEMPLATE_AUDIT_SHIFT_START_GROUP_NOTICE,
+                    notify_tg_id=gid,
+                    shift_id=int(canonical_shift_id),
+                    work_date=work_date,
+                    reply_content=reply,
+                    now_utc=now,
+                )
+                out["3003"] = "enqueued" if inserted else "exists"
+    elif shift.attendance_group_id is not None and not _is_time_reached(
+        now_utc=now, target_local=checkin_center_local
+    ):
+        out["3003"] = "skip_not_time_reached_checkin"
 
     # 3004：组长私信（条件实现：leader_employee_id -> registrations.tg_id 链路当前可用）
     if not _is_time_reached(now_utc=now, target_local=checkin_center_local):
@@ -966,71 +913,8 @@ def check_and_backfill_notifications_for_shift(*, shift_id: int, now_utc: Option
         if blocked_heads:
             out["3005_blocked_heads"] = ",".join(blocked_heads[:50])
 
-    # 3006：下班群提醒（必须到达“下班时间”，而非有效打卡窗口 start）
-    if shift.attendance_group_id is None:
-        out["3006"] = "skip_no_attendance_group_id"
-        log.info(
-            "audit_notice template_id=%s shift_id=%s work_date=%s outcome=skip reason=%s",
-            TEMPLATE_AUDIT_SHIFT_END_GROUP_REMINDER_NOTICE,
-            shift_id,
-            work_date,
-            out["3006"],
-        )
-    elif not _is_time_reached(now_utc=now, target_local=checkout_center_local):
-        out["3006"] = "skip_not_time_reached_checkout"
-        log.info(
-            "audit_notice template_id=%s shift_id=%s work_date=%s notify_tg_id=%s outcome=skip reason=%s",
-            TEMPLATE_AUDIT_SHIFT_END_GROUP_REMINDER_NOTICE,
-            shift_id,
-            work_date,
-            int(shift.attendance_group_id),
-            out["3006"],
-        )
-    else:
-        gid = int(shift.attendance_group_id)
-        if not notification_queue_repo.exists_audit_notice_by_business_key(
-            shift_id=shift_id,
-            work_date=work_date,
-            notify_tg_id=gid,
-            template_id=TEMPLATE_AUDIT_SHIFT_END_GROUP_REMINDER_NOTICE,
-        ):
-            regs = registrations_repo.list_by_shift_id(shift_id=shift_id)
-            dept_name = ""
-            org_id = regs[0].organization_id if regs and regs[0].organization_id is not None else None
-            if org_id is not None:
-                dept_name = organizations_repo.get_department_name_by_id(int(org_id)) or ""
-            reply = build_shift_end_group_reminder_plain_text(
-                work_date=work_date,
-                department_name=dept_name,
-                shift_label=_shift_label(shift=shift),
-                timezone_name=shift.timezone,
-            )
-            inserted = _enqueue_audit_notice(
-                template_id=TEMPLATE_AUDIT_SHIFT_END_GROUP_REMINDER_NOTICE,
-                notify_tg_id=gid,
-                shift_id=shift_id,
-                work_date=work_date,
-                reply_content=reply,
-                now_utc=now,
-            )
-            out["3006"] = "enqueued" if inserted else "exists"
-            log.info(
-                "audit_notice template_id=%s shift_id=%s work_date=%s notify_tg_id=%s outcome=%s trigger=scheduled_checkout",
-                TEMPLATE_AUDIT_SHIFT_END_GROUP_REMINDER_NOTICE,
-                shift_id,
-                work_date,
-                gid,
-                out["3006"],
-            )
-        else:
-            out["3006"] = "exists"
-            log.info(
-                "audit_notice template_id=%s shift_id=%s work_date=%s notify_tg_id=%s outcome=exists_skip",
-                TEMPLATE_AUDIT_SHIFT_END_GROUP_REMINDER_NOTICE,
-                shift_id,
-                work_date,
-                gid,
-            )
+    # 3006：下班群提醒（已关闭，避免与 3003 在同一时刻重复刷屏）
+    out["3006"] = "disabled"
 
     return out
 

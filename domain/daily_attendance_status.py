@@ -29,9 +29,10 @@ def _evening_checkins_on_day(
     *,
     day: date,
     checkin: time,
+    checkout: time,
     tz: ZoneInfo,
 ) -> list[datetime]:
-    """跨夜班：当日 evening 段（本地时刻 >= 上班时间）的签到。"""
+    """跨夜班：当日 evening 段的签到。早到（上班时间前）也算有效签到。"""
     out: list[datetime] = []
     for p in punches:
         if p.action != ACTION_SIGN_IN:
@@ -39,7 +40,9 @@ def _evening_checkins_on_day(
         local = _local_dt(p.at, tz)
         if local.date() != day:
             continue
-        if local.timetz().replace(tzinfo=None) >= checkin:
+        t = local.timetz().replace(tzinfo=None)
+        # morning 段 (< checkout) 为昨班签退；checkout 之后到午夜均为本班 evening 签到窗口
+        if t >= checkout:
             out.append(p.at)
     return out
 
@@ -69,9 +72,10 @@ def had_evening_checkin_on_day(
     *,
     day: date,
     checkin: time,
+    checkout: time,
     tz: ZoneInfo,
 ) -> bool:
-    return bool(_evening_checkins_on_day(punches, day=day, checkin=checkin, tz=tz))
+    return bool(_evening_checkins_on_day(punches, day=day, checkin=checkin, checkout=checkout, tz=tz))
 
 
 def evaluate_calendar_day_status(
@@ -87,9 +91,9 @@ def evaluate_calendar_day_status(
     """
     按「日历日」判定考勤状态与展示用的上/下班打卡时刻。
 
-    跨夜班（如 18:00–次日 03:00）：
-    - 班次开始日：只要求打「上班卡」（ evening 签到），缺下班卡不算缺卡。
-    - 次日起及以后每个工作日：早上打「上一班下班卡」+  evening 「本班上班卡」。
+    跨夜班（如 21:00–次日 09:00）：
+    - 班次开始日：只要求打「上班卡」（evening 签到）；checkout 之后至当日结束的签到均有效，早到不算缺卡。
+    - 次日起及以后每个工作日：早上打「上一班下班卡」+ evening 「本班上班卡」。
     - 仅当昨日 evening 有签到时，才要求今日 morning 签退。
 
     非跨夜班：当日需签到+签退，与班次时间比迟到/早退。
@@ -136,11 +140,14 @@ def evaluate_calendar_day_status(
             punches_yesterday,
             day=prev_day,
             checkin=checkin,
+            checkout=checkout,
             tz=tz,
         )
     )
 
-    evening_ins = _evening_checkins_on_day(punches_today, day=day, checkin=checkin, tz=tz)
+    evening_ins = _evening_checkins_on_day(
+        punches_today, day=day, checkin=checkin, checkout=checkout, tz=tz
+    )
     morning_outs = _morning_checkouts_on_day(punches_today, day=day, checkin=checkin, tz=tz)
     today_checkin = min(evening_ins) if evening_ins else None
     prev_checkout = max(morning_outs) if morning_outs else None

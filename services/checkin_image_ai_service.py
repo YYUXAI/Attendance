@@ -237,9 +237,9 @@ def _sanitize_field(value: str | None, *, field: str) -> Optional[str]:
                 return None
 
     if field == "clock_time":
-        if not re.match(r"^\d{1,2}:\d{2}(:\d{2})?$", s):
-            tm = re.search(r"\b(\d{1,2}:\d{2}:\d{2})\b", s)
-            return tm.group(1) if tm else None
+        from services.checkin_clock_time_service import normalize_clock_time_text
+
+        return normalize_clock_time_text(s)
 
     if field == "clock_date" and not re.match(r"^20\d{2}-\d{1,2}-\d{1,2}$", s):
         dm = re.search(r"\b(20\d{2}-\d{1,2}-\d{1,2})\b", s)
@@ -1048,6 +1048,20 @@ async def _call_openai_vision(
 
 
 _CLOCK_IN_TEXT_RE = re.compile(r"(?<![0-9])(\d{1,2}):(\d{2})(?::(\d{2}))?(?![0-9])")
+# EasyOCR 常把 TIME.IS 大钟读成 13.29 / 13.31（点号），规范为冒号后再抽时间
+_CLOCK_DOT_AS_TIME_RE = re.compile(r"(?<![0-9])(\d{1,2})\.(\d{2})(?![0-9\.])")
+
+
+def normalize_ocr_dot_clocks(text: str) -> str:
+    """将 OCR 误读的 HH.MM 转为 HH:MM，便于后续正则与 LLM 解析。"""
+
+    def _repl(m: re.Match[str]) -> str:
+        h, mi = int(m.group(1)), int(m.group(2))
+        if h > 23 or mi > 59:
+            return m.group(0)
+        return f"{h:02d}:{mi:02d}"
+
+    return _CLOCK_DOT_AS_TIME_RE.sub(_repl, text or "")
 _NORMALIZED_BBOX_RE = re.compile(
     r"\[\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*\]"
 )
@@ -1065,7 +1079,7 @@ def _strip_bot_reply_text(text: str) -> str:
 
 def _clock_candidates_from_text(text: str) -> list[tuple[str, bool]]:
     """从文本收集全部 HH:MM(:SS) 候选；has_sec 表示模型明确给出了秒。"""
-    text = _strip_bot_reply_text(text)
+    text = normalize_ocr_dot_clocks(_strip_bot_reply_text(text))
     found: list[tuple[str, bool]] = []
     seen: set[str] = set()
     for line in re.split(r"[\r\n]+", text):
@@ -1118,8 +1132,8 @@ def _is_prompt_echo_clock(clock_str: str) -> bool:
 
 
 def _clock_inclusion_skew_limit(max_skew_minutes: int) -> int:
-    """多时钟候选时：与当前时间相差不超过 1 小时即认可。"""
-    return min(max(1, max_skew_minutes), 60)
+    """多时钟候选时：与当前时间相差不超过 max_skew_minutes 即认可。"""
+    return max(1, max_skew_minutes)
 
 
 def _detect_clock_timezone_hint(text: str) -> Optional[str]:
@@ -1271,7 +1285,7 @@ def _pick_clock_by_inclusion(
         skew = _minutes_from_reference(
             clock_str=clock, reference_utc=reference_utc, tz_name=tz_name
         )
-        # OCR/时区换算存在秒级抖动，给 60 分钟边界留少量容差。
+        # OCR/时区换算存在秒级抖动，给边界留少量容差。
         if skew <= (window + 0.5):
             pool.append((skew, 0 if has_sec else 1, clock))
         else:
@@ -2221,9 +2235,28 @@ async def extract_checkin_from_image(
     expected_english_name: str | None = None,
     reference_utc: datetime | None = None,
     shift_timezone: str = "Asia/Shanghai",
+    tg_id: int | None = None,
 ) -> tuple[Optional[CheckinImageExtraction], Optional[CheckinAiExtractError]]:
     if not image_bytes:
         return None, CheckinAiExtractError("AI_EMPTY_IMAGE", "打卡失败，图片为空")
+
+    if config.zhipu:
+        from services.checkin_zhipu_vision_service import extract_checkin_from_zhipu_vision
+
+        log.info(
+            "checkin_ai: extract_backend=zhipu model=%s base=%s",
+            config.model,
+            config.base_url,
+        )
+        return await extract_checkin_from_zhipu_vision(
+            image_bytes=image_bytes,
+            config=config,
+            expected_tg_username=expected_tg_username,
+            expected_english_name=expected_english_name,
+            reference_utc=reference_utc,
+            shift_timezone=shift_timezone,
+            tg_id=tg_id,
+        )
 
     prepared = _prepare_image_bytes(image_bytes)
     prepared_digest = _image_digest(prepared)

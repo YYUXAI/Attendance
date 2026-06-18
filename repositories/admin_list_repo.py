@@ -23,6 +23,24 @@ def is_admin_by_tg_id(*, tg_id: int) -> bool:
     return bool(row and row[0])
 
 
+def grant_admin_all_registered() -> tuple[int, int]:
+    """将全部已注册工号写入 admin_list；不改运行时判定逻辑。"""
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO public.admin_list (admin_employee_id)
+            SELECT r.employee_id
+            FROM public.registrations r
+            ON CONFLICT (admin_employee_id) DO NOTHING
+            RETURNING id
+            """
+        )
+        inserted = len(cur.fetchall() or [])
+        cur.execute("SELECT COUNT(*) FROM public.admin_list")
+        total = int((cur.fetchone() or (0,))[0])
+    return inserted, total
+
+
 def grant_admin_by_employee_id(*, employee_id: str) -> bool:
     """将工号加入 admin_list；已存在则跳过。返回是否新插入。"""
     eid = str(employee_id).strip()

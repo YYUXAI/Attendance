@@ -23,7 +23,7 @@ from repositories import (
     registrations_repo,
     temporary_leave_records_repo,
 )
-from services import checkin_service, group_attendance_summary_service
+from services import attendance_export_service, checkin_service
 
 router = Router()
 log = logging.getLogger(__name__)
@@ -39,6 +39,15 @@ _ACTION_CB = {
 
 def _require_user(message: Message):
     return message.from_user
+
+
+def _reason_from_leave_message(text: str | None) -> str:
+    """从离岗/返岗模板正文提取「原因：」后用户填写内容。"""
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if s.startswith("原因：") or s.startswith("原因:"):
+            return s.split("：", 1)[-1].split(":", 1)[-1].strip()[:500]
+    return (text or "").strip()[:500]
 
 
 def _format_leave_duration_minutes(mins: int) -> str:
@@ -99,7 +108,7 @@ async def parse_leave_sent(message: Message) -> None:
         tg_id=int(user.id),
         chat_id=int(message.chat.id),
         leave_at_utc=datetime.now(timezone.utc),
-        reason=(message.text or "")[:500],
+        reason=_reason_from_leave_message(message.text),
     )
     log.info(
         "[LEAVE_RECORD] action=leave id=%s tg_id=%s chat_id=%s employee_id=%s",
@@ -159,7 +168,7 @@ async def parse_back_sent(message: Message) -> None:
 
 async def _open_shift_web_app(*, message: Message, tg_id: int) -> None:
     if message.chat.type != "private":
-        await message.reply("班次配置仅支持私聊中使用，请私聊机器人后点「班次」。")
+        await message.reply("班表配置仅支持私聊中使用，请私聊机器人后点「班表」。")
         return
     if not admin_list_repo.is_admin_by_tg_id(tg_id=tg_id):
         await message.reply("无权限操作")
@@ -167,17 +176,17 @@ async def _open_shift_web_app(*, message: Message, tg_id: int) -> None:
     url = build_shift_web_app_url_for_admin(tg_id=tg_id)
     if not url:
         await message.reply(
-            "班次 Web 未配置：请在 .env 设置 SHIFT_WEB_APP_PUBLIC_URL\n"
+            "班表 Web 未配置：请在 .env 设置 SHIFT_WEB_APP_PUBLIC_URL\n"
             "（须为 Telegram 可访问的 HTTPS 地址）"
         )
         return
     await message.reply(
-        "请点下方「打开班次配置」进入编辑页：",
+        "请点下方「打开班表配置」进入编辑页：",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="打开班次配置",
+                        text="打开班表配置",
                         web_app=WebAppInfo(url=url),
                     )
                 ]
@@ -186,7 +195,7 @@ async def _open_shift_web_app(*, message: Message, tg_id: int) -> None:
     )
 
 
-@router.message(F.text == "班次")
+@router.message(F.text.in_({"班表", "班次"}))
 async def open_shift_web_app_message(message: Message) -> None:
     user = _require_user(message)
     if not user or message.chat.type != "private":
@@ -196,7 +205,7 @@ async def open_shift_web_app_message(message: Message) -> None:
 
 @router.callback_query(F.data == "act:shift")
 async def open_shift_web_app_callback(callback: CallbackQuery) -> None:
-    """消息内 callback「班次」兜底。"""
+    """消息内 callback「班表」兜底。"""
     await callback.answer()
     if callback.message is None:
         return
@@ -206,18 +215,47 @@ async def open_shift_web_app_callback(callback: CallbackQuery) -> None:
     )
 
 
+def _export_range_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="今日", callback_data="act:export:today"),
+                InlineKeyboardButton(text="本周", callback_data="act:export:week"),
+                InlineKeyboardButton(text="本月", callback_data="act:export:month"),
+            ],
+            [
+                InlineKeyboardButton(text="昨天", callback_data="act:export:yesterday"),
+                InlineKeyboardButton(text="上周", callback_data="act:export:last_week"),
+                InlineKeyboardButton(text="上月", callback_data="act:export:last_month"),
+            ],
+        ]
+    )
+
+
+async def _prompt_export_range(*, message: Message, tg_id: int) -> None:
+    if message.chat.type != "private":
+        await message.reply("导出仅支持私聊中使用。")
+        return
+    if not admin_list_repo.is_admin_by_tg_id(tg_id=tg_id):
+        await message.reply("无权限操作")
+        return
+    await message.reply("请选择导出范围：", reply_markup=_export_range_keyboard())
+
+
 @router.message(F.text == "导出")
 async def export_today_message(message: Message) -> None:
     user = _require_user(message)
     if not user:
         return
-    if message.chat.type != "private":
-        await message.reply("导出仅支持私聊中使用。")
-        return
-    await _export_today(message=message, tg_id=int(user.id))
+    await _prompt_export_range(message=message, tg_id=int(user.id))
 
 
-async def _export_today(*, message: Message, tg_id: int) -> None:
+async def _run_export(
+    *,
+    message: Message,
+    tg_id: int,
+    kind: attendance_export_service.ExportRangeKind,
+) -> None:
     if message.chat.type != "private":
         await message.reply("导出仅支持私聊中使用。")
         return
@@ -225,34 +263,54 @@ async def _export_today(*, message: Message, tg_id: int) -> None:
         await message.reply("无权限操作")
         return
     cfg = load_daily_report_config()
-    today = datetime.now(ZoneInfo(cfg.timezone_name)).date()
-    group_ids = group_attendance_summary_service.list_attendance_group_ids()
-    log.info("export_today: start tg_id=%s date=%s groups=%s", tg_id, today, len(group_ids))
-    status_msg = await message.reply(f"正在生成 {today.isoformat()} 考勤导出，请稍候…")
+    today = attendance_export_service.today_in_tz(tz_name=cfg.timezone_name)
+    start, end, range_label = attendance_export_service.resolve_export_date_range(
+        kind=kind,
+        today=today,
+    )
+    log.info(
+        "export: start tg_id=%s kind=%s range=%s..%s",
+        tg_id,
+        kind,
+        start,
+        end,
+    )
+    status_msg = await message.reply(
+        f"正在生成{range_label}考勤导出（{start.isoformat()}～{end.isoformat()}），请稍候…"
+    )
+    bot = message.bot
     try:
-        all_rows = []
-        for gid in group_ids:
-            gname = group_attendance_summary_service.fallback_group_display_name_from_db(
-                chat_id=int(gid)
-            )
-            all_rows.extend(
-                group_attendance_summary_service.build_rows_for_group(
-                    chat_id=int(gid),
-                    target_date=today,
-                    group_name=gname,
-                )
-            )
-        body = group_attendance_summary_service.encode_csv(rows=all_rows)
-        doc = BufferedInputFile(
-            file=body, filename=f"all_groups_attendance_{today.isoformat()}.csv"
+        all_rows = await attendance_export_service.collect_rows_for_range(
+            start=start,
+            end=end,
+            bot=bot,
         )
+        pivot, overview, dates = attendance_export_service.build_pivot_and_overview(
+            rows=all_rows,
+            start=start,
+            end=end,
+        )
+        body = attendance_export_service.encode_attendance_export_xlsx(
+            pivot=pivot,
+            dates=dates,
+            overview=overview,
+            range_label=range_label,
+        )
+        fname = attendance_export_service.export_filename(start=start, end=end)
+        doc = BufferedInputFile(file=body, filename=fname)
         await message.reply_document(
             document=doc,
-            caption=f"全局当日打卡导出（{len(all_rows)} 人）",
+            caption=f"{range_label}考勤导出（{overview.expected_count} 人）",
         )
-        log.info("export_today: ok tg_id=%s rows=%s", tg_id, len(all_rows))
+        log.info(
+            "export: ok tg_id=%s kind=%s people=%s days=%s",
+            tg_id,
+            kind,
+            overview.expected_count,
+            len(dates),
+        )
     except Exception:
-        log.exception("export_today: failed tg_id=%s", tg_id)
+        log.exception("export: failed tg_id=%s kind=%s", tg_id, kind)
         await message.reply("导出失败，请稍后重试或联系管理员查看服务日志。")
     finally:
         try:
@@ -266,7 +324,40 @@ async def export_today_callback(callback: CallbackQuery) -> None:
     await callback.answer()
     if callback.message is None:
         return
-    await _export_today(message=callback.message, tg_id=int(callback.from_user.id))
+    await _prompt_export_range(message=callback.message, tg_id=int(callback.from_user.id))
+
+
+_EXPORT_KIND_CALLBACKS = frozenset(
+    {
+        "act:export:today",
+        "act:export:yesterday",
+        "act:export:week",
+        "act:export:last_week",
+        "act:export:month",
+        "act:export:last_month",
+    }
+)
+
+
+@router.callback_query(F.data.in_(_EXPORT_KIND_CALLBACKS))
+async def export_range_callback(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if callback.message is None:
+        return
+    kind_map = {
+        "act:export:today": "today",
+        "act:export:yesterday": "yesterday",
+        "act:export:week": "week",
+        "act:export:last_week": "last_week",
+        "act:export:month": "month",
+        "act:export:last_month": "last_month",
+    }
+    kind = kind_map.get(str(callback.data or ""), "today")
+    await _run_export(
+        message=callback.message,
+        tg_id=int(callback.from_user.id),
+        kind=kind,  # type: ignore[arg-type]
+    )
 
 
 @router.callback_query(F.data == "act:switch_group")

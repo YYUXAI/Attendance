@@ -118,6 +118,24 @@
 
     .status { margin: 8px 0; font-size: 13px; }
 
+    .search-bar {
+
+      display: flex; align-items: center; gap: 8px;
+
+      margin: 0 0 10px;
+
+    }
+
+    .search-bar input {
+
+      flex: 1; border: 1px solid rgba(36, 129, 204, 0.45);
+
+      border-radius: 8px; padding: 8px 10px; font-size: 14px;
+
+      background: var(--bg); color: var(--text);
+
+    }
+
     .err { color: #c00; }
 
     .ok { color: #080; }
@@ -146,6 +164,8 @@
 
     .modal-card h2 { font-size: 16px; margin: 0 0 14px; text-align: center; }
 
+    .confirm-msg { font-size: 14px; margin: 0 0 16px; text-align: center; line-height: 1.5; }
+
     .import-line {
 
       display: flex; align-items: center; gap: 8px;
@@ -160,9 +180,13 @@
 
       border: none; background: transparent; cursor: pointer;
 
-      font-size: 22px; padding: 4px; line-height: 1;
+      padding: 2px; line-height: 0;
+
+      display: inline-flex; align-items: center; justify-content: center;
 
     }
+
+    .icon-btn img { width: 28px; height: 28px; display: block; }
 
     .link-btn {
 
@@ -193,6 +217,12 @@
   <h1>班次配置（全局）</h1>
 
   <div class="meta" id="ymLabel">月份：—</div>
+
+  <div class="search-bar">
+
+    <input type="text" id="searchInput" placeholder="搜索工号或英文名（仅字母数字）" autocomplete="off" inputmode="latin" />
+
+  </div>
 
   <div class="status" id="status">加载中…</div>
 
@@ -250,7 +280,11 @@
 
         <span class="label">下载导入模板（发到私聊）：</span>
 
-        <button type="button" class="icon-btn" id="btnTemplate" title="将 CSV 模板发到与机器人的私聊">⬇️</button>
+        <button type="button" class="icon-btn" id="btnTemplate" title="将 CSV 模板发到与机器人的私聊">
+
+          <img src="icons/download.png" alt="下载模板" width="28" height="28" />
+
+        </button>
 
       </div>
 
@@ -258,7 +292,11 @@
 
         <span class="label">批量导入/上传：</span>
 
-        <button type="button" class="icon-btn" id="btnPickFile" title="选择文件">📤</button>
+        <button type="button" class="icon-btn" id="btnPickFile" title="选择文件">
+
+          <img src="icons/upload.png" alt="选择文件" width="28" height="28" />
+
+        </button>
 
         <button type="button" class="link-btn" id="btnPickFileLink">选择文件</button>
 
@@ -266,13 +304,35 @@
 
       <div class="file-name" id="fileName">未选择文件</div>
 
-      <input type="file" id="fileInput" class="hidden" accept=".xlsx,.xls,.csv" />
+      <input type="file" id="fileInput" class="hidden" accept=".csv,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
 
       <div class="modal-actions">
 
         <button type="button" class="btn-outline" id="btnImportCancel">取消操作</button>
 
         <button type="button" class="btn-primary" id="btnImportConfirm">确认上传</button>
+
+      </div>
+
+    </div>
+
+  </div>
+
+
+
+  <div class="modal-backdrop" id="confirmModal" aria-hidden="true">
+
+    <div class="modal-card">
+
+      <h2 id="confirmTitle">温馨提示</h2>
+
+      <p class="confirm-msg" id="confirmMessage"></p>
+
+      <div class="modal-actions">
+
+        <button type="button" class="btn-outline" id="confirmCancel">取消</button>
+
+        <button type="button" class="btn-primary" id="confirmOk">确认</button>
 
       </div>
 
@@ -320,6 +380,8 @@
 
     let rows = [];
 
+    let searchQuery = '';
+
     let editMode = false;
 
     let dirty = false;
@@ -333,6 +395,70 @@
 
 
     const FIELDS = ['employee_id', 'english_name', 'shift_time_range', 'shift_checkin_time', 'shift_checkout_time', 'monthly_rest_days'];
+
+    const ALLOWED_IMPORT_EXT = ['csv', 'xlsx', 'xls'];
+
+    let confirmResolve = null;
+
+
+
+    function showUserAlert(msg) {
+
+      if (tg?.showAlert) tg.showAlert(msg);
+
+      else alert(msg);
+
+    }
+
+
+
+    function isAllowedImportFile(file) {
+
+      if (!file || !file.name) return false;
+
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+
+      return ALLOWED_IMPORT_EXT.includes(ext);
+
+    }
+
+
+
+    function showConfirm({ title = '温馨提示', message, okText = '确认', cancelText = '取消' }) {
+
+      return new Promise((resolve) => {
+
+        confirmResolve = resolve;
+
+        document.getElementById('confirmTitle').textContent = title;
+
+        document.getElementById('confirmMessage').textContent = message;
+
+        document.getElementById('confirmOk').textContent = okText;
+
+        document.getElementById('confirmCancel').textContent = cancelText;
+
+        document.getElementById('confirmModal').classList.add('open');
+
+        document.getElementById('confirmModal').setAttribute('aria-hidden', 'false');
+
+      });
+
+    }
+
+
+
+    function closeConfirm(result) {
+
+      document.getElementById('confirmModal').classList.remove('open');
+
+      document.getElementById('confirmModal').setAttribute('aria-hidden', 'true');
+
+      if (confirmResolve) confirmResolve(!!result);
+
+      confirmResolve = null;
+
+    }
 
 
 
@@ -520,6 +646,36 @@
 
 
 
+    function normalizeSearchInput(raw) {
+
+      return String(raw || '').replace(/[^a-zA-Z0-9]/g, '');
+
+    }
+
+
+
+    function rowMatchesSearch(r) {
+
+      const q = normalizeSearchInput(searchQuery).toLowerCase();
+
+      if (!q) return true;
+
+      const blob = FIELDS.map(f => String(r[f] || '')).join('').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+      return blob.includes(q);
+
+    }
+
+
+
+    function visibleRows() {
+
+      return rows.filter(rowMatchesSearch);
+
+    }
+
+
+
     function render() {
 
       const tb = document.getElementById('tbody');
@@ -532,9 +688,13 @@
 
       if (editMode) ensureNewRowAtBottom();
 
+      const list = visibleRows();
 
 
-      rows.forEach((r, i) => {
+
+      list.forEach((r, i) => {
+
+        const rowIndex = rows.indexOf(r);
 
         const tr = document.createElement('tr');
 
@@ -558,9 +718,13 @@
 
           btn.title = '删除该行';
 
-          btn.addEventListener('click', () => {
+          btn.addEventListener('click', async () => {
 
-            rows.splice(i, 1);
+            const ok = await showConfirm({ message: '确认删除此员工班次信息吗？' });
+
+            if (!ok) return;
+
+            rows.splice(rowIndex, 1);
 
             dirty = true;
 
@@ -590,13 +754,13 @@
 
           inp.addEventListener('input', () => {
 
-            rows[i][f] = inp.value;
+            rows[rowIndex][f] = inp.value;
 
             dirty = true;
 
             if (r._isNew && f === 'employee_id' && inp.value.trim()) {
 
-              const hasAnotherNew = rows.some((x, j) => j !== i && x._isNew && rowIsEmpty(x));
+              const hasAnotherNew = rows.some((x, j) => j !== rowIndex && x._isNew && rowIsEmpty(x));
 
               if (!hasAnotherNew) rows.push(emptyRow());
 
@@ -717,7 +881,9 @@
 
       if (!payload.length) {
 
-        if (!confirm('将清空本月全部班次配置，确认？')) return false;
+        const ok = await showConfirm({ message: '将清空本月全部班次配置，确认保存吗？' });
+
+        if (!ok) return false;
 
       }
 
@@ -747,9 +913,7 @@
 
       await load();
 
-      if (tg?.showAlert) tg.showAlert('已保存 ' + (data.saved || 0) + ' 条');
-
-      else alert('已保存 ' + (data.saved || 0) + ' 条');
+      showUserAlert('保存成功');
 
       return true;
 
@@ -789,7 +953,9 @@
 
       if (dirty) {
 
-        if (!confirm('保存当前表格修改到数据库？')) {
+        const ok = await showConfirm({ message: '确认保存修改吗？' });
+
+        if (!ok) {
 
           await load();
 
@@ -799,9 +965,9 @@
 
         }
 
-        const ok = await saveTable();
+        const saved = await saveTable();
 
-        if (!ok) return;
+        if (!saved) return;
 
       }
 
@@ -859,7 +1025,7 @@
 
     function buildTemplateCsvText(ym) {
 
-      const row = [ym, '17025', 'Brucewillis', '13:00~22:00', '13:00', '22:00', '1,2,3'];
+      const row = [ym, '17025', 'Brucewillis', '13:00~22:00', '13:00', '22:00', '1,2,3,4'];
 
       return '\ufeff' + [
 
@@ -1123,9 +1289,33 @@
 
 
 
+    function resetFileSelection() {
+
+      stagedImportRows = null;
+
+      stagedFileName = '';
+
+      document.getElementById('fileName').textContent = '未选择文件';
+
+      document.getElementById('fileInput').value = '';
+
+    }
+
+
+
     async function onFileSelected(file) {
 
       if (!file) return;
+
+      if (!isAllowedImportFile(file)) {
+
+        resetFileSelection();
+
+        showUserAlert('仅支持 CSV、xlsx、Excel 格式文件上传');
+
+        return;
+
+      }
 
       stagedFileName = file.name;
 
@@ -1151,9 +1341,9 @@
 
         } else {
 
-          setStatus('仅支持 .xlsx / .xls / .csv', true);
+          resetFileSelection();
 
-          stagedImportRows = null;
+          showUserAlert('仅支持 CSV、xlsx、Excel 格式文件上传');
 
           return;
 
@@ -1179,9 +1369,17 @@
 
     async function confirmImport() {
 
+      if (stagedFileName && !isAllowedImportFile({ name: stagedFileName })) {
+
+        showUserAlert('仅支持 CSV、xlsx、Excel 格式文件上传');
+
+        return;
+
+      }
+
       if (!stagedImportRows || !stagedImportRows.length) {
 
-        setStatus('请先选择 .xlsx / .xls / .csv 文件', true);
+        setStatus('请先选择 CSV、xlsx 或 Excel 文件', true);
 
         return;
 
@@ -1249,6 +1447,18 @@
 
     document.getElementById('btnEdit').addEventListener('click', toggleEdit);
 
+    document.getElementById('searchInput').addEventListener('input', (e) => {
+
+      const cleaned = normalizeSearchInput(e.target.value);
+
+      if (e.target.value !== cleaned) e.target.value = cleaned;
+
+      searchQuery = cleaned;
+
+      render();
+
+    });
+
     document.getElementById('btnUpload').addEventListener('click', openImportModal);
 
     document.getElementById('btnTemplate').addEventListener('click', downloadTemplate);
@@ -1272,6 +1482,16 @@
     document.getElementById('importModal').addEventListener('click', (e) => {
 
       if (e.target.id === 'importModal') closeImportModal();
+
+    });
+
+    document.getElementById('confirmOk').addEventListener('click', () => closeConfirm(true));
+
+    document.getElementById('confirmCancel').addEventListener('click', () => closeConfirm(false));
+
+    document.getElementById('confirmModal').addEventListener('click', (e) => {
+
+      if (e.target.id === 'confirmModal') closeConfirm(false);
 
     });
 

@@ -1,37 +1,37 @@
 ============================================================
 打卡识别复现对比
 ============================================================
-来源: telegram:AgACAgUAAyEFAAS-vNSdAAIB…
-raw_sha256=5c85db001d25e21f  prepared_sha256=93b56ba9d639cc32
-尺寸: 1280x463  bytes=43508
-配置: backend=ocr_text_llm name_verify=ocr clock_fallback=False skew_max=60m
+来源: local:/Users/t-74306/.cursor/projects/Users-t-74306-Downloads-Telegram-Desktop/assets/image-16ec7688-dc3b-4bad-8d09-a7ee3e8d6c89.png
+raw_sha256=cece1afe85569b6d  prepared_sha256=ac9bc1cf751ab902
+尺寸: 1024x368  bytes=45193
+配置: backend=zhipu name_verify=vision clock_fallback=False skew_max=30m
 登记用户: tg=1302377984 username=benrenxing
 期望: user=benrenxing clock≈20:31:04
 
 --- 裁切区 ---
-  full: 42KB
-  name: 26KB
-  name_panel: 22KB
-  name_panel_bottom: 23KB
-  name_panel_overlay: 18KB
-  name_panel_row: 15KB
-  name_panel_tight: 8KB
-  time: 21KB
+  full: 39KB
+  name: 18KB
+  name_panel: 14KB
+  name_panel_bottom: 16KB
+  name_panel_overlay: 8KB
+  name_panel_row: 9KB
+  name_panel_tight: 11KB
+  time: 23KB
   time_center: 13KB
-  time_clock: 31KB
-  time_digits: 17KB
-  time_main: 21KB
-  time_panel: 21KB
-  time_top: 29KB
+  time_clock: 24KB
+  time_digits: 12KB
+  time_main: 20KB
+  time_panel: 26KB
+  time_top: 26KB
 
 --- 姓名 OCR 分步 ---
   [name_panel_overlay] avail=True hint=None raw=''
-  [name_panel_bottom] avail=True hint='benrenxing' raw='2026年5/\nB\nonstitution Day / International\nAgainst 卜\n太阳:\n个\n04:56\n1\n19:25 (14时29分)'
-  [name_panel_row] avail=True hint='benrenxing' raw='@\n@\nB\nInternational Day Against 卜\n4:56\n1\n19:25 (14时29分)\n更多\nbenrenxing\nSet Emoji '
-  [name_panel_tight] avail=True hint='benrenxing' raw='5/\n8\nISt 卜\n更多\nbenrenxing\nSet Emoji Status\n2.7\nbenrenxine 5/\n8\nISt |\n更多\nbenrenxin'
-  [name_panel] avail=True hint='benrenxing' raw='2026年5/\nB\ntion\n/ International\nAgainst 卜\n太阳:\n04:56\n19:25 (14时29分) -更多\nbenrenxing'
-  [hunt_parallel] hint='benrenxing' raw='2026年5/\nB\nonstitution Day / International\nAgainst 卜\n太阳:\n个\n04:56\n1\n19:25 (14时29分)'
-  [thorough] hint='benrenxing'
+  [name_panel_bottom] avail=True hint=None raw=''
+  [name_panel_row] avail=True hint=None raw=''
+  [name_panel_tight] avail=True hint=None raw=''
+  [name_panel] avail=True hint=None raw=''
+  [hunt_parallel] hint=None raw=''
+  [thorough] hint=None
 
 --- 时间 OCR 分步 ---
   [time_main] clock=None skew_min=None accept=False
@@ -39,14 +39,14 @@ raw_sha256=5c85db001d25e21f  prepared_sha256=93b56ba9d639cc32
   [time_clock] clock=None skew_min=None accept=False
   [time_panel] clock=None skew_min=None accept=False
   [time_top] clock=None skew_min=None accept=False
-  [ocr_clock_from_regions] => ('19:25:00', False)
+  [ocr_clock_from_regions] => (None, True)
 
 --- 完整 extract_checkin_from_image ---
-  OK (25.1s) user='benrenxing' clock='19:25:00' date='2053-05-31'
+  OK (5.1s) user='y_ux_rapunzelli' clock='02:04:01' date='2026-06-17'
 
 --- validate_extraction_for_checkin ---
-  validate FAIL [AI_DATE_MISMATCH] 打卡失败：日期不一致。
+  validate FAIL [AI_USER_OTHER_PERSON] 打卡失败：姓名不一致。
 
 --- 与期望对比 ---
-  姓名: 期望=benrenxing 实际='benrenxing'  OK
-  时间: 期望=20:31:04 实际='19:25:00'  MISMATCH
+  姓名: 期望=benrenxing 实际='y_ux_rapunzelli'  MISMATCH
+  时间: 期望=20:31:04 实际='02:04:01'  MISMATCH

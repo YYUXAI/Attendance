@@ -5,12 +5,15 @@ import logging
 from aiogram import Bot, F, Router
 from aiogram.types import Message
 
-from domain.clock_matter import parse_matter_from_text
+from domain.clock_matter import (
+    parse_employee_id_from_text,
+    parse_english_name_from_text,
+    parse_matter_from_text,
+    validate_caption_identity_for_sender,
+)
 from services import checkin_ai_orchestrator, checkin_service
 from services.checkin_recognition_log import log_checkin_recognition
-from services.checkin_wrong_group_reply import reply_wrong_group_hint
-
-
+from services.checkin_user_message import user_message_for_checkin_error
 router = Router()
 log = logging.getLogger(__name__)
 
@@ -53,10 +56,7 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
     )
 
     if not isinstance(prepared, tuple):
-        if prepared.error_code == "WRONG_GROUP":
-            await reply_wrong_group_hint(message=message, bot=bot, result=prepared)
-        else:
-            await message.reply(text=prepared.message)
+        await message.reply(text=prepared.message)
         log.info(
             "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=validate_failed_replied code=%s",
             message.from_user.id,
@@ -64,7 +64,27 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
         )
         return
 
-    employee_id, shift_id, _english_name, _department_name, _cin, _cout, _tz = prepared
+    employee_id, shift_id, english_name, _department_name, _cin, _cout, _tz = prepared
+
+    caption_err = validate_caption_identity_for_sender(
+        caption=message.caption,
+        english_name=english_name,
+        employee_id=employee_id,
+    )
+    if caption_err:
+        cap_en = parse_english_name_from_text(message.caption)
+        cap_eid = parse_employee_id_from_text(message.caption)
+        await message.reply(text=user_message_for_checkin_error(caption_err))
+        log.info(
+            "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=caption_identity_mismatch "
+            "cap_en=%r cap_eid=%r reg_en=%r reg_eid=%r",
+            message.from_user.id,
+            cap_en,
+            cap_eid,
+            english_name,
+            employee_id,
+        )
+        return
 
     sent_utc = message.date
     if sent_utc is not None and sent_utc.tzinfo is None:
@@ -120,6 +140,10 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
         message.from_user.id,
         ai_out.clock_time_utc,
     )
+    try:
+        await message.reply(text=f"{matter}成功")
+    except Exception:
+        await message.answer(text=f"{matter}成功")
 
 
 CHECKIN_FILTER = F.chat.type.in_({"group", "supergroup"}) & (F.photo | F.document)

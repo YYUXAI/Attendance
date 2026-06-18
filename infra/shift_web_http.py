@@ -457,6 +457,19 @@ async def _handle_import_batch(request: web.Request) -> web.Response:
     )
 
 
+_ICON_NAMES = frozenset({"download.png", "upload.png"})
+
+
+async def _handle_icon(request: web.Request) -> web.Response:
+    name = request.match_info.get("name", "")
+    if name not in _ICON_NAMES:
+        return web.Response(status=404)
+    path = _STATIC_DIR / "icons" / name
+    if not path.is_file():
+        return web.Response(status=404)
+    return web.FileResponse(path)
+
+
 async def _handle_index(_request: web.Request) -> web.Response:
     index = _STATIC_DIR / "index.html"
     if not index.is_file():
@@ -467,6 +480,7 @@ async def _handle_index(_request: web.Request) -> web.Response:
 def register_shift_web_routes(app: web.Application) -> None:
     app.router.add_get("/shift-app/", _handle_index)
     app.router.add_get("/shift-app/index.html", _handle_index)
+    app.router.add_get("/shift-app/icons/{name}", _handle_icon)
     app.router.add_get("/api/v1/shift-config", _handle_list)
     app.router.add_post("/api/v1/shift-config/exchange-session", _handle_exchange_session)
     app.router.add_route("OPTIONS", "/api/v1/shift-config/template", _handle_template_options)

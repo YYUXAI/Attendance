@@ -19,7 +19,7 @@ async def _reply_myinfo(*, message: Message, tg_id: int) -> None:
     log.info("[PROFILE_MYINFO] tg_id=%s ok=%s error_code=%s", tg_id, res.ok, res.error_code)
 
 
-@router.message(F.text == "我的信息")
+@router.message(F.text.in_({"个人", "我的信息"}))
 async def myinfo_message(message: Message) -> None:
     user = message.from_user
     if not user or message.chat.type != "private":

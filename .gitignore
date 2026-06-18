@@ -6,5 +6,8 @@ __pycache__/
 .env
 .env.*
 !.env.example
+secrets/
+logs/
 _debug_*.jpg
 *.log
+backup/*.sql

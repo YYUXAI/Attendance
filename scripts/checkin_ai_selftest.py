@@ -294,11 +294,32 @@ def unit_identity_alnum_loose() -> CaseResult:
         ("Y_UX_Nayxua 朵拉", "Y_UX_Nayxua", True),
         ("nayxua", None, True),
         ("Y_UX_Benrenxing", None, False),
+        ("Y.UX_Nigelito", "Y.UX_KQB8Q", False),
+    ]
+    reg_nlg = RegistrationRow(
+        id=2,
+        employee_id="56759",
+        tg_id=8157802833,
+        english_name="NLGELITO",
+        tg_username="Y_UX_Nlgelito",
+        registered_chat_id=None,
+        organization_id=1,
+        shift_id=1,
+    )
+    nlg_cases = [
+        ("Y.UX_Nigelito", "Y.UX_KQB8Q", True),
+        ("Y_UX_Nigelito", "Y_UX_Nigelito", True),
+        ("Y_UX_Benrenxing", None, False),
     ]
     results = []
     for disp, hint, expect in cases:
         got = match_registration_for_sender(
             sender=reg, display_name=disp, username_hint=hint
+        )
+        results.append(got == expect)
+    for disp, hint, expect in nlg_cases:
+        got = match_registration_for_sender(
+            sender=reg_nlg, display_name=disp, username_hint=hint
         )
         results.append(got == expect)
     ok = all(results)

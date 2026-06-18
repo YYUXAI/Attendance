@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>考勤 Bot 二期 PRD</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #f5f6f7;
+      color: #1f2329;
+      line-height: 1.65;
+      font-size: 14px;
+    }
+    .page {
+      max-width: 1240px;
+      margin: 24px auto;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+      min-height: 960px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      position: relative;
+    }
+    .page::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 0;
+      bottom: 0;
+      border-left: 1px dashed #d0d3d6;
+    }
+    .col { padding: 32px 36px 48px; }
+    .meta {
+      font-size: 12px;
+      color: #8f959e;
+      margin-bottom: 16px;
+    }
+    .tag {
+      display: inline-block;
+      background: #e8f3ff;
+      color: #245bdb;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 2px 10px;
+      border-radius: 4px;
+      margin-bottom: 12px;
+      margin-right: 6px;
+    }
+    .tag.green { background: #e8ffea; color: #2ea121; }
+    .tag.gray { background: #f5f6f7; color: #646a73; }
+    h1.section {
+      font-size: 18px;
+      font-weight: 600;
+      color: #1f2329;
+      margin: 28px 0 12px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #eff0f1;
+    }
+    h1.section:first-of-type { margin-top: 0; }
+    h2.sub {
+      font-size: 15px;
+      font-weight: 600;
+      margin: 18px 0 8px;
+      color: #1f2329;
+    }
+    p, li { margin-bottom: 8px; color: #373c43; }
+    ul, ol { padding-left: 20px; margin-bottom: 12px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 10px 0 16px;
+      font-size: 13px;
+    }
+    th, td {
+      border: 1px solid #dee0e3;
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #f5f6f7; font-weight: 600; white-space: nowrap; }
+    .milestone { margin-bottom: 20px; }
+    .milestone h3 {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #1f2329;
+    }
+    .prio-p0 { color: #245bdb; font-weight: 600; font-size: 12px; }
+    .prio-p1 { color: #646a73; font-weight: 600; font-size: 12px; }
+    .right-title {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #1f2329;
+    }
+    .right-sub {
+      font-size: 12px;
+      color: #8f959e;
+      margin-bottom: 20px;
+    }
+    .flow-box {
+      background: #f5f6f7;
+      border-radius: 6px;
+      padding: 12px 14px;
+      font-size: 12px;
+      font-family: ui-monospace, Menlo, monospace;
+      margin: 8px 0 12px;
+      line-height: 1.5;
+      color: #373c43;
+    }
+    .note {
+      background: #fff7e8;
+      border-left: 3px solid #ff8800;
+      padding: 10px 12px;
+      font-size: 13px;
+      margin: 12px 0;
+      color: #5c3d00;
+    }
+    .done { color: #2ea121; }
+    .todo { color: #8f959e; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <!-- ========== 左栏：PRD 正文 ========== -->
+    <div class="col">
+      <span class="tag">PRD</span>
+      <span class="tag green">@zpxinbot</span>
+      <span class="tag gray">v2.0</span>
+      <div class="meta">文档版本：2026-06-17 · 产品：考勤 Bot 二期 · 总工期：6个月 · 状态：评审稿</div>
+
+      <h1 class="section"># 项目背景</h1>
+      <p>考勤 Bot（<strong>@zpxinbot</strong>）一期已上线并在 UX 组生产使用，核心能力包括：</p>
+      <ul>
+        <li>群内 TIME.IS 截图打卡（线上大模型识图，姓名/日期/时间严格识图校验）</li>
+        <li>Telegram 注册绑定（英文名 + 工号）</li>
+        <li>Google 排班表同步 → <code>employee_shift_config</code>（按人固定班次 + 月休日）</li>
+        <li>迟到 / 早退 / 缺卡 / 月休判定，开班汇总推送</li>
+        <li>管理员私聊导出 CSV、班次 Web App、群离返岗静默落库</li>
+        <li>每晚 23:00 按群统计推送</li>
+      </ul>
+      <p><strong>仍依赖人工、体验待优化之处：</strong></p>
+      <ul>
+        <li>每次打卡需复制 4 行配文（英文名、工号、事项），重复劳动多</li>
+        <li>注册与管理员权限靠人工脚本维护，清库后易丢失</li>
+        <li>HR 需主动导出、手工对表；异常信息埋在全员汇总里</li>
+        <li>离返岗与排班表「请假 / 出差」标记未打通，计划休假需人工核对</li>
+        <li>识图失败提示粒度粗（姓名/时间类错误文案易混淆）</li>
+      </ul>
+
+      <h1 class="section"># 项目目标</h1>
+      <table>
+        <tr><th>角色</th><th>目标</th></tr>
+        <tr><td>员工</td><td>点按钮 → 只发截图即可打卡；截图规范清晰可预期</td></tr>
+        <tr><td>HR / 组长</td><td>有异常才推送；导出即排班表样式日历，少做二次 Excel</td></tr>
+        <tr><td>管理员</td><td>工号自助注册、权限与 Google 表联动可自愈</td></tr>
+        <tr><td>研发 / 运维</td><td>在一期架构上增量交付，不推翻识图与判定底座</td></tr>
+      </table>
+      <p><strong>成功指标（建议）</strong></p>
+      <ul>
+        <li>单次打卡人工输入：4 行配文 → <strong>0 行</strong>（仅发图）</li>
+        <li>新员注册：支持<strong>仅发工号</strong>完成绑定（表内校验）</li>
+        <li>HR 每日处理时长：<strong>减少 50%</strong>（异常推送 + 日历导出）</li>
+        <li>零配文打卡占比：<strong>≥ 80%</strong>（上线 2 周后）</li>
+      </ul>
+
+      <h1 class="section"># 用户与场景</h1>
+      <table>
+        <tr><th>用户</th><th>典型场景</th></tr>
+        <tr><td>UX 员工</td><td>下班点「签退」→ 发 time.is 截图，不想每次打英文名工号</td></tr>
+        <tr><td>新入职员工</td><td>HR 已在 Google 表录入工号，员工私聊 Bot 发工号即可注册</td></tr>
+        <tr><td>HR</td><td>每天只看「谁缺卡/迟到」，导出与班表视觉一致的月历 Excel</td></tr>
+        <tr><td>组长</td><td>本组有人未返岗 / 异常时收到私信，不用翻大群汇总</td></tr>
+        <tr><td>管理员</td><td>清库或换机后，管理员名单随 Google 表职位列自动恢复</td></tr>
+      </table>
+
+      <h1 class="section"># 需求详述</h1>
+
+      <div class="milestone">
+        <h3>M2.1 零配文打卡 <span class="prio-p0">P0</span></h3>
+        <table>
+          <tr><th>问题</th><td>每次打卡需填写 <code>#打卡</code> + 英文名 + 工号 + 事项，员工重复输入、易错</td></tr>
+          <tr><th>方案</th><td>
+            <ol style="margin:0;padding-left:18px;">
+              <li>用户点 Inline「签到 / 签退」→ 系统记录 <code>pending_action</code>（已有 <code>checkin_action_session</code>，需接入 handler）</li>
+              <li>用户<strong>仅发送截图</strong>（可无 caption 或 caption 为空）</li>
+              <li>工号、英文名从 <code>registrations</code> 读取；事项从 pending 会话弹出</li>
+              <li>旧版 4 行配文格式<strong>继续兼容</strong>；配文与注册一致时可作识图兜底（可选增强）</li>
+            </ol>
+          </td></tr>
+          <tr><th>交互</th><td>
+            <div class="flow-box">点「签退」→ 发图（无字）→ 静默成功<br>点「签退」→ 超时 15 分钟未发图 → pending 失效，需重点按钮</div>
+          </td></tr>
+          <tr><th>识图要求</th><td>不变：截图须含 TIME.IS 大钟 + 日期 + 身份区（Slack / TG 用户名）；支持 <code>上午3:04</code> 等中文 12 小时制</td></tr>
+          <tr><th>验收</th><td>
+            <ul style="margin:0;">
+              <li>已注册 + 点按钮 + 合法截图 → 成功（零配文）</li>
+              <li>未点按钮、无配文、无 pending → 静默忽略或提示「请先点签到/签退」</li>
+              <li>旧配文打卡全流程不退化</li>
+            </ul>
+          </td></tr>
+          <tr><th>埋点</th><td><code>checkin_zero_caption=true/false</code>、<code>pending_action_expired</code></td></tr>
+        </table>
+      </div>
+
+      <div class="milestone">
+        <h3>M2.2 注册与管理员联动 <span class="prio-p0">P0</span></h3>
+        <table>
+          <tr><th>问题</th><td>注册需 <code>英文名$工号</code> 格式；管理员靠脚本写入 <code>admin_list</code>，清库易丢</td></tr>
+          <tr><th>注册</th><td>
+            <ul style="margin:0;">
+              <li>私聊发送<strong>纯工号</strong>（如 <code>72357</code>）→ 查 Google 同步的 <code>employee_shift_config</code></li>
+              <li>工号在表内 → 自动带出英文名，确认后绑定当前 Telegram</li>
+              <li>工号不在表内 → 拒绝并提示联系 HR</li>
+              <li>保留原 <code>英文名$工号</code> 注册方式</li>
+            </ul>
+          </td></tr>
+          <tr><th>管理员</th><td>
+            <ul style="margin:0;">
+              <li>Google 表增加「职位 / 角色」列（如 <code>组长</code>、<code>HR</code>、<code>管理员</code>）</li>
+              <li>同步任务写入 <code>admin_list</code>；支持配置白名单工号恒为管理员</li>
+              <li>导出 / 班次 Web 权限与 <code>admin_list</code> 双校验不变</li>
+            </ul>
+          </td></tr>
+          <tr><th>验收</th><td>表外工号无法注册；同步后指定工号自动获得管理员；清库 + 重同步可恢复权限</td></tr>
+        </table>
+      </div>
+
+      <div class="milestone">
+        <h3>M2.3 异常推送 + Excel 日历导出 <span class="prio-p1">P1</span></h3>
+        <table>
+          <tr><th>问题</th><td>每晚汇总信息量大；HR 导出 CSV 后还要手工做成排班表样式月历</td></tr>
+          <tr><th>异常推送</th><td>
+            <ul style="margin:0;">
+              <li>触发：每日班次结束后（或 23:00 统计后）<strong>仅当存在异常</strong>时推送</li>
+              <li>异常类型：缺卡、迟到、早退、离岗未返岗</li>
+              <li>接收人：可配置（HR 私聊 / 组长私聊 / 群管理员）</li>
+              <li>无异常：不推送（或可选「今日全绿」摘要，默认关闭）</li>
+            </ul>
+          </td></tr>
+          <tr><th>Excel 日历导出</th><td>
+            <ul style="margin:0;">
+              <li>在现有 CSV 导出基础上增加 <strong>.xlsx 月历视图</strong></li>
+              <li>行：员工（工号、英文名、班次）；列：1–30/31 日</li>
+              <li>单元格：状态色块（正常 / 迟到 / 早退 / 缺卡 / 月休 / 请假等，对齐 Google 表视觉）</li>
+              <li>支持「今日 / 本周 / 本月」与管理员私聊导出入口</li>
+            </ul>
+          </td></tr>
+          <tr><th>验收</th><td>有 1 人缺卡即推送对应名单；Excel 与 Google 表列顺序、色块语义可对齐演示</td></tr>
+        </table>
+      </div>
+
+      <div class="milestone">
+        <h3>M2.4 离返岗增强 + 表内请假/出差标记 <span class="prio-p1">P1</span></h3>
+        <table>
+          <tr><th>问题</th><td>离返岗仅群模板静默落库；排班表上 ●请假 / 出差 与导出状态未联动</td></tr>
+          <tr><th>离返岗</th><td>
+            <ul style="margin:0;">
+              <li>保留现有 <code>#离岗报备</code> / <code>#返岗报备</code> 群模板</li>
+              <li>增强：点「离岗」→ 可选一键开记录（时间取发送时刻）；点「返岗」→ 自动闭合最近未返岗记录</li>
+              <li>离岗 &gt; 30 分钟：说明必填（一期规则延续）</li>
+              <li>导出「离岗时间」列：已返岗 <code>HH:MM-HH:MM(时长)</code>；未返岗显示「未返岗」</li>
+            </ul>
+          </td></tr>
+          <tr><th>请假 / 出差</th><td>
+            <ul style="margin:0;">
+              <li>Google 表日格标记（●请假、出差等）同步到判定层</li>
+              <li>导出与每晚统计中展示为「请假 / 出差」，不计缺卡</li>
+              <li>与月休规则并列：计划休假免打卡</li>
+            </ul>
+          </td></tr>
+          <tr><th>验收</th><td>表内标记日与导出状态一致；离返岗一键流程写库正确；&gt;30 分钟无说明被拦截</td></tr>
+        </table>
+      </div>
+
+      <div class="note">
+        <strong>本期明确不做 / 暂缓</strong><br>
+        · 按 Google 每日格子（WG/WO）动态切换<strong>同一人当天班次</strong>（一期已按人固定班次，不做日格排班）<br>
+        · 手势 / 人脸等非截图打卡<br>
+        · 恢复 QC 质检全流程<br>
+        · Docker 一体化部署<br>
+        · 私聊离岗审批流（已下线，维持群模板方案）
+      </div>
+
+      <h1 class="section"># 里程碑与进度</h1>
+      <table>
+        <tr><th>里程碑</th><th>范围</th><th>优先级</th><th>状态</th></tr>
+        <tr><td>M1 一期</td><td>打卡识图、注册、Google 同步、判定、导出、离返岗基础</td><td>—</td><td class="done">✅ 已上线</td></tr>
+        <tr><td>M2.1</td><td>零配文打卡</td><td>P0</td><td class="todo">⬜ 待开发</td></tr>
+        <tr><td>M2.2</td><td>工号注册 + 管理员表联动</td><td>P0</td><td class="todo">⬜ 待开发</td></tr>
+        <tr><td>M2.3</td><td>异常推送 + Excel 月历导出</td><td>P1</td><td class="todo">⬜ 待开发</td></tr>
+        <tr><td>M2.4</td><td>离返岗增强 + 请假/出差标记</td><td>P1</td><td class="todo">⬜ 待开发</td></tr>
+      </table>
+      <p><strong>建议迭代顺序</strong>：M2.1 → M2.2 → M2.3 → M2.4（前两项可并行一部分后端表结构工作）</p>
+
+      <h1 class="section"># 上线计划（总工期：6个月）</h1>
+      <table>
+        <tr><th>阶段</th><th>交付范围</th><th>说明</th></tr>
+        <tr><td>第1-2个月</td><td>M2.1 零配文打卡</td><td>需求冻结、开发联调、UX小范围内测</td></tr>
+        <tr><td>第3-4个月</td><td>M2.2 注册与管理员联动</td><td>工号注册、管理员同步、权限回归测试</td></tr>
+        <tr><td>第5个月</td><td>M2.3 异常推送 + Excel 日历导出</td><td>HR试运行，导出口径与样式对齐</td></tr>
+        <tr><td>第6个月</td><td>M2.4 离返岗增强 + 请假/出差标记</td><td>全链路回归、灰度发布、正式上线</td></tr>
+      </table>
+
+      <h1 class="section"># 数据埋点</h1>
+      <table>
+        <tr><th>事件</th><th>字段 / 说明</th></tr>
+        <tr><td><code>checkin_success</code></td><td>tg_id, employee_id, matter, zero_caption, model, latency_ms</td></tr>
+        <tr><td><code>checkin_fail</code></td><td>error_code（AI_NAME_NOT_FOUND / AI_TIME_NOT_FOUND / AI_TIME_SCREENSHOT_SKEW 等）</td></tr>
+        <tr><td><code>checkin_zero_caption</code></td><td>是否零配文；pending_action 来源</td></tr>
+        <tr><td><code>register_complete</code></td><td>方式：工号 / 传统格式</td></tr>
+        <tr><td><code>export_trigger</code></td><td>格式：csv / xlsx；范围：today / week / month</td></tr>
+        <tr><td><code>anomaly_push_sent</code></td><td>异常类型、人数、接收人</td></tr>
+        <tr><td><code>sheets_sync_ok / fail</code></td><td>同步行数、耗时</td></tr>
+      </table>
+
+      <h1 class="section"># 风险与依赖</h1>
+      <table>
+        <tr><th>风险</th><th>缓解</th></tr>
+        <tr><td>零配文后员工不发图或发错图</td><td>pending 超时提示；保留旧配文；失败文案细化</td></tr>
+        <tr><td>Telegram 压缩导致识图失败</td><td>规范截图指引；可选配文兜底；失败自动重试 1 次</td></tr>
+        <tr><td>Google 表格式变更</td><td>同步前校验 + 告警；模板版本号</td></tr>
+        <tr><td>Excel 色块与 HR 习惯不一致</td><td>第5个月对齐样表；可配置色板</td></tr>
+      </table>
+    </div>
+
+    <!-- ========== 右栏：导图 + 架构 ========== -->
+    <div class="col">
+      <div class="right-title">二期能力导图</div>
+      <div class="right-sub">左：员工路径 · 右：管理路径 · 下：数据底座</div>
+
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 700" width="100%" style="max-width:480px;display:block;margin:0 auto 24px;">
+        <rect x="185" y="290" width="150" height="48" rx="8" fill="#245bdb"/>
+        <text x="260" y="320" text-anchor="middle" fill="#fff" font-size="15" font-weight="600" font-family="PingFang SC, Microsoft YaHei, sans-serif">考勤 Bot 二期</text>
+
+        <!-- M2.1 top -->
+        <line x1="260" y1="290" x2="260" y2="75" stroke="#245bdb" stroke-width="2"/>
+        <rect x="155" y="35" width="210" height="40" rx="6" fill="#e8f3ff" stroke="#245bdb" stroke-width="2"/>
+        <text x="260" y="60" text-anchor="middle" fill="#245bdb" font-size="12" font-weight="600" font-family="PingFang SC, sans-serif">M2.1 零配文打卡 P0</text>
+
+        <!-- M2.2 right top -->
+        <line x1="335" y1="305" x2="455" y2="195" stroke="#245bdb" stroke-width="2"/>
+        <rect x="375" y="165" width="150" height="40" rx="6" fill="#e8f3ff" stroke="#245bdb" stroke-width="2"/>
+        <text x="450" y="190" text-anchor="middle" fill="#245bdb" font-size="11" font-weight="600" font-family="PingFang SC, sans-serif">M2.2 注册/管理员 P0</text>
+
+        <!-- M2.3 right bottom -->
+        <line x1="335" y1="325" x2="455" y2="435" stroke="#8f959e" stroke-width="2"/>
+        <rect x="375" y="415" width="150" height="40" rx="6" fill="#f5f6f7" stroke="#8f959e" stroke-width="2"/>
+        <text x="450" y="440" text-anchor="middle" fill="#646a73" font-size="11" font-weight="600" font-family="PingFang SC, sans-serif">M2.3 异常+Excel P1</text>
+
+        <!-- M2.4 bottom -->
+        <line x1="260" y1="338" x2="260" y2="545" stroke="#8f959e" stroke-width="2"/>
+        <rect x="140" y="545" width="240" height="40" rx="6" fill="#f5f6f7" stroke="#8f959e" stroke-width="2"/>
+        <text x="260" y="570" text-anchor="middle" fill="#646a73" font-size="11" font-weight="600" font-family="PingFang SC, sans-serif">M2.4 离返岗 + 请假/出差标记 P1</text>
+
+        <!-- value left -->
+        <rect x="8" y="175" width="108" height="30" rx="4" fill="#e8ffea" stroke="#34c724"/>
+        <text x="62" y="195" text-anchor="middle" fill="#2ea121" font-size="10" font-family="PingFang SC, sans-serif">员工：点按钮发图</text>
+        <rect x="8" y="298" width="108" height="30" rx="4" fill="#e8ffea" stroke="#34c724"/>
+        <text x="62" y="318" text-anchor="middle" fill="#2ea121" font-size="10" font-family="PingFang SC, sans-serif">HR：有异常才推</text>
+        <rect x="8" y="420" width="108" height="30" rx="4" fill="#e8ffea" stroke="#34c724"/>
+        <text x="62" y="440" text-anchor="middle" fill="#2ea121" font-size="10" font-family="PingFang SC, sans-serif">管理：表驱动权限</text>
+
+        <text x="260" y="625" text-anchor="middle" fill="#8f959e" font-size="10" font-family="PingFang SC, sans-serif">一期底座：线上大模型识图 · Google 班表 · 按人班次</text>
+        <text x="260" y="645" text-anchor="middle" fill="#8f959e" font-size="10" font-family="PingFang SC, sans-serif">不做：日格 WG/WO 动态排班</text>
+      </svg>
+
+      <h2 class="sub">员工打卡路径（M2.1 目标态）</h2>
+      <div class="flow-box">① 群内点「签退」↗<br>② 仅发送 TIME.IS 截图（无配文）<br>③ Bot 静默成功 · 入库签退记录</div>
+
+      <h2 class="sub">一期 vs 二期对照</h2>
+      <table>
+        <tr><th>能力</th><th>一期</th><th>二期</th></tr>
+        <tr><td>打卡配文</td><td>必须 4 行</td><td>可零配文</td></tr>
+        <tr><td>注册</td><td>英文名$工号</td><td>+ 纯工号（表内校验）</td></tr>
+        <tr><td>异常通知</td><td>每晚全员汇总</td><td>+ 仅有异常时推送</td></tr>
+        <tr><td>导出</td><td>CSV 明细</td><td>+ Excel 月历色块</td></tr>
+        <tr><td>离返岗</td><td>群模板</td><td>+ 一键开闭 + 表内请假</td></tr>
+        <tr><td>识图模型</td><td>线上大模型</td><td>延续 + 提示优化</td></tr>
+      </table>
+
+      <h2 class="sub">涉及模块（研发参考）</h2>
+      <table>
+        <tr><th>模块</th><th>二期改动点</th></tr>
+        <tr><td><code>handlers/checkin.py</code></td><td>接入 pending_action；caption 可选</td></tr>
+        <tr><td><code>checkin_action_session.py</code></td><td>已有 TTL 会话，需与按钮回调联通</td></tr>
+        <tr><td><code>handlers/register.py</code></td><td>工号单字段注册流</td></tr>
+        <tr><td><code>shift_import_service</code></td><td>职位列 → admin_list</td></tr>
+        <tr><td><code>attendance_export_service</code></td><td>xlsx 月历 pivot（部分结构已有）</td></tr>
+        <tr><td><code>group_daily_summary_worker</code></td><td>异常过滤推送</td></tr>
+        <tr><td><code>attendance_actions.py</code></td><td>离返岗一键增强</td></tr>
+      </table>
+
+      <h2 class="sub">识图规范（附录）</h2>
+      <ul>
+        <li>推荐：完整 time.is 页（大钟 + 日期 + 身份用户名）</li>
+        <li>避免：仅截 TG 侧栏横条、过度压缩、旧截图重发</li>
+        <li>支持：<code>03:04:01</code>、<code>上午3:04</code> 等时间格式</li>
+        <li>失败码区分（二期优化）：读不出时间 vs 时间偏差过大 vs 姓名未识别</li>
+      </ul>
+    </div>
+  </div>
+</body>
+</html>

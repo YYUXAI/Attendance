@@ -6,13 +6,8 @@ from zoneinfo import ZoneInfo
 from domain.shared.result import ServiceResult
 from repositories.clock_records_repo import insert_clock_record
 from repositories.organizations_repo import get_department_name_by_id
-from repositories.registrations_repo import (
-    get_by_tg_id,
-    list_by_shift_id,
-    update_assignment_by_tg_id,
-)
-from repositories.shifts_repo import get_by_id as get_shift_by_id
-from repositories.shifts_repo import list_by_attendance_group_id
+from repositories import employee_shift_config_repo, profile_repo
+from repositories.registrations_repo import get_by_tg_id, update_registered_chat_by_tg_id
 
 
 ALLOWED_TIMEZONES = frozenset(
@@ -25,56 +20,14 @@ ALLOWED_TIMEZONES = frozenset(
 )
 
 
-def _try_auto_assign_from_group(*, tg_id: int, chat_id: int) -> None:
-    """
-    基于打卡群自动补配置：
-    - shift_id：由 shifts.attendance_group_id 唯一匹配时补齐
-    - organization_id：在该 shift 下历史注册组织唯一时补齐；否则保持为空
-    """
-    shifts = list_by_attendance_group_id(attendance_group_id=int(chat_id))
-    if len(shifts) != 1:
-        return
-    shift = shifts[0]
-
-    org_candidates = {
-        int(r.organization_id)
-        for r in list_by_shift_id(shift_id=int(shift.id))
-        if r.organization_id is not None
-    }
-    org_id = next(iter(org_candidates)) if len(org_candidates) == 1 else None
-    update_assignment_by_tg_id(
-        tg_id=int(tg_id),
-        shift_id=int(shift.id),
-        organization_id=org_id,
-    )
-
-
 def switch_attendance_group_to_chat(*, tg_id: int, chat_id: int) -> ServiceResult:
-    """将用户班次绑定改为当前群对应的唯一班次（「改用本群打卡」）。"""
+    """记录常用考勤群（「改用本群打卡」），不写入 registrations.shift_id。"""
     reg = get_by_tg_id(tg_id)
     if not reg:
         return ServiceResult(ok=False, message="您尚未注册。", error_code="NOT_REGISTERED")
 
-    shifts = list_by_attendance_group_id(attendance_group_id=int(chat_id))
-    if len(shifts) != 1:
-        return ServiceResult(
-            ok=False,
-            message="本群未绑定唯一班次，无法切换，请联系管理员。",
-            error_code="GROUP_NOT_BOUND",
-        )
-    shift = shifts[0]
-    org_candidates = {
-        int(r.organization_id)
-        for r in list_by_shift_id(shift_id=int(shift.id))
-        if r.organization_id is not None
-    }
-    org_id = next(iter(org_candidates)) if len(org_candidates) == 1 else reg.organization_id
-    update_assignment_by_tg_id(
-        tg_id=int(tg_id),
-        shift_id=int(shift.id),
-        organization_id=org_id,
-    )
-    return ServiceResult(ok=True, message="已切换为本群考勤，请重新发送打卡截图。")
+    update_registered_chat_by_tg_id(tg_id=int(tg_id), registered_chat_id=int(chat_id))
+    return ServiceResult(ok=True, message="已记录本群为考勤群，请重新发送打卡截图。")
 
 
 def validate_and_prepare(
@@ -82,51 +35,40 @@ def validate_and_prepare(
     tg_id: int,
     chat_id: int,
     file_id: str | None,
-) -> ServiceResult | tuple[str, int, str, str | None, object, object, str]:
+) -> ServiceResult | tuple[str, int | None, str, str | None, object, object, str]:
     reg = get_by_tg_id(tg_id)
     if not reg:
         return ServiceResult(ok=False, message="打卡失败，您尚未注册", error_code="NOT_REGISTERED")
 
-    if reg.shift_id is None:
-        _try_auto_assign_from_group(tg_id=tg_id, chat_id=chat_id)
-        reg = get_by_tg_id(tg_id)
-        if not reg:
-            return ServiceResult(ok=False, message="打卡失败，您尚未注册", error_code="NOT_REGISTERED")
-
-    if reg.shift_id is None or reg.organization_id is None:
-        return ServiceResult(
-            ok=False,
-            message=(
-                "打卡失败，您的账号尚未分配部门/班次（organization_id、shift_id 为空）。\n"
-                f"当前工号：{reg.employee_id}，请联系管理员在系统中补全配置。"
-            ),
-            error_code="NOT_CONFIGURED",
-        )
-
-    shift = get_shift_by_id(int(reg.shift_id))
-    if not shift or shift.attendance_group_id is None or int(shift.attendance_group_id) != int(chat_id):
-        expected = int(shift.attendance_group_id) if shift and shift.attendance_group_id is not None else None
-        return ServiceResult(
-            ok=False,
-            message="打卡失败，请前往您的考勤群打卡。",
-            error_code="WRONG_GROUP",
-            expected_attendance_group_id=expected,
-            current_attendance_group_id=int(chat_id),
-        )
-
     if not file_id:
         return ServiceResult(ok=False, message="打卡失败，请发送打卡截图", error_code="INVALID_INPUT")
 
-    department_name = get_department_name_by_id(int(reg.organization_id))
+    department_name = (
+        get_department_name_by_id(int(reg.organization_id))
+        if reg.organization_id is not None
+        else None
+    )
+    tz_name = "Asia/Shanghai"
+    cin = None
+    cout = None
+    ym = datetime.now(ZoneInfo(tz_name)).strftime("%Y-%m")
+    employee_shift_config_repo.ensure_table()
+    cfg = profile_repo.get_employee_shift_config_for_month(
+        employee_id=str(reg.employee_id),
+        year_month=ym,
+    )
+    if cfg:
+        cin = cfg.shift_checkin_time
+        cout = cfg.shift_checkout_time
 
     return (
         reg.employee_id,
-        int(reg.shift_id),
+        None,
         (reg.english_name or ""),
         department_name,
-        shift.checkin_time,
-        shift.checkout_time,
-        shift.timezone,
+        cin,
+        cout,
+        tz_name,
     )
 
 
@@ -136,7 +78,7 @@ def persist_clock_record(
     chat_id: int,
     file_id: str,
     employee_id: str,
-    shift_id: int,
+    shift_id: int | None,
     clock_time_utc: datetime | None = None,
     clock_action: str | None = None,
 ) -> datetime:

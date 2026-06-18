@@ -71,6 +71,36 @@ def exists_audit_notice_by_business_key(
     return bool(row and row[0])
 
 
+def exists_audit_notice_for_group_on_work_date(
+    *,
+    notify_tg_id: int,
+    work_date: date,
+    template_id: int,
+) -> bool:
+    """
+    同一 Telegram 群、同一上班日是否已有该 template 的审计通知（不限 shift_id）。
+    用于多班次共用 attendance_group_id 时避免重复群公告。
+    """
+    ymd = int(work_date.strftime("%Y%m%d"))
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM public.notification_queue nq
+                JOIN public.event_logs el ON el.id = nq.log_id
+                WHERE nq.template_id = %s
+                  AND nq.notify_tg_id = %s
+                  AND el.related_event_name = %s
+                  AND (el.related_event_id %% 100000000) = %s
+            )
+            """,
+            (template_id, int(notify_tg_id), RELATED_EVENT_NAME_AUDIT_NOTICE, ymd),
+        )
+        row = cur.fetchone()
+    return bool(row and row[0])
+
+
 def insert_audit_notice_if_missing(
     cur: Cursor,
     *,

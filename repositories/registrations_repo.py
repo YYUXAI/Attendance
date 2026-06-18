@@ -143,6 +143,28 @@ def list_by_shift_id(*, shift_id: int) -> List[RegistrationRow]:
         return list_by_shift_id_cur(cur, shift_id=shift_id)
 
 
+def list_registered_usernames(*, limit: int = 300) -> List[str]:
+    cap = max(1, min(int(limit or 300), 2000))
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT LOWER(TRIM(BOTH '@' FROM tg_username)) AS uname
+            FROM public.registrations
+            WHERE COALESCE(TRIM(tg_username), '') <> ''
+            ORDER BY uname ASC
+            LIMIT %s
+            """,
+            (cap,),
+        )
+        rows = cur.fetchall() or []
+    out: List[str] = []
+    for (uname,) in rows:
+        s = str(uname or "").strip()
+        if s:
+            out.append(s)
+    return out
+
+
 def update_assignment_by_tg_id(
     *,
     tg_id: int,
@@ -158,5 +180,18 @@ def update_assignment_by_tg_id(
             WHERE tg_id = %s
             """,
             (shift_id, organization_id, int(tg_id)),
+        )
+        return int(cur.rowcount or 0)
+
+
+def update_registered_chat_by_tg_id(*, tg_id: int, registered_chat_id: int) -> int:
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            UPDATE public.registrations
+            SET registered_chat_id = %s
+            WHERE tg_id = %s
+            """,
+            (int(registered_chat_id), int(tg_id)),
         )
         return int(cur.rowcount or 0)
