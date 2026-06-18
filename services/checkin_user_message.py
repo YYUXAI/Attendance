@@ -7,8 +7,8 @@ MSG_TIME_MISMATCH = "打卡失败：时间不一致。"
 MSG_DATE_MISMATCH = "打卡失败：日期不一致。"
 MSG_NAME_AND_TIME_MISMATCH = "打卡失败：姓名不一致，时间不一致。"
 MSG_AI_SERVICE_DOWN = "打卡失败：识别服务不可用，请稍后重试。"
-MSG_AI_BALANCE_EXHAUSTED = "打卡失败：Z.ai 账户余额不足，请充值后重试。"
-MSG_AI_AUTH_FAILED = "打卡失败：Z.ai API Key 无效或已过期，请联系管理员。"
+MSG_AI_BALANCE_EXHAUSTED = "打卡失败：智谱账户余额不足，请充值后重试。"
+MSG_AI_AUTH_FAILED = "打卡失败：智谱 API Key 无效或已过期，请联系管理员。"
 # 与 MSG_TIME_MISMATCH 相同；保留别名供旧引用
 MSG_SCREENSHOT_TIME_ABNORMAL = MSG_TIME_MISMATCH
 
