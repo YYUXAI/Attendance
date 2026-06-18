@@ -34,7 +34,7 @@ from services.checkin_user_message import MSG_DATE_MISMATCH, MSG_NAME_MISMATCH, 
 log = logging.getLogger(__name__)
 
 ZHIPU_DEFAULT_BASE_URL = "https://api.z.ai/api/paas/v4"
-ZHIPU_DEFAULT_MODEL = "glm-4.6v"
+ZHIPU_DEFAULT_MODEL = "glm-4.6v-flash"
 
 _ZHIPU_EXTRACT_PROMPT = """你是考勤截图 OCR。只抄写图片里肉眼可见的文字，禁止推断、补全、猜测。
 

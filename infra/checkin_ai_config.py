@@ -47,7 +47,7 @@ def load_checkin_ai_config() -> CheckinAiConfig:
             or os.getenv("ZHIPU_API_KEY")
             or ""
         ).strip()
-        model = os.getenv("CHECKIN_AI_MODEL") or "glm-4.6v"
+        model = os.getenv("CHECKIN_AI_MODEL") or "glm-4.6v-flash"
     else:
         base_url = (os.getenv("CHECKIN_AI_BASE_URL") or "http://127.0.0.1:11434/v1").rstrip("/")
         api_key = os.getenv("CHECKIN_AI_API_KEY") or "ollama"
