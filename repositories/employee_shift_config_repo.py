@@ -17,6 +17,8 @@ class EmployeeShiftConfigRow:
     shift_checkin_time: time
     shift_checkout_time: time
     monthly_rest_days: str
+    region_code: str
+    shift_timezone: str
     updated_at: object
 
 
@@ -58,6 +60,38 @@ def ensure_table() -> None:
             """
             DO $$
             BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'employee_shift_config'
+                      AND column_name = 'region_code'
+                ) THEN
+                    ALTER TABLE public.employee_shift_config
+                    ADD COLUMN region_code VARCHAR(16) NOT NULL DEFAULT '';
+                END IF;
+            END $$;
+            """
+        )
+        cur.execute(
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'employee_shift_config'
+                      AND column_name = 'shift_timezone'
+                ) THEN
+                    ALTER TABLE public.employee_shift_config
+                    ADD COLUMN shift_timezone VARCHAR(64) NOT NULL DEFAULT '';
+                END IF;
+            END $$;
+            """
+        )
+        cur.execute(
+            """
+            DO $$
+            BEGIN
                 IF EXISTS (
                     SELECT 1 FROM pg_constraint
                     WHERE conname = 'employee_shift_config_employee_id_key'
@@ -87,15 +121,18 @@ def upsert_config(
     shift_checkin_time,
     shift_checkout_time,
     monthly_rest_days: str,
+    region_code: str = "",
+    shift_timezone: str = "",
 ) -> None:
     with get_cursor() as cur:
         cur.execute(
             """
             INSERT INTO public.employee_shift_config (
                 year_month, employee_id, english_name, shift_time_range,
-                shift_checkin_time, shift_checkout_time, monthly_rest_days, updated_at
+                shift_checkin_time, shift_checkout_time, monthly_rest_days,
+                region_code, shift_timezone, updated_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (year_month, employee_id)
             DO UPDATE SET
                 english_name = EXCLUDED.english_name,
@@ -103,6 +140,8 @@ def upsert_config(
                 shift_checkin_time = EXCLUDED.shift_checkin_time,
                 shift_checkout_time = EXCLUDED.shift_checkout_time,
                 monthly_rest_days = EXCLUDED.monthly_rest_days,
+                region_code = EXCLUDED.region_code,
+                shift_timezone = EXCLUDED.shift_timezone,
                 updated_at = NOW()
             """,
             (
@@ -113,6 +152,8 @@ def upsert_config(
                 shift_checkin_time,
                 shift_checkout_time,
                 str(monthly_rest_days or ""),
+                str(region_code or ""),
+                str(shift_timezone or ""),
             ),
         )
 
@@ -124,7 +165,8 @@ def get_by_employee_id(
         cur.execute(
             """
             SELECT id, year_month, employee_id, english_name, shift_time_range,
-                   shift_checkin_time, shift_checkout_time, monthly_rest_days, updated_at
+                   shift_checkin_time, shift_checkout_time, monthly_rest_days,
+                   region_code, shift_timezone, updated_at
             FROM public.employee_shift_config
             WHERE year_month = %s AND employee_id = %s
             """,
@@ -141,7 +183,8 @@ def list_by_year_month(*, year_month: str) -> List[EmployeeShiftConfigRow]:
         cur.execute(
             """
             SELECT id, year_month, employee_id, english_name, shift_time_range,
-                   shift_checkin_time, shift_checkout_time, monthly_rest_days, updated_at
+                   shift_checkin_time, shift_checkout_time, monthly_rest_days,
+                   region_code, shift_timezone, updated_at
             FROM public.employee_shift_config
             WHERE year_month = %s
             ORDER BY CAST(employee_id AS BIGINT)
@@ -180,7 +223,8 @@ def list_all() -> List[EmployeeShiftConfigRow]:
         cur.execute(
             """
             SELECT id, year_month, employee_id, english_name, shift_time_range,
-                   shift_checkin_time, shift_checkout_time, monthly_rest_days, updated_at
+                   shift_checkin_time, shift_checkout_time, monthly_rest_days,
+                   region_code, shift_timezone, updated_at
             FROM public.employee_shift_config
             ORDER BY year_month DESC, CAST(employee_id AS BIGINT)
             """

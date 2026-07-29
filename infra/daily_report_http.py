@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import secrets
 from pathlib import Path
 from typing import Any, Optional
@@ -31,6 +32,41 @@ HEALTH_PATH = "/health"
 DOCS_DIR = Path(__file__).resolve().parents[1] / "docs"
 PHASE2_PRD_PATH = "/docs/phase2-prd-figma.html"
 GOOGLE_SHEETS_SYNC_PATH = "/api/v1/google-sheets/shift-sync"
+
+# 静态网页版 PPT（公开访问，无鉴权）；默认 ~/www/ppt，可用 PPT_STATIC_DIR 覆盖
+PPT_STATIC_DIR = Path(os.getenv("PPT_STATIC_DIR", str(Path.home() / "www" / "ppt")))
+PPT_PATH = "/ppt"
+PPT_V2_STATIC_DIR = Path(os.getenv("PPT_V2_STATIC_DIR", str(Path.home() / "www" / "ppt-v2")))
+PPT_V2_PATH = "/ppt-v2"
+
+
+def _register_ppt_static_routes(app: web.Application, *, url_path: str, static_dir: Path) -> None:
+    if not static_dir.is_dir():
+        return
+
+    async def _handle_index(_request: web.Request) -> web.Response:
+        index = static_dir / "index.html"
+        if not index.is_file():
+            raise web.HTTPNotFound(text=f"{url_path} not deployed")
+        try:
+            html = index.read_text(encoding="utf-8")
+        except OSError:
+            raise web.HTTPNotFound(text=f"{url_path} not deployed")
+        return web.Response(
+            text=html,
+            content_type="text/html",
+            charset="utf-8",
+            headers={
+                "Content-Disposition": "inline; filename=\"index.html\"",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    app.router.add_get(url_path, _handle_index)
+    app.router.add_get(url_path + "/", _handle_index)
+    app.router.add_static(url_path + "/", static_dir, show_index=False)
+    log.info("http_server: serving static PPT at %s -> %s", url_path, static_dir)
 
 
 def _extract_token(request: web.Request) -> str | None:
@@ -200,6 +236,10 @@ def create_app(*, bot: Bot) -> web.Application:
     if load_google_sheets_config().enabled:
         app.router.add_get(GOOGLE_SHEETS_SYNC_PATH, _handle_google_sheets_sync)
         app.router.add_post(GOOGLE_SHEETS_SYNC_PATH, _handle_google_sheets_sync)
+    if PPT_STATIC_DIR.is_dir():
+        _register_ppt_static_routes(app, url_path=PPT_PATH, static_dir=PPT_STATIC_DIR)
+    if PPT_V2_STATIC_DIR.is_dir():
+        _register_ppt_static_routes(app, url_path=PPT_V2_PATH, static_dir=PPT_V2_STATIC_DIR)
     return app
 
 

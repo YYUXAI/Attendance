@@ -49,15 +49,14 @@ Expected calendar day at send time ({tz_name}): {expected_date}
 
 Rules:
 - clock_time: ONLY the large main TIME.IS clock, format HH:MM:SS. Ignore city times, GMT+8 misreads, bot reply lines.
-- clock_date: TIME.IS date line under the big clock only. Output YYYY-MM-DD or null.
-  * Read date as Chinese 「几月几日」: MUST be month (1-12) + day (1-31). Example: 6月4日 = June 4, NOT "648" or "48".
+- clock_date: TIME.IS date line under the big clock only. Output MM-DD or null.
+  * Read date as Chinese 「几月几日」: MUST be month (1-12) + day (1-31). Example: 6月4日 = 06-04, NOT "648" or "48".
   * OCR often glues 日 onto day: 「6月4日」→「6月48」(day>31→4); 「6月1日」→「6月18」(day ends with 8→1 when matches Expected day).
   * Do NOT change a valid 「6月18日」 to June 1 unless OCR glue pattern and Expected calendar day confirm June 1.
-  * 佛历 25xx年M月D日: Gregorian year = Buddhist_year - 543 (佛历2569年6月4日 → 2026-06-04).
-  * 公历 20xx年M月D日 → YYYY-MM-DD only when that exact pattern appears.
   * Reject impossible day > 31; fix glued digits (48→4, 41→4) when clearly 几月几日 under TIME.IS clock.
-  * If OCR date matches Expected calendar day ({expected_date}), use that YYYY-MM-DD.
+  * If OCR month/day matches Expected calendar day ({expected_date}), use that MM-DD.
   * Do NOT guess date from unrelated numbers (employee id, GMT+8, etc.).
+  * Do NOT output year; only month and day.
 - display_name / username_hint: Slack popup only (often Y_UX_ handle), not holidays or cities
 - timezone_iana: e.g. Asia/Shanghai if hinted, else null
 - Do NOT invent values
@@ -278,13 +277,19 @@ async def extract_checkin_from_ocr_text_llm(
                 extraction.clock_date,
             )
         extraction = replace(extraction, clock_date=ocr_date)
-    elif extraction.clock_date and extraction.clock_date != expected_date:
-        log.info(
-            "checkin_ocr_text_llm: drop clock_date %s (not send day %s)",
-            extraction.clock_date,
-            expected_date,
-        )
-        extraction = replace(extraction, clock_date=None)
+    elif extraction.clock_date:
+        from services.checkin_clock_time_service import date_matches_expected_month_day
+
+        if not date_matches_expected_month_day(
+            clock_date=extraction.clock_date,
+            expected_date=expected_date,
+        ):
+            log.info(
+                "checkin_ocr_text_llm: drop clock_date %s (month/day not send day %s)",
+                extraction.clock_date,
+                expected_date,
+            )
+            extraction = replace(extraction, clock_date=None)
 
     if not extraction.clock_time and inclusion_pick:
         log.info("checkin_ocr_text_llm: use inclusion clock from ocr text value=%s", inclusion_pick)

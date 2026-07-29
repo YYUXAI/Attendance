@@ -104,6 +104,26 @@ def validate_caption_identity_for_sender(
     return None
 
 
+def validate_caption_for_remote_diff(
+    *,
+    caption: str | None,
+    employee_id: str | None,
+) -> str | None:
+    """
+    工号测试群：只校验配文工号（若有），不要求英文名。
+    返回 None 表示通过；否则 CAPTION_IDENTITY_MISMATCH。
+    """
+    text = caption or ""
+    cap_eid = parse_employee_id_from_text(text)
+    reg_eid = str(employee_id or "").strip()
+    if cap_eid and reg_eid and cap_eid != reg_eid:
+        return "CAPTION_IDENTITY_MISMATCH"
+    uses_checkin_template = "#打卡" in text or bool(cap_eid)
+    if uses_checkin_template and reg_eid and not cap_eid:
+        return "CAPTION_IDENTITY_MISMATCH"
+    return None
+
+
 def parse_matter_from_text(text: str | None) -> str | None:
     """从 #打卡 模板或配文中解析「事项：签到/签退」。"""
     if not text:

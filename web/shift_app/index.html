@@ -214,9 +214,10 @@
 
 <body>
 
-  <h1>班次配置（全局）</h1>
+  <h1>班次配置</h1>
 
   <div class="meta" id="ymLabel">月份：—</div>
+  <div class="meta" id="displayHint">浏览模式显示 Google 日班表「今日班次」；月中换班会随同步更新。</div>
 
   <div class="search-bar">
 
@@ -391,6 +392,8 @@
     let stagedImportRows = null;
 
     let stagedFileName = '';
+
+    let displayDate = '';
 
 
 
@@ -654,13 +657,70 @@
 
 
 
+    function displayValue(r, field) {
+
+      if (editMode) return r[field] ?? '';
+
+      if (field === 'shift_time_range') {
+        if (r.display_shift) return r.display_shift;
+        const isCalendarRest = (r.calendar_shift_time_range || '') === '月休';
+        if (isCalendarRest) return '月休';
+        return r.calendar_shift_time_range || r.shift_time_range || '';
+      }
+
+      if (field === 'shift_checkin_time') {
+        if (r.display_checkin !== undefined && r.display_checkin !== null && String(r.display_checkin).length) {
+          return r.display_checkin;
+        }
+        if ((r.display_shift || r.calendar_shift_time_range || '') === '月休') return '';
+        return r.calendar_checkin || r.shift_checkin_time || '';
+      }
+
+      if (field === 'shift_checkout_time') {
+        if (r.display_checkout !== undefined && r.display_checkout !== null && String(r.display_checkout).length) {
+          return r.display_checkout;
+        }
+        if ((r.display_shift || r.calendar_shift_time_range || '') === '月休') return '';
+        return r.calendar_checkout || r.shift_checkout_time || '';
+      }
+
+      return r[field] ?? '';
+
+    }
+
+
+
+    function shiftCellTitle(r) {
+
+      if (editMode || !r.has_multiple_shifts) return '';
+
+      const codes = r.calendar_shift_codes || '';
+
+      return codes ? ('本月多班次：' + codes) : '';
+
+    }
+
     function rowMatchesSearch(r) {
 
       const q = normalizeSearchInput(searchQuery).toLowerCase();
 
       if (!q) return true;
 
-      const blob = FIELDS.map(f => String(r[f] || '')).join('').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const extra = [
+
+        r.calendar_shift_time_range,
+
+        r.calendar_checkin,
+
+        r.calendar_checkout,
+
+        r.calendar_shift_codes,
+
+        r.calendar_today_code,
+
+      ];
+
+      const blob = FIELDS.map(f => String(displayValue(r, f) || '')).concat(extra.map(x => String(x || ''))).join('').toLowerCase().replace(/[^a-z0-9]/g, '');
 
       return blob.includes(q);
 
@@ -748,9 +808,15 @@
 
           inp.className = 'cell';
 
-          inp.value = r[f] ?? '';
+          inp.value = displayValue(r, f);
 
           inp.readOnly = !editMode;
+
+          if (!editMode && f === 'shift_time_range') {
+
+            inp.title = shiftCellTitle(r);
+
+          }
 
           inp.addEventListener('input', () => {
 
@@ -788,7 +854,9 @@
 
       } else {
 
-        setStatus('共 ' + n + ' 条。点「编辑」修改表格；点「上传」批量导入。', false);
+        const dayHint = displayDate ? ('（今日 ' + displayDate + '）') : '';
+
+        setStatus('共 ' + n + ' 条' + dayHint + '。班次/上下班为今日日班表；「月休」列为整月休息日期；点「编辑」改汇总配置。', false);
 
       }
 
@@ -846,6 +914,8 @@
       }
 
       rows = (data.rows || []).map(r => ({ ...r, _isNew: false }));
+
+      displayDate = data.display_date || '';
 
       dirty = false;
 
@@ -1446,6 +1516,10 @@
 
 
     document.getElementById('btnEdit').addEventListener('click', toggleEdit);
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && !editMode) load();
+    });
 
     document.getElementById('searchInput').addEventListener('input', (e) => {
 

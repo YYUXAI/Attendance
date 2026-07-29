@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from infra.google_sheets_config import load_google_sheets_config
+from infra.shift_web_config import current_year_month, load_shift_web_config
 from services.google_sheets_shift_sync_service import sync_shifts_from_google_sheets
 
 log = logging.getLogger(__name__)
@@ -15,15 +16,24 @@ async def run_google_sheets_sync_worker() -> None:
         log.info("google_sheets_worker: disabled")
         return
 
+    sw_cfg = load_shift_web_config()
+    sync_ym = current_year_month(tz_name=sw_cfg.timezone_name)
+
     log.info(
-        "google_sheets_worker: started interval=%ss year_month=%s",
+        "google_sheets_worker: started interval=%ss (~%.1fh) sync_year_month=%s env_year_month=%s",
         cfg.sync_interval_seconds,
+        cfg.sync_interval_seconds / 3600,
+        sync_ym,
         cfg.year_month,
     )
 
     while True:
         try:
-            result = await asyncio.to_thread(sync_shifts_from_google_sheets, cfg=cfg)
+            result = await asyncio.to_thread(
+                sync_shifts_from_google_sheets,
+                cfg=cfg,
+                year_month=sync_ym,
+            )
             if result.ok:
                 log.info("google_sheets_worker: %s", result.message)
             else:

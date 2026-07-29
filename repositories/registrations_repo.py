@@ -120,6 +120,79 @@ def insert_registration(
         )
 
 
+def upsert_registration_stub(
+    *,
+    employee_id: str,
+    english_name: str,
+    registered_chat_id: int | None = None,
+) -> str:
+    """
+    预注册：仅工号+姓名，tg_id 为空。
+    返回 inserted | updated | skipped_bound。
+    """
+    eid = str(employee_id).strip()
+    name = str(english_name or "").strip() or eid
+    existing = get_by_employee_id(eid)
+    if existing is None:
+        with get_cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO public.registrations
+                    (employee_id, tg_id, english_name, registered_at, registered_chat_id)
+                VALUES
+                    (%s, NULL, %s, NOW(), %s)
+                """,
+                (eid, name, registered_chat_id),
+            )
+        return "inserted"
+    if existing.tg_id is not None:
+        return "skipped_bound"
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            UPDATE public.registrations
+            SET english_name = %s,
+                registered_chat_id = COALESCE(%s, registered_chat_id)
+            WHERE employee_id = %s AND tg_id IS NULL
+            """,
+            (name, registered_chat_id, eid),
+        )
+    return "updated"
+
+
+def bind_tg_to_registration(
+    *,
+    employee_id: str,
+    tg_id: int,
+    english_name: str,
+    registered_at_utc,
+    registered_chat_id: int,
+    tg_username: Optional[str],
+) -> bool:
+    """将 Telegram 账户绑定到预注册工号（tg_id 为空时）。"""
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            UPDATE public.registrations
+            SET tg_id = %s,
+                english_name = %s,
+                registered_at = %s,
+                registered_chat_id = %s,
+                tg_username = %s
+            WHERE employee_id = %s AND tg_id IS NULL
+            """,
+            (
+                int(tg_id),
+                english_name,
+                registered_at_utc,
+                int(registered_chat_id),
+                tg_username,
+                str(employee_id).strip(),
+            ),
+        )
+        return int(cur.rowcount or 0) > 0
+
+
 def list_by_shift_id_cur(cur: Cursor, *, shift_id: int) -> List[RegistrationRow]:
     """
     一期审计对象口径：registrations.shift_id == 当前班次的员工。

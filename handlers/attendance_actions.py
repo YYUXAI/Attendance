@@ -24,6 +24,7 @@ from repositories import (
     temporary_leave_records_repo,
 )
 from services import attendance_export_service, checkin_service
+from services.leave_flow_guard import check_can_back, check_can_leave, format_leave_duration_minutes
 
 router = Router()
 log = logging.getLogger(__name__)
@@ -50,15 +51,6 @@ def _reason_from_leave_message(text: str | None) -> str:
     return (text or "").strip()[:500]
 
 
-def _format_leave_duration_minutes(mins: int) -> str:
-    if mins < 60:
-        return f"{mins}分钟"
-    hours, rem = divmod(int(mins), 60)
-    if rem:
-        return f"{hours}小时{rem}分钟"
-    return f"{hours}小时"
-
-
 def _user_context(*, tg_id: int):
     reg = registrations_repo.get_by_tg_id(int(tg_id))
     if not reg:
@@ -69,8 +61,15 @@ def _user_context(*, tg_id: int):
 
 @router.inline_query()
 async def inline_query_for_fill_input(inline_query: InlineQuery) -> None:
-    """支持「填入输入框」按钮把草稿写入输入栏。"""
-    await inline_query.answer([], cache_time=1, is_personal=True)
+    """↗ 填入输入框时 Telegram 会发 inline_query，必须快速 answer 否则客户端一直转圈。"""
+    try:
+        await inline_query.answer([], cache_time=0, is_personal=True)
+    except Exception:
+        log.exception(
+            "inline_query answer failed tg_id=%s query_len=%s",
+            inline_query.from_user.id if inline_query.from_user else None,
+            len(inline_query.query or ""),
+        )
 
 
 @router.callback_query(F.data.in_(_ACTION_CB.keys()))
@@ -100,6 +99,20 @@ async def parse_leave_sent(message: Message) -> None:
             "[LEAVE_RECORD] action=leave_skip tg_id=%s chat_id=%s reason=not_registered",
             user.id,
             message.chat.id,
+        )
+        return
+    ok, hint = check_can_leave(
+        employee_id=str(reg.employee_id),
+        chat_id=int(message.chat.id),
+    )
+    if not ok:
+        await message.reply(hint or "无法离岗")
+        log.info(
+            "[LEAVE_RECORD] action=leave_blocked tg_id=%s chat_id=%s employee_id=%s reason=%s",
+            user.id,
+            message.chat.id,
+            reg.employee_id,
+            hint,
         )
         return
     record_id = temporary_leave_records_repo.insert_leave(
@@ -132,17 +145,25 @@ async def parse_back_sent(message: Message) -> None:
             message.chat.id,
         )
         return
+    ok, hint = check_can_back(
+        employee_id=str(reg.employee_id),
+        chat_id=int(message.chat.id),
+    )
+    if not ok:
+        await message.reply(hint or "无法返岗")
+        log.info(
+            "[LEAVE_RECORD] action=back_blocked tg_id=%s chat_id=%s employee_id=%s reason=%s",
+            user.id,
+            message.chat.id,
+            reg.employee_id,
+            hint,
+        )
+        return
     open_rec = temporary_leave_records_repo.get_latest_open(
         employee_id=str(reg.employee_id),
         chat_id=int(message.chat.id),
     )
     if not open_rec:
-        log.info(
-            "[LEAVE_RECORD] action=back_skip tg_id=%s chat_id=%s employee_id=%s reason=no_open_leave",
-            user.id,
-            message.chat.id,
-            reg.employee_id,
-        )
         return
     now_utc = datetime.now(timezone.utc)
     leave_at = open_rec.leave_at
@@ -162,7 +183,7 @@ async def parse_back_sent(message: Message) -> None:
         message.chat.id,
         reg.employee_id,
         mins,
-        _format_leave_duration_minutes(mins),
+        format_leave_duration_minutes(mins),
     )
 
 
@@ -284,6 +305,7 @@ async def _run_export(
             start=start,
             end=end,
             bot=bot,
+            export_tg_id=tg_id,
         )
         pivot, overview, dates = attendance_export_service.build_pivot_and_overview(
             rows=all_rows,

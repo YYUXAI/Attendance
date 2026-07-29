@@ -39,7 +39,13 @@ async def _begin_register_in_private(*, message: Message, tg_id: int) -> None:
         await message.reply(text="您已经注册过了")
         return
     register_service.mark_waiting_register_input(tg_id=tg_id)
-    await message.reply(text="请输入：英文名$工号\n示例：Jeffery$72694")
+    await message.reply(
+        text=(
+            "请私聊发送一行（不要复制「请输入」「示例」等提示）：\n"
+            "英文名$工号\n"
+            "例如：GRANDFOR$74808"
+        )
+    )
 
 
 @router.message(F.text == "注册")

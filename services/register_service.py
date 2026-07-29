@@ -38,7 +38,11 @@ def preview_register(*, tg_id: int, text: str) -> ServiceResult | RegisterPrevie
     if not parsed:
         return ServiceResult(
             ok=False,
-            message="格式不正确，请输入：英文名$工号\n示例：Jeffery$72694",
+            message=(
+                "格式不正确，请只发送一行：英文名$工号\n"
+                "例如：GRANDFOR$74808\n"
+                "（勿复制「请输入」「示例」等提示文字）"
+            ),
             error_code="INVALID_FORMAT",
         )
 
@@ -75,14 +79,33 @@ def confirm_register(
             error_code="TG_ALREADY_BOUND",
         )
 
-    if registrations_repo.get_by_employee_id(preview.employee_id):
+    existing = registrations_repo.get_by_employee_id(preview.employee_id)
+    if existing is not None:
+        if existing.tg_id is not None:
+            _pending.pop(token, None)
+            clear_waiting_register_input(tg_id=tg_id)
+            return ServiceResult(
+                ok=False,
+                message="该工号已绑定其他 Telegram 账户，请联系管理员处理",
+                error_code="EMPLOYEE_ALREADY_BOUND",
+            )
+        bound = registrations_repo.bind_tg_to_registration(
+            employee_id=preview.employee_id,
+            tg_id=tg_id,
+            english_name=preview.english_name,
+            registered_at_utc=datetime.now(timezone.utc),
+            registered_chat_id=registered_chat_id,
+            tg_username=tg_username,
+        )
         _pending.pop(token, None)
         clear_waiting_register_input(tg_id=tg_id)
-        return ServiceResult(
-            ok=False,
-            message="该工号已绑定其他 Telegram 账户，请联系管理员处理",
-            error_code="EMPLOYEE_ALREADY_BOUND",
-        )
+        if not bound:
+            return ServiceResult(
+                ok=False,
+                message="该工号已被他人绑定，请确认工号或联系管理员",
+                error_code="EMPLOYEE_ALREADY_BOUND",
+            )
+        return ServiceResult(ok=True, message="您成功注册")
 
     registrations_repo.insert_registration(
         employee_id=preview.employee_id,

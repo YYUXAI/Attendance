@@ -30,7 +30,7 @@ Keys:
 - display_name: text on Slack/IM profile popup (string or null)
 - username_hint: login/handle without @ (string or null)
 - clock_time: largest HH:MM:SS on screen (string or null)
-- clock_date: YYYY-MM-DD if visible (string or null)
+- clock_date: MM-DD if visible (string or null)
 - timezone_iana: e.g. Asia/Shanghai (string or null)
 - confidence: 0-1
 
@@ -241,9 +241,10 @@ def _sanitize_field(value: str | None, *, field: str) -> Optional[str]:
 
         return normalize_clock_time_text(s)
 
-    if field == "clock_date" and not re.match(r"^20\d{2}-\d{1,2}-\d{1,2}$", s):
-        dm = re.search(r"\b(20\d{2}-\d{1,2}-\d{1,2})\b", s)
-        return dm.group(1) if dm else None
+    if field == "clock_date":
+        from services.checkin_clock_time_service import normalize_clock_date_month_day
+
+        return normalize_clock_date_month_day(s)
 
     if field in {"display_name", "username_hint"} and not _is_plausible_identity(s):
         return None
@@ -2236,17 +2237,27 @@ async def extract_checkin_from_image(
     reference_utc: datetime | None = None,
     shift_timezone: str = "Asia/Shanghai",
     tg_id: int | None = None,
+    skip_name_verify: bool = False,
+    chat_id: int | None = None,
+    chat_title: str | None = None,
 ) -> tuple[Optional[CheckinImageExtraction], Optional[CheckinAiExtractError]]:
     if not image_bytes:
         return None, CheckinAiExtractError("AI_EMPTY_IMAGE", "打卡失败，图片为空")
 
     if config.zhipu:
+        from infra.checkin_ai_config import resolve_checkin_ai_config_for_chat
         from services.checkin_zhipu_vision_service import extract_checkin_from_zhipu_vision
 
+        config = resolve_checkin_ai_config_for_chat(
+            config,
+            chat_id=chat_id,
+            chat_title=chat_title,
+        )
         log.info(
-            "checkin_ai: extract_backend=zhipu model=%s base=%s",
+            "checkin_ai: extract_backend=zhipu model=%s base=%s chat_id=%s",
             config.model,
             config.base_url,
+            chat_id,
         )
         return await extract_checkin_from_zhipu_vision(
             image_bytes=image_bytes,
@@ -2256,6 +2267,9 @@ async def extract_checkin_from_image(
             reference_utc=reference_utc,
             shift_timezone=shift_timezone,
             tg_id=tg_id,
+            skip_name_verify=skip_name_verify,
+            chat_id=chat_id,
+            chat_title=chat_title,
         )
 
     prepared = _prepare_image_bytes(image_bytes)
@@ -2357,6 +2371,7 @@ async def extract_checkin_from_image(
                     expected_english_name=expected_english_name,
                     reference_utc=ref_utc,
                     shift_timezone=shift_timezone,
+                    skip_name_verify=skip_name_verify,
                     vision_enabled=not ocr_only,
                 )
                 if name_err is not None:
@@ -2400,7 +2415,7 @@ async def extract_checkin_from_image(
                     display_name=extraction.display_name,
                     username_hint=extraction.username_hint,
                     clock_time=srv_clock,
-                    clock_date=local.strftime("%Y-%m-%d"),
+                    clock_date=local.strftime("%m-%d"),
                     timezone_iana=tz_name,
                     confidence=extraction.confidence,
                 )

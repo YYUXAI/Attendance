@@ -12,9 +12,19 @@ from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 
-from domain.daily_attendance_status import PunchAt, evaluate_calendar_day_status
+from infra.bbq_google_sheets_config import (
+    bbq_summary_excluded_employee_ids,
+    is_bbq_attendance_summary_chat,
+)
+from infra.checkin_remote_diff_config import (
+    is_yymg_attendance_summary_chat,
+    yymg_summary_excluded_employee_ids,
+)
+from domain.daily_attendance_status import PunchAt, evaluate_calendar_day_status, is_midnight_noon_shift
+from domain.employee_region import SCREENSHOT_TIMEZONE, resolve_employee_shift_timezone
 from infra.db import get_cursor
-from repositories import employee_shift_config_repo, registrations_repo, shifts_repo
+from repositories import employee_shift_calendar_repo, employee_shift_config_repo, registrations_repo, shifts_repo
+from services.employee_shift_day_service import DailyShift, load_calendar_map
 from repositories.clock_records_repo import ensure_clock_action_column
 from repositories.temporary_leave_records_repo import TemporaryLeaveRecordRow, list_by_chat_and_range
 from services.shift_import_service import ATTENDANCE_EXPORT_HEADERS_CN
@@ -128,6 +138,7 @@ async def resolve_group_display_name(
 
 def ensure_tables() -> None:
     employee_shift_config_repo.ensure_table()
+    employee_shift_calendar_repo.ensure_table()
     ensure_clock_action_column()
 
 
@@ -165,14 +176,37 @@ def _bounds_utc(*, d: date, tz_name: str) -> tuple[datetime, datetime]:
     return s.astimezone(timezone.utc), e.astimezone(timezone.utc)
 
 
+def _bounds_utc_span(*, d: date, tz_names: Iterable[str]) -> tuple[datetime, datetime]:
+    """多地区员工：取各时区当日起止 UTC 的并集，避免漏打卡。"""
+    names = [t for t in dict.fromkeys(tz_names) if t]
+    if not names:
+        return _bounds_utc(d=d, tz_name=SCREENSHOT_TIMEZONE)
+    starts: list[datetime] = []
+    ends: list[datetime] = []
+    for tz_name in names:
+        s, e = _bounds_utc(d=d, tz_name=tz_name)
+        starts.append(s)
+        ends.append(e)
+    return min(starts), max(ends)
+
+
+def _worker_timezone(*, chat_id: int, region_code: str, shift_timezone: str) -> str:
+    group_fallback = _timezone_for_attendance_group(chat_id=int(chat_id))
+    return resolve_employee_shift_timezone(
+        region_code=region_code,
+        shift_timezone=shift_timezone,
+        fallback=group_fallback or SCREENSHOT_TIMEZONE,
+    )
+
+
 def _fetch_group_workers(*, chat_id: int, year_month: str) -> List[dict]:
     """在册 + 当月班表；须曾在本群打过卡（不依赖 registrations.shift_id）。"""
-    shift_tz = _timezone_for_attendance_group(chat_id=int(chat_id))
     with get_cursor() as cur:
         cur.execute(
             """
             SELECT r.employee_id, COALESCE(c.english_name, r.english_name, ''), r.tg_username,
-                   c.shift_time_range, c.shift_checkin_time, c.shift_checkout_time, c.monthly_rest_days
+                   c.shift_time_range, c.shift_checkin_time, c.shift_checkout_time, c.monthly_rest_days,
+                   c.region_code, c.shift_timezone
             FROM public.registrations r
             JOIN public.employee_shift_config c
               ON c.employee_id = r.employee_id AND c.year_month = %s
@@ -189,6 +223,8 @@ def _fetch_group_workers(*, chat_id: int, year_month: str) -> List[dict]:
         rows = cur.fetchall() or []
     out: List[dict] = []
     for r in rows:
+        region_code = str(r[7] or "")
+        shift_timezone = str(r[8] or "")
         out.append(
             {
                 "employee_id": str(r[0]).strip(),
@@ -198,9 +234,21 @@ def _fetch_group_workers(*, chat_id: int, year_month: str) -> List[dict]:
                 "cin": r[4],
                 "cout": r[5],
                 "rest_days": str(r[6] or ""),
-                "tz": shift_tz,
+                "region_code": region_code,
+                "tz": _worker_timezone(
+                    chat_id=int(chat_id),
+                    region_code=region_code,
+                    shift_timezone=shift_timezone,
+                ),
             }
         )
+    excluded: set[str] = set()
+    if is_bbq_attendance_summary_chat(chat_id=int(chat_id)):
+        excluded |= set(bbq_summary_excluded_employee_ids())
+    if is_yymg_attendance_summary_chat(chat_id=int(chat_id)):
+        excluded |= set(yymg_summary_excluded_employee_ids())
+    if excluded:
+        out = [w for w in out if w["employee_id"] not in excluded]
     return out
 
 
@@ -214,24 +262,25 @@ def _format_shift_range_label(*, shift_range: str, cin: object, cout: object) ->
 
 
 def distinct_shift_labels_for_group(*, chat_id: int, year_month: str) -> str:
-    """从当月班表汇总本群所有不重复班次时段（用于开班群公告展示）。"""
+    """从当月日班表汇总本群所有不重复班次时段（用于开班群公告展示）。"""
     workers = _fetch_group_workers(chat_id=int(chat_id), year_month=str(year_month))
     if not workers:
         return ""
+    employee_ids = [w["employee_id"] for w in workers]
+    calendar_map = load_calendar_map(year_month=str(year_month), employee_ids=employee_ids)
     items: list[tuple[time, str]] = []
     seen: set[str] = set()
     for w in workers:
-        label = _format_shift_range_label(
-            shift_range=str(w.get("shift_range") or ""),
-            cin=w.get("cin"),
-            cout=w.get("cout"),
+        labels = _shift_labels_for_worker(
+            worker=w,
+            calendar_map=calendar_map,
+            year_month=str(year_month),
         )
-        if not label or label in seen:
-            continue
-        seen.add(label)
-        cin = w.get("cin")
-        sort_key = cin if isinstance(cin, time) else time(0, 0)
-        items.append((sort_key, label))
+        for sort_key, label in labels:
+            if not label or label in seen:
+                continue
+            seen.add(label)
+            items.append((sort_key, label))
     items.sort(key=lambda x: x[0])
     return " / ".join(lbl for _, lbl in items)
 
@@ -367,10 +416,12 @@ def compute_month_stats_for_employee(
     month_start: date,
     month_end: date,
     as_of_local: date,
+    year_month: str,
     checkin: time,
     checkout: time,
     rest_days_raw: str,
     tz_name: str,
+    calendar_map: dict[tuple[str, date], DailyShift] | None = None,
 ) -> EmployeeMonthAttendanceStats:
     """
     按自然日汇总本月考勤（与导出 CSV、群 23:00 统计同规则）：
@@ -396,11 +447,16 @@ def compute_month_stats_for_employee(
         end_utc=end_utc,
     )
     row = {
+        "employee_id": str(employee_id),
         "tz": tz_name,
         "cin": checkin,
         "cout": checkout,
         "rest_days": rest_days_raw,
+        "shift_range": "",
     }
+    cal = calendar_map
+    if cal is None:
+        cal = load_calendar_map(year_month=str(year_month), employee_ids=[str(employee_id)])
 
     attendance_days = 0
     missing_count = 0
@@ -416,6 +472,7 @@ def compute_month_stats_for_employee(
             row=row,
             punches_today=punches_today,
             punches_yesterday=punches_yesterday,
+            calendar_map=cal,
         )
         if status == "月休":
             d += timedelta(days=1)
@@ -447,25 +504,118 @@ def _local_date(dt: datetime, tz: ZoneInfo) -> date:
     return dt.astimezone(tz).date()
 
 
+def _day_schedule_from_calendar(
+    *,
+    employee_id: str,
+    d: date,
+    row: dict,
+    calendar_map: dict[tuple[str, date], DailyShift] | None,
+) -> tuple[time, time, bool, str]:
+    """返回 (cin, cout, is_rest, shift_range_label)。"""
+    cin_cfg = _as_time(row.get("cin"))
+    cout_cfg = _as_time(row.get("cout"))
+    cfg_is_midnight_noon = is_midnight_noon_shift(checkin=cin_cfg, checkout=cout_cfg)
+    if calendar_map:
+        ds = calendar_map.get((str(employee_id), d))
+        if ds is not None:
+            if ds.is_rest:
+                return time(0, 0), time(0, 0), True, ""
+            if cfg_is_midnight_noon:
+                label = _format_shift_range_label(
+                    shift_range=str(row.get("shift_range") or ""),
+                    cin=cin_cfg,
+                    cout=cout_cfg,
+                )
+                return cin_cfg, cout_cfg, False, label or ds.shift_time_range
+            return ds.checkin, ds.checkout, False, ds.shift_time_range
+    rest = _parse_rest_days(str(row.get("rest_days") or ""))
+    if d.day in rest:
+        return time(0, 0), time(0, 0), True, ""
+    cin = cin_cfg
+    cout = cout_cfg
+    label = _format_shift_range_label(
+        shift_range=str(row.get("shift_range") or ""),
+        cin=cin,
+        cout=cout,
+    )
+    return cin, cout, False, label
+
+
+def _shift_labels_for_worker(
+    *,
+    worker: dict,
+    calendar_map: dict[tuple[str, date], DailyShift],
+    year_month: str,
+) -> list[tuple[time, str]]:
+    labels: list[tuple[time, str]] = []
+    seen: set[str] = set()
+    ym_prefix = str(year_month)
+    for (eid, wd), ds in calendar_map.items():
+        if eid != worker["employee_id"]:
+            continue
+        if wd.strftime("%Y-%m") != ym_prefix:
+            continue
+        if ds.is_rest:
+            continue
+        label = _format_shift_range_label(
+            shift_range=ds.shift_time_range,
+            cin=ds.checkin,
+            cout=ds.checkout,
+        )
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        labels.append((ds.checkin, label))
+    if labels:
+        return labels
+    label = _format_shift_range_label(
+        shift_range=str(worker.get("shift_range") or ""),
+        cin=worker.get("cin"),
+        cout=worker.get("cout"),
+    )
+    if label:
+        cin = worker.get("cin")
+        sort_key = cin if isinstance(cin, time) else time(0, 0)
+        return [(sort_key, label)]
+    return []
+
+
 def _status_for_row(
     *,
     d: date,
     row: dict,
     punches_today: List[ClockPunch],
     punches_yesterday: List[ClockPunch],
+    calendar_map: dict[tuple[str, date], DailyShift] | None = None,
 ) -> tuple[str, str, str]:
     tz = ZoneInfo(row["tz"])
-    cin = _as_time(row["cin"])
-    cout = _as_time(row["cout"])
-    rest = _parse_rest_days(row["rest_days"])
+    eid = str(row.get("employee_id") or "")
+    cin, cout, is_rest, _ = _day_schedule_from_calendar(
+        employee_id=eid,
+        d=d,
+        row=row,
+        calendar_map=calendar_map,
+    )
+    if is_rest:
+        return "月休", "", ""
+    prev_d = d - timedelta(days=1)
+    prev_cin, prev_cout, prev_rest, _ = _day_schedule_from_calendar(
+        employee_id=eid,
+        d=prev_d,
+        row=row,
+        calendar_map=calendar_map,
+    )
     status, checkin_utc, checkout_utc = evaluate_calendar_day_status(
         day=d,
         checkin=cin,
         checkout=cout,
         tz_name=row["tz"],
-        rest_days=rest,
+        rest_days=set(),
         punches_today=_to_punch_at(punches_today),
         punches_yesterday=_to_punch_at(punches_yesterday),
+        prev_checkin=prev_cin,
+        prev_checkout=prev_cout,
+        prev_was_rest=prev_rest,
     )
     first = _fmt_local_hms(checkin_utc, tz=tz) if checkin_utc else ""
     last = _fmt_local_hms(checkout_utc, tz=tz) if checkout_utc else ""
@@ -480,7 +630,7 @@ def compute_shift_start_notice_buckets(
 ) -> ShiftStartNoticeBuckets:
     """
     开班群公告人数统计：与 build_rows_for_group / 当日导出同一规则。
-    - 月休 → 报备休假名单（employee_shift_config.monthly_rest_days）
+    - 月休 → 日班表 cell_kind=rest（无日历时回退 employee_shift_config.monthly_rest_days）
     - 缺卡 → 未打卡名单
     - 迟到 / 迟到+早退 → 迟到名单（且计入已到岗）
     - 正常 / 早退 → 已到岗
@@ -503,9 +653,13 @@ def compute_shift_start_notice_buckets(
     if not workers:
         return ShiftStartNoticeBuckets(0, [], [], [], [])
 
-    tz_name = workers[0]["tz"]
-    day_start_utc, day_end_utc = _bounds_utc(d=target_date, tz_name=tz_name)
-    prev_start_utc, _ = _bounds_utc(d=target_date - timedelta(days=1), tz_name=tz_name)
+    tz_names = [w["tz"] for w in workers]
+    calendar_map = load_calendar_map(
+        year_month=year_month,
+        employee_ids=[w["employee_id"] for w in workers],
+    )
+    prev_start_utc, _ = _bounds_utc_span(d=target_date - timedelta(days=1), tz_names=tz_names)
+    _, day_end_utc = _bounds_utc_span(d=target_date, tz_names=tz_names)
     clock_map = _fetch_clock_map(chat_id=int(chat_id), start_utc=prev_start_utc, end_utc=day_end_utc)
 
     arrived: List[ShiftStartNoticePerson] = []
@@ -519,11 +673,12 @@ def compute_shift_start_notice_buckets(
         punches_today = [p for p in all_punches if p.at.astimezone(tz).date() == target_date]
         prev_d = target_date - timedelta(days=1)
         punches_yesterday = [p for p in all_punches if p.at.astimezone(tz).date() == prev_d]
-        status, _, _ = _status_for_row(
+        status, first, last = _status_for_row(
             d=target_date,
             row=w,
             punches_today=punches_today,
             punches_yesterday=punches_yesterday,
+            calendar_map=calendar_map,
         )
         person = ShiftStartNoticePerson(
             english_name=str(w["english_name"] or ""),
@@ -531,6 +686,9 @@ def compute_shift_start_notice_buckets(
         )
         if status == "月休":
             on_rest.append(person)
+        elif status == "缺卡" and first and not last:
+            # 开班时刻：已打上班卡、下班卡未到 → 已到岗（日班 G 等仅缺签退不算未打卡）
+            arrived.append(person)
         elif status == "缺卡":
             absent.append(person)
         elif status in ("迟到", "迟到+早退"):
@@ -560,9 +718,14 @@ def build_rows_for_group(
     workers = _fetch_group_workers(chat_id=chat_id, year_month=year_month)
     if not workers:
         return []
-    tz_name = workers[0]["tz"]
-    day_start_utc, day_end_utc = _bounds_utc(d=target_date, tz_name=tz_name)
-    prev_start_utc, _ = _bounds_utc(d=target_date - timedelta(days=1), tz_name=tz_name)
+    tz_names = [w["tz"] for w in workers]
+    prev_start_utc, _ = _bounds_utc_span(d=target_date - timedelta(days=1), tz_names=tz_names)
+    _, day_end_utc = _bounds_utc_span(d=target_date, tz_names=tz_names)
+    day_start_utc, _ = _bounds_utc_span(d=target_date, tz_names=tz_names)
+    calendar_map = load_calendar_map(
+        year_month=year_month,
+        employee_ids=[w["employee_id"] for w in workers],
+    )
     clock_map = _fetch_clock_map(chat_id=chat_id, start_utc=prev_start_utc, end_utc=day_end_utc)
     leave_map = _fetch_leave_map(chat_id=chat_id, start_utc=day_start_utc, end_utc=day_end_utc)
 
@@ -578,8 +741,15 @@ def build_rows_for_group(
             row=w,
             punches_today=punches_today,
             punches_yesterday=punches_yesterday,
+            calendar_map=calendar_map,
         )
         tz = ZoneInfo(w["tz"])
+        _, _, _, shift_label = _day_schedule_from_calendar(
+            employee_id=w["employee_id"],
+            d=target_date,
+            row=w,
+            calendar_map=calendar_map,
+        )
         leave_display = _format_leave_time_display(
             records=leave_map.get(w["employee_id"], []),
             tz=tz,
@@ -598,7 +768,7 @@ def build_rows_for_group(
                 group_name=gname,
                 employee_id=w["employee_id"],
                 english_name=w["english_name"],
-                shift_time_range=w["shift_range"],
+                shift_time_range=shift_label or w["shift_range"],
                 first_clock_local=first,
                 last_clock_local=last,
                 leave_time_display=leave_display,
@@ -608,20 +778,63 @@ def build_rows_for_group(
     return out
 
 
-def summarize_text(*, rows: Iterable[AttendanceSummaryRow], target_date: date) -> str:
+def summarize_text(
+    *, rows: Iterable[AttendanceSummaryRow], target_date: date, chat_id: int | None = None
+) -> str:
+    """群 23:00 汇总：聚焦异常，正常仅报人数。
+
+    顺序：迟到 / 早退 / 缺卡 / 未返岗 / 正常 / 月休。
+    Y-UX-KQBBQ 群不展示「未返岗」块。
+    「迟到+早退」同时计入迟到与早退。除正常外均列出名单。
+    """
     row_list = list(rows)
     by_status: Dict[str, List[str]] = defaultdict(list)
     for r in row_list:
         by_status[r.status].append(f"{r.english_name}({r.employee_id})")
-    keys = ["缺卡", "迟到", "早退", "迟到+早退", "正常", "月休"]
-    lines = [f"当日考勤统计 {target_date.isoformat()}"]
-    for k in keys:
-        vals = by_status.get(k, [])
-        lines.append(f"{k}：{', '.join(vals) if vals else '无'}")
-    not_back = [f"{r.english_name}({r.employee_id})" for r in row_list if r.leave_time_display == "未返岗"]
-    lines.append(f"未返岗：{', '.join(not_back) if not_back else '无'}")
-    if not (by_status.get("缺卡") or by_status.get("迟到") or by_status.get("早退") or by_status.get("迟到+早退")):
-        lines.append("今日无异常，全部正常/休息。")
+
+    def names_for(*statuses: str) -> List[str]:
+        out: List[str] = []
+        for s in statuses:
+            out.extend(by_status.get(s, []))
+        return out
+
+    late = names_for("迟到", "迟到+早退")
+    early = names_for("早退", "迟到+早退")
+    missing = names_for("缺卡")
+    not_back = [
+        f"{r.english_name}({r.employee_id})"
+        for r in row_list
+        if r.leave_time_display == "未返岗"
+    ]
+    normal_count = len(by_status.get("正常", []))
+    rest = names_for("月休")
+    show_not_back = not is_bbq_attendance_summary_chat(chat_id=chat_id)
+
+    lines = [f"今日考勤概览-{target_date.strftime('%Y/%m/%d')}", ""]
+
+    def _add_block(idx: int, label: str, names: List[str]) -> None:
+        lines.append(f"{idx}.{label}：{len(names)}人")
+        if names:
+            lines.append("，".join(names))
+        lines.append("")
+
+    idx = 1
+    _add_block(idx, "迟到", late)
+    idx += 1
+    _add_block(idx, "早退", early)
+    idx += 1
+    _add_block(idx, "缺卡", missing)
+    idx += 1
+    if show_not_back:
+        _add_block(idx, "未返岗", not_back)
+        idx += 1
+    lines.append(f"{idx}.正常：{normal_count}人")
+    lines.append("")
+    idx += 1
+    _add_block(idx, "月休", rest)
+
+    while lines and lines[-1] == "":
+        lines.pop()
     return "\n".join(lines)
 
 
@@ -700,18 +913,23 @@ def _fetch_monthly_roster_workers(*, year_month: str) -> List[dict]:
     with get_cursor() as cur:
         cur.execute(
             """
-            SELECT r.employee_id, COALESCE(c.english_name, r.english_name, ''), r.tg_username,
-                   c.shift_time_range, c.shift_checkin_time, c.shift_checkout_time, c.monthly_rest_days
-            FROM public.registrations r
-            JOIN public.employee_shift_config c
-              ON c.employee_id = r.employee_id AND c.year_month = %s
-            ORDER BY r.employee_id ASC
+            SELECT c.employee_id,
+                   COALESCE(NULLIF(r.english_name, ''), NULLIF(c.english_name, ''), c.employee_id),
+                   r.tg_username,
+                   c.shift_time_range, c.shift_checkin_time, c.shift_checkout_time, c.monthly_rest_days,
+                   c.region_code, c.shift_timezone
+            FROM public.employee_shift_config c
+            LEFT JOIN public.registrations r ON r.employee_id = c.employee_id
+            WHERE c.year_month = %s
+            ORDER BY CAST(c.employee_id AS BIGINT)
             """,
             (str(year_month),),
         )
         rows = cur.fetchall() or []
     out: List[dict] = []
     for r in rows:
+        region_code = str(r[7] or "")
+        shift_timezone = str(r[8] or "")
         out.append(
             {
                 "employee_id": str(r[0]).strip(),
@@ -721,8 +939,82 @@ def _fetch_monthly_roster_workers(*, year_month: str) -> List[dict]:
                 "cin": r[4],
                 "cout": r[5],
                 "rest_days": str(r[6] or ""),
-                "tz": _DEFAULT_SHIFT_TZ,
+                "region_code": region_code,
+                "tz": resolve_employee_shift_timezone(
+                    region_code=region_code,
+                    shift_timezone=shift_timezone,
+                    fallback=_DEFAULT_SHIFT_TZ,
+                ),
             }
+        )
+    return out
+
+
+def build_rows_for_roster_at_chat(
+    *,
+    target_date: date,
+    chat_id: int,
+    only_employee_ids: frozenset[str],
+    group_name: str = "",
+) -> List[AttendanceSummaryRow]:
+    """MGZ 班表全员：打卡/离岗记录仅取自指定考勤群。"""
+    year_month = target_date.strftime("%Y-%m")
+    workers = _fetch_monthly_roster_workers(year_month=year_month)
+    workers = [w for w in workers if w["employee_id"] in only_employee_ids]
+    if is_yymg_attendance_summary_chat(chat_id=int(chat_id)):
+        excluded = yymg_summary_excluded_employee_ids()
+        if excluded:
+            workers = [w for w in workers if w["employee_id"] not in excluded]
+    if not workers:
+        return []
+    gname = (group_name or "").strip() or fallback_group_display_name_from_db(chat_id=int(chat_id))
+    calendar_map = load_calendar_map(
+        year_month=year_month,
+        employee_ids=[w["employee_id"] for w in workers],
+    )
+    tz_names = [w["tz"] for w in workers]
+    prev_start_utc, _ = _bounds_utc_span(d=target_date - timedelta(days=1), tz_names=tz_names)
+    _, day_end_utc = _bounds_utc_span(d=target_date, tz_names=tz_names)
+    day_start_utc, _ = _bounds_utc_span(d=target_date, tz_names=tz_names)
+    clock_map = _fetch_clock_map(chat_id=int(chat_id), start_utc=prev_start_utc, end_utc=day_end_utc)
+    leave_map = _fetch_leave_map(chat_id=int(chat_id), start_utc=day_start_utc, end_utc=day_end_utc)
+    out: List[AttendanceSummaryRow] = []
+    for w in workers:
+        eid = w["employee_id"]
+        tz = ZoneInfo(w["tz"])
+        all_punches = clock_map.get(eid, [])
+        punches_today = [p for p in all_punches if p.at.astimezone(tz).date() == target_date]
+        prev_d = target_date - timedelta(days=1)
+        punches_yesterday = [p for p in all_punches if p.at.astimezone(tz).date() == prev_d]
+        status, first, last = _status_for_row(
+            d=target_date,
+            row=w,
+            punches_today=punches_today,
+            punches_yesterday=punches_yesterday,
+            calendar_map=calendar_map,
+        )
+        leave_display = _format_leave_time_display(
+            records=leave_map.get(eid, []),
+            tz=tz,
+        )
+        _, _, _, shift_label = _day_schedule_from_calendar(
+            employee_id=eid,
+            d=target_date,
+            row=w,
+            calendar_map=calendar_map,
+        )
+        out.append(
+            AttendanceSummaryRow(
+                chat_id=int(chat_id),
+                group_name=gname,
+                employee_id=eid,
+                english_name=w["english_name"],
+                shift_time_range=shift_label or w["shift_range"],
+                first_clock_local=first,
+                last_clock_local=last,
+                leave_time_display=leave_display,
+                status=status,
+            )
         )
     return out
 
@@ -731,15 +1023,22 @@ def build_rows_for_monthly_roster_remainder(
     *,
     target_date: date,
     exclude_employee_ids: set[str],
+    only_employee_ids: frozenset[str] | None = None,
 ) -> List[AttendanceSummaryRow]:
     """班表中有、前面各群导出尚未包含的员工（按最近打卡群统计当日状态）。"""
     from repositories.clock_records_repo import get_latest_chat_id_for_employee
 
     year_month = target_date.strftime("%Y-%m")
     workers = _fetch_monthly_roster_workers(year_month=year_month)
+    calendar_map = load_calendar_map(
+        year_month=year_month,
+        employee_ids=[w["employee_id"] for w in workers],
+    )
     out: List[AttendanceSummaryRow] = []
     for w in workers:
         eid = w["employee_id"]
+        if only_employee_ids is not None and eid not in only_employee_ids:
+            continue
         if eid in exclude_employee_ids:
             continue
         chat_id = get_latest_chat_id_for_employee(employee_id=eid)
@@ -750,6 +1049,13 @@ def build_rows_for_monthly_roster_remainder(
                 row=w,
                 punches_today=[],
                 punches_yesterday=[],
+                calendar_map=calendar_map,
+            )
+            _, _, _, shift_label = _day_schedule_from_calendar(
+                employee_id=eid,
+                d=target_date,
+                row=w,
+                calendar_map=calendar_map,
             )
             out.append(
                 AttendanceSummaryRow(
@@ -757,7 +1063,7 @@ def build_rows_for_monthly_roster_remainder(
                     group_name="当月班表",
                     employee_id=eid,
                     english_name=w["english_name"],
-                    shift_time_range=w["shift_range"],
+                    shift_time_range=shift_label or w["shift_range"],
                     first_clock_local=first,
                     last_clock_local=last,
                     leave_time_display="",
@@ -781,10 +1087,17 @@ def build_rows_for_monthly_roster_remainder(
             row=w,
             punches_today=punches_today,
             punches_yesterday=punches_yesterday,
+            calendar_map=calendar_map,
         )
         leave_display = _format_leave_time_display(
             records=leave_map.get(eid, []),
             tz=tz,
+        )
+        _, _, _, shift_label = _day_schedule_from_calendar(
+            employee_id=eid,
+            d=target_date,
+            row=w,
+            calendar_map=calendar_map,
         )
         out.append(
             AttendanceSummaryRow(
@@ -792,7 +1105,7 @@ def build_rows_for_monthly_roster_remainder(
                 group_name=gname,
                 employee_id=eid,
                 english_name=w["english_name"],
-                shift_time_range=w["shift_range"],
+                shift_time_range=shift_label or w["shift_range"],
                 first_clock_local=first,
                 last_clock_local=last,
                 leave_time_display=leave_display,

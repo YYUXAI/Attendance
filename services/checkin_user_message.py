@@ -5,12 +5,14 @@ MSG_NAME_MISMATCH = "打卡失败：姓名不一致。"
 MSG_CAPTION_NOT_SELF = "打卡失败：配文不是本人，请使用自己的签到/签退模板。"
 MSG_TIME_MISMATCH = "打卡失败：时间不一致。"
 MSG_DATE_MISMATCH = "打卡失败：日期不一致。"
+MSG_EMPLOYEE_ID_MISMATCH = "打卡失败：工号不一致。"
 MSG_NAME_AND_TIME_MISMATCH = "打卡失败：姓名不一致，时间不一致。"
 MSG_AI_SERVICE_DOWN = "打卡失败：识别服务不可用，请稍后重试。"
 MSG_AI_BALANCE_EXHAUSTED = "打卡失败：智谱账户余额不足，请充值后重试。"
 MSG_AI_AUTH_FAILED = "打卡失败：智谱 API Key 无效或已过期，请联系管理员。"
 # 与 MSG_TIME_MISMATCH 相同；保留别名供旧引用
 MSG_SCREENSHOT_TIME_ABNORMAL = MSG_TIME_MISMATCH
+MSG_PC_SCREENSHOT_REQUIRED = "请发送PC端截图"
 
 _NAME_ERROR_CODES = frozenset(
     {
@@ -43,6 +45,13 @@ _DATE_ERROR_CODES = frozenset(
     {
         "AI_DATE_NOT_FOUND",
         "AI_DATE_MISMATCH",
+    }
+)
+
+_EMPLOYEE_ID_ERROR_CODES = frozenset(
+    {
+        "REMOTE_EMPLOYEE_ID_MISMATCH",
+        "REMOTE_EMPLOYEE_ID_NOT_FOUND",
     }
 )
 
@@ -97,6 +106,10 @@ def user_message_for_checkin_error(error_code: str | None) -> str:
         return MSG_TIME_MISMATCH
     if code == "CAPTION_IDENTITY_MISMATCH":
         return MSG_CAPTION_NOT_SELF
+    if code == "AI_MOBILE_CLIENT":
+        return MSG_PC_SCREENSHOT_REQUIRED
+    if code in _EMPLOYEE_ID_ERROR_CODES:
+        return MSG_EMPLOYEE_ID_MISMATCH
     if is_name_related_checkin_error(code):
         return MSG_NAME_MISMATCH
     return MSG_NAME_MISMATCH

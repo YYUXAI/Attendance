@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import re
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Optional
 
@@ -268,6 +270,383 @@ def detect_other_person_identity(
         return disp or hint or token
 
     return None
+
+
+def _literal_in_raw(value: str, raw: str) -> bool:
+    """字段值须在模型原文中出现（含归一化子串）。"""
+    if not value or not raw:
+        return False
+    v = value.strip()
+    if v in raw:
+        return True
+    vn = _norm_alnum(v)
+    rn = _norm_alnum(raw)
+    return bool(vn) and vn in rn
+
+
+def match_expected_sender(
+    *,
+    display_name: Optional[str],
+    username_hint: Optional[str],
+    tg_username: Optional[str],
+    english_name: Optional[str],
+) -> bool:
+    """仅比对发送者登记用户名/英文名，无需完整 RegistrationRow。"""
+    sender = RegistrationRow(
+        id=0,
+        employee_id="",
+        tg_id=0,
+        english_name=(english_name or None),
+        tg_username=(tg_username or None),
+        registered_chat_id=None,
+        organization_id=None,
+        shift_id=None,
+    )
+    return match_registration_for_sender(
+        sender=sender,
+        display_name=display_name,
+        username_hint=username_hint,
+    )
+
+
+def sender_identity_present_in_raw(
+    *,
+    raw: str,
+    tg_username: Optional[str],
+    english_name: Optional[str],
+) -> bool:
+    """发送者登记身份是否出现在 AI 全文任意位置。"""
+    if not (raw or "").strip():
+        return False
+    blob_alnum = _norm_alnum(raw)
+    uname = (tg_username or "").strip().lstrip("@")
+    ename = (english_name or "").strip()
+    if uname and _identity_matches_blob(needle=uname, blob_alnum=blob_alnum, min_len=4):
+        return True
+    if ename and _identity_matches_blob(needle=ename, blob_alnum=blob_alnum, min_len=3):
+        return True
+    return False
+
+
+def _expand_display_around_ename(raw: str, ename: str) -> Optional[str]:
+    low = raw.lower()
+    el = ename.lower()
+    idx = low.find(el)
+    if idx < 0:
+        return None
+    start = idx
+    while start > 0 and raw[start - 1] not in " \n\t\",{[]":
+        start -= 1
+    end = idx + len(ename)
+    while end < len(raw) and raw[end] not in " \n\t\",{[]":
+        end += 1
+    snippet = raw[start:end].strip().strip('"').strip("'")
+    if snippet and _literal_in_raw(snippet, raw):
+        return snippet
+    return None
+
+
+def _hint_from_raw_for_username(raw: str, uname: str) -> Optional[str]:
+    if not uname:
+        return None
+    low_raw = raw.lower()
+    low_u = uname.lower().lstrip("@")
+    idx = low_raw.find(low_u)
+    if idx >= 0:
+        snippet = raw[idx : idx + len(uname)]
+        if _literal_in_raw(snippet, raw):
+            return snippet.lstrip("@").lower()
+    if _literal_in_raw(uname, raw):
+        return uname.lstrip("@").lower()
+    return None
+
+
+def extract_grounded_sender_identity_from_raw(
+    *,
+    raw: str,
+    tg_username: Optional[str],
+    english_name: Optional[str],
+) -> Optional[tuple[str, str]]:
+    """
+    在 AI 全文里只找发送者本人；找到则返回可在原文 grounding 的 (display, hint)。
+    找不到发送者则返回 None（不强行填登记名）。
+    """
+    if not sender_identity_present_in_raw(
+        raw=raw,
+        tg_username=tg_username,
+        english_name=english_name,
+    ):
+        return None
+
+    uname = (tg_username or "").strip().lstrip("@")
+    ename = (english_name or "").strip()
+    display_out: Optional[str] = None
+    hint_out: Optional[str] = None
+
+    for m in _OTHER_HANDLE_RE.finditer(raw):
+        token = m.group(1)
+        if match_expected_sender(
+            display_name=token,
+            username_hint=token,
+            tg_username=tg_username,
+            english_name=english_name,
+        ):
+            if _literal_in_raw(token, raw):
+                display_out = token
+                hint_out = token.lstrip("@").lower()
+                break
+
+    if not hint_out and uname:
+        hint_out = _hint_from_raw_for_username(raw, uname)
+
+    if not display_out and ename:
+        display_out = _expand_display_around_ename(raw, ename)
+
+    if not display_out and hint_out and _literal_in_raw(hint_out, raw):
+        display_out = hint_out
+
+    if not hint_out and display_out and _literal_in_raw(display_out, raw):
+        hint_out = display_out.lstrip("@").lower()
+
+    if not display_out and not hint_out:
+        return None
+
+    if display_out and not _literal_in_raw(display_out, raw):
+        display_out = None
+    if hint_out and not _literal_in_raw(hint_out, raw):
+        hint_out = None
+    if not display_out and not hint_out:
+        return None
+    return display_out or "", hint_out or ""
+
+
+_ATTENDANCE_GROUP_NOISE_RE = re.compile(
+    r"y[-_ ]?ux[-_ ]?kq[a-z0-9]*|y[-_ ]?ux[-_ ]?dkq|yymg[-_ ]?dkq",
+    re.IGNORECASE,
+)
+_ATTENDANCE_GROUP_NOISE_ALNUM = frozenset(
+    {"kqbbq", "kqbqq", "kqbhq", "kqbb", "yymg", "dkqnew", "dkq"}
+)
+
+
+def is_attendance_group_identity_noise(
+    display_name: Optional[str],
+    username_hint: Optional[str],
+) -> bool:
+    """方案 B：识别结果是否像考勤群名/群标题误读。"""
+    for val in (display_name, username_hint):
+        if not (val or "").strip():
+            continue
+        text = val.strip()
+        low = text.lower()
+        alnum = _norm_alnum(text)
+        if _ATTENDANCE_GROUP_NOISE_RE.search(low):
+            return True
+        if any(marker in alnum for marker in _ATTENDANCE_GROUP_NOISE_ALNUM):
+            return True
+        if "考勤" in text and "y_ux_" not in low and "y-ux-" not in low:
+            return True
+    return False
+
+
+def strip_group_name_noise_fields(
+    *,
+    display_name: Optional[str],
+    username_hint: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """只清掉为群名噪声的字段，保留非噪声字段（如本人姓名）。"""
+    disp = display_name
+    hint = username_hint
+    if is_attendance_group_identity_noise(None, hint):
+        hint = None
+    if is_attendance_group_identity_noise(disp, None):
+        disp = None
+    return disp, hint
+
+
+_UI_IDENTITY_NOISE_RE = re.compile(
+    r"("
+    r"macos|新功能|登录项|扩展|"
+    r"time\.?is|现在的北京|将北京时间|"
+    r"更改表情|emoji\s*status|set emoji|"
+    r"my profile|new group|new channel|saved messages|night mode|"
+    r"world population|independence day|更多信息|取消关注"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_ui_identity_noise(text: Optional[str]) -> bool:
+    """系统通知/菜单/网页装饰文案，不能当姓名。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if _UI_IDENTITY_NOISE_RE.search(t):
+        return True
+    # 纯中文说明句且不含 Y_UX / 英文名形态
+    if re.search(r"[\u4e00-\u9fff]", t) and not re.search(r"[A-Za-z]{3,}", t):
+        if any(k in t for k in ("查看", "管理", "设置", "功能", "通知")):
+            return True
+    return False
+
+
+def parse_visible_texts_from_payload(data: object) -> list[str]:
+    """从模型 JSON 中提取 visible_texts。"""
+    if not isinstance(data, dict):
+        return []
+    raw = data.get("visible_texts")
+    if raw is None:
+        return []
+    out: list[str] = []
+    if isinstance(raw, str):
+        parts = [p.strip() for p in re.split(r"[\n|;]+", raw) if p.strip()]
+        raw_list: list[object] = parts
+    elif isinstance(raw, list):
+        raw_list = raw
+    else:
+        return []
+    seen: set[str] = set()
+    for item in raw_list:
+        if item is None:
+            continue
+        s = str(item).strip()
+        if not s or s.lower() in {"null", "none"}:
+            continue
+        key = _norm_alnum(s) or s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+        if len(out) >= 40:
+            break
+    return out
+
+
+def parse_visible_texts_from_raw(raw: str) -> list[str]:
+    if not (raw or "").strip():
+        return []
+    payload = raw.strip()
+    if payload.startswith("```"):
+        payload = re.sub(r"^```(?:json)?\s*", "", payload)
+        payload = re.sub(r"\s*```$", "", payload)
+    try:
+        data = json.loads(payload)
+    except Exception:
+        repaired = re.sub(r",\s*([}\]])", r"\1", payload)
+        try:
+            data = json.loads(repaired)
+        except Exception:
+            return []
+    return parse_visible_texts_from_payload(data)
+
+
+def pick_sender_identity_from_visible_texts(
+    *,
+    visible_texts: list[str],
+    tg_username: Optional[str],
+    english_name: Optional[str],
+) -> Optional[tuple[str, str]]:
+    """
+    从可见字符串列表中挑选发送者身份。
+    命中本人则返回 (display, hint)；未命中返回 None（不回填登记名）。
+    """
+    if not visible_texts:
+        return None
+    best: Optional[tuple[int, str, str]] = None
+    for text in visible_texts:
+        if is_ui_identity_noise(text):
+            continue
+        if is_attendance_group_identity_noise(text, text):
+            continue
+        if not match_expected_sender(
+            display_name=text,
+            username_hint=text,
+            tg_username=tg_username,
+            english_name=english_name,
+        ):
+            continue
+        # 更长、更像完整 handle 的优先
+        score = len(_norm_alnum(text))
+        if re.search(r"y[_-]?ux[_-]?", text, re.IGNORECASE):
+            score += 20
+        hint = text.lstrip("@").split()[0] if text.strip() else text
+        cand = (score, text.strip(), hint)
+        if best is None or cand[0] > best[0]:
+            best = cand
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
+def apply_visible_texts_identity(
+    *,
+    display_name: Optional[str],
+    username_hint: Optional[str],
+    visible_texts: list[str],
+    tg_username: Optional[str],
+    english_name: Optional[str],
+) -> tuple[Optional[str], Optional[str], str]:
+    """
+    用 visible_texts 纠正姓名（严格）：姓名只能来自可见列表，禁止沿用 AI 自填。
+
+    返回 (display, hint, action)：
+    - picked: 从可见列表选中本人
+    - cleared_ungrounded: 列表无本人 → 清空（含 AI 幻觉登记名、UI 噪声）
+    - keep: 列表无本人且 AI 也未填姓名
+    """
+    picked = pick_sender_identity_from_visible_texts(
+        visible_texts=visible_texts,
+        tg_username=tg_username,
+        english_name=english_name,
+    )
+    if picked is not None:
+        return picked[0], picked[1], "picked"
+
+    # 图上列表找不到本人：一律清空，禁止 AI 凭 prompt 登记身份「编」出姓名后通过校验
+    if display_name or username_hint:
+        return None, None, "cleared_ungrounded"
+    return None, None, "keep"
+
+
+@dataclass(frozen=True)
+class PlanBSenderIdentityResult:
+    display_name: str
+    username_hint: str
+
+
+def resolve_sender_identity_plan_b(
+    *,
+    display_name: Optional[str],
+    username_hint: Optional[str],
+    raw: str,
+    tg_username: Optional[str],
+    english_name: Optional[str],
+) -> Optional[PlanBSenderIdentityResult]:
+    """
+    方案 B：群名噪声时丢弃误读，仅当 AI 全文里真有发送者身份才纠正回填。
+    只有群名、没有本人 → 不回填登记名（必须失败）。
+    """
+    if match_expected_sender(
+        display_name=display_name,
+        username_hint=username_hint,
+        tg_username=tg_username,
+        english_name=english_name,
+    ):
+        return None
+
+    resolved = extract_grounded_sender_identity_from_raw(
+        raw=raw,
+        tg_username=tg_username,
+        english_name=english_name,
+    )
+    if resolved is None:
+        return None
+
+    display_out, hint_out = resolved
+    return PlanBSenderIdentityResult(
+        display_name=display_out or "",
+        username_hint=hint_out or "",
+    )
 
 
 def match_registration_for_sender(
