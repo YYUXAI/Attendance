@@ -243,6 +243,37 @@ def format_test_group_success_message(
     )
 
 
+def format_ai_dry_run_success_message(
+    *,
+    english_name: str,
+    employee_id: str,
+    clock_time_utc: datetime,
+    matter: str,
+    used_ai_time: bool,
+    verified_image_user: bool,
+    image_display_name: str | None = None,
+    timezone_name: str = "Asia/Shanghai",
+) -> str:
+    """非正式群 AI 试跑：完整校验后给用户可读结果，不入库。"""
+    body = format_test_group_success_message(
+        english_name=english_name,
+        clock_time_utc=clock_time_utc,
+        matter=matter,
+        timezone_name=timezone_name,
+    )
+    lines = [body, f"工号：{employee_id}"]
+    if used_ai_time:
+        lines.append("时间来源：截图 AI 识别")
+    else:
+        lines.append("时间来源：服务器时间（AI 未采用截图时间）")
+    if verified_image_user and image_display_name:
+        lines.append(f"截图用户：{image_display_name}（已校验）")
+    elif verified_image_user:
+        lines.append("截图用户：已与账号校验")
+    lines.append("说明：本地试跑，未写入打卡数据库")
+    return "\n".join(lines)
+
+
 def format_success_message(
     *,
     english_name: str,

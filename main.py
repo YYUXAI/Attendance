@@ -7,9 +7,9 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 import asyncio
 
-from dotenv import load_dotenv
+from infra.workspace_bot_env import bootstrap_bot_token_env
 
-load_dotenv(override=True, encoding="utf-8")
+bootstrap_bot_token_env()
 
 from runtime import prepare_runtime, run_mode
 

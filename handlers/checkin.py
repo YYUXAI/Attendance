@@ -25,6 +25,19 @@ router = Router()
 log = logging.getLogger(__name__)
 
 
+async def _reply_checkin(message: Message, text: str) -> None:
+    try:
+        await message.reply(text=text)
+    except Exception:
+        try:
+            await message.answer(text=text)
+        except Exception:
+            log.exception(
+                "checkin: failed to reply tg_id=%s",
+                message.from_user.id if message.from_user else None,
+            )
+
+
 def _extract_file_id(message: Message) -> str | None:
     if message.document:
         return message.document.file_id
@@ -53,6 +66,10 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
         log.info(
             "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=no_matter_in_caption_skip",
             message.from_user.id,
+        )
+        await _reply_checkin(
+            message,
+            "打卡未处理：请用「↗ 签到/签退」模板发送，或确保图片说明里包含「签到」或「签退」。",
         )
         return
 
@@ -130,6 +147,14 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
         )
         return
 
+    if ai_dry_run:
+        await _reply_checkin(
+            message,
+            f"已收到{matter}截图，正在 AI 识别（试跑不入库）…",
+        )
+    else:
+        await _reply_checkin(message, f"已收到{matter}截图，正在识别，请稍候…")
+
     sent_utc = message.date
     if sent_utc is not None and sent_utc.tzinfo is None:
         from datetime import timezone
@@ -192,7 +217,18 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
             employee_id,
             ai_out.clock_time_utc,
         )
-        success_text = f"{matter}成功"
+        ext = ai_out.extraction
+        image_name = ext.display_name if ext else None
+        success_text = checkin_service.format_ai_dry_run_success_message(
+            english_name=english_name or "",
+            employee_id=str(employee_id),
+            clock_time_utc=ai_out.clock_time_utc,
+            matter=matter,
+            used_ai_time=ai_out.used_ai_time,
+            verified_image_user=ai_out.verified_image_user,
+            image_display_name=image_name,
+            timezone_name="Asia/Shanghai",
+        )
         try:
             await message.reply(text=success_text)
         except Exception:

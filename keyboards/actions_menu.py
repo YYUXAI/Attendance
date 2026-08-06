@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from aiogram.types import Message
+from aiogram.types import Message, ReplyKeyboardRemove
 
 from infra.checkin_remote_diff_config import requires_remote_diff_checkin
+from infra.gateway_group_scope import is_omni_group_chat
 from infra.shift_web_config import build_shift_web_app_url, current_year_month, load_shift_web_config
 from services.shift_web_session import create_session
 from keyboards.group_actions import build_single_action_inline_or_callback
@@ -20,7 +21,8 @@ MENU_TEXT = "请选择功能（使用输入框下方按钮；输入 / 可打开�
 GROUP_REPLY_MENU_TEXT = "功能菜单（底部按钮或 /start）"
 _GROUP_INLINE_HINT = "请点击下方按钮操作"
 _GROUP_INLINE_HINT_REMOTE = (
-    "请点击 ↗ 填入模板并附带截图发送；若提示无法选择对话，请点「复制」后粘贴"
+    "请点击 ↗ 填入模板；发截图时请「回复本条消息」发送（群隐私模式下否则 Bot 收不到）。"
+    "若无法 ↗，请点「复制」后粘贴并回复本条发送。"
 )
 
 
@@ -42,6 +44,12 @@ async def reply_actions_menu(*, message: Message, is_admin: bool, tg_id: int | N
                 is_admin=is_admin,
                 shift_web_app_url=shift_url,
             ),
+        )
+        return
+    if is_omni_group_chat(int(message.chat.id)):
+        await message.reply(
+            "本群为 Omni 工作群，请使用 /qa 或 import；考勤菜单仅在考勤群提供。",
+            reply_markup=ReplyKeyboardRemove(),
         )
         return
     await message.reply(
