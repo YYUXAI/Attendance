@@ -80,37 +80,37 @@ def confirm_register(
         )
 
     existing = registrations_repo.get_by_employee_id(preview.employee_id)
-    if existing is not None:
-        if existing.tg_id is not None:
-            _pending.pop(token, None)
-            clear_waiting_register_input(tg_id=tg_id)
-            return ServiceResult(
-                ok=False,
-                message="该工号已绑定其他 Telegram 账户，请联系管理员处理",
-                error_code="EMPLOYEE_ALREADY_BOUND",
-            )
-        bound = registrations_repo.bind_tg_to_registration(
-            employee_id=preview.employee_id,
-            tg_id=tg_id,
-            english_name=preview.english_name,
-            registered_at_utc=datetime.now(timezone.utc),
-            registered_chat_id=registered_chat_id,
-            tg_username=tg_username,
-        )
+    if existing is None:
         _pending.pop(token, None)
         clear_waiting_register_input(tg_id=tg_id)
-        if not bound:
-            return ServiceResult(
-                ok=False,
-                message="该工号已被他人绑定，请确认工号或联系管理员",
-                error_code="EMPLOYEE_ALREADY_BOUND",
-            )
-        return ServiceResult(ok=True, message="您成功注册")
+        return ServiceResult(
+            ok=False,
+            message="该工号尚未预登记，请联系管理员处理",
+            error_code="EMPLOYEE_NOT_PRE_REGISTERED",
+        )
 
-    registrations_repo.insert_registration(
+    if existing.tg_id is not None:
+        _pending.pop(token, None)
+        clear_waiting_register_input(tg_id=tg_id)
+        return ServiceResult(
+            ok=False,
+            message="该工号已绑定其他 Telegram 账户，请联系管理员处理",
+            error_code="EMPLOYEE_ALREADY_BOUND",
+        )
+
+    if not english_name_matches(existing.english_name, preview.english_name):
+        _pending.pop(token, None)
+        clear_waiting_register_input(tg_id=tg_id)
+        return ServiceResult(
+            ok=False,
+            message="英文名与工号资料不匹配，请确认或联系管理员",
+            error_code="EMPLOYEE_NAME_MISMATCH",
+        )
+
+    bound = registrations_repo.bind_tg_to_registration(
         employee_id=preview.employee_id,
         tg_id=tg_id,
-        english_name=preview.english_name,
+        english_name=existing.english_name or preview.english_name,
         registered_at_utc=datetime.now(timezone.utc),
         registered_chat_id=registered_chat_id,
         tg_username=tg_username,
@@ -118,8 +118,18 @@ def confirm_register(
 
     _pending.pop(token, None)
     clear_waiting_register_input(tg_id=tg_id)
+    if not bound:
+        return ServiceResult(
+            ok=False,
+            message="该工号已被他人绑定，请确认工号或联系管理员",
+            error_code="EMPLOYEE_ALREADY_BOUND",
+        )
     return ServiceResult(ok=True, message="您成功注册")
 
 
 def get_preview(*, token: str) -> Optional[RegisterPreview]:
     return _pending.get(token)
+
+
+def english_name_matches(expected: str | None, provided: str) -> bool:
+    return bool(expected and expected.strip().casefold() == provided.strip().casefold())
