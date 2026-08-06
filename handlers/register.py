@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from aiogram import F, Router
 from aiogram.filters import BaseFilter
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from keyboards.main_menu import PRIVATE_REPLY_MENU_TEXTS
+from infra.log_redaction import redacted_ref, text_summary
 from repositories import registrations_repo
 from services import register_service
 
 
 router = Router()
 log = logging.getLogger(__name__)
+
+_ATTENDANCE_REGISTER_COMMAND_RE = re.compile(r"^/attendance_register(?:@\w+)?(?:\s|$)")
 
 
 class RegisterPrivateInputFilter(BaseFilter):
@@ -33,16 +37,32 @@ class RegisterPrivateInputFilter(BaseFilter):
         return True
 
 
+class RegisterBeginInputFilter(BaseFilter):
+    """私聊注册入口：兼容中文按钮文案和统一壳菜单命令。"""
+
+    async def __call__(self, message: Message) -> bool:
+        if message.chat.type != "private":
+            return False
+        text = (message.text or "").strip()
+        return text == "注册" or bool(_ATTENDANCE_REGISTER_COMMAND_RE.match(text))
+
+
 async def _begin_register_in_private(*, message: Message, tg_id: int) -> None:
     if registrations_repo.get_by_tg_id(int(tg_id)) is not None:
         register_service.clear_waiting_register_input(tg_id=tg_id)
         await message.reply(text="您已经注册过了")
         return
     register_service.mark_waiting_register_input(tg_id=tg_id)
-    await message.reply(text="请输入：英文名$工号\n示例：Jeffery$72694")
+    await message.reply(
+        text=(
+            "请私聊发送一行（不要复制「请输入」「示例」等提示）：\n"
+            "英文名$工号\n"
+            "例如：GRANDFOR$74808"
+        )
+    )
 
 
-@router.message(F.text == "注册")
+@router.message(F.text, RegisterBeginInputFilter())
 async def register_begin_message(message: Message) -> None:
     user = message.from_user
     if not user or message.chat.type != "private":
@@ -100,28 +120,27 @@ async def register_cancel_callback(callback: CallbackQuery) -> None:
 @router.message(F.text, RegisterPrivateInputFilter())
 async def register_input_message_handler(message: Message) -> None:
     tid = message.from_user.id if message.from_user else None
-    text_preview = (message.text or "")[:200]
     log.info(
-        "[REGISTER_HANDLER_ENTER] tg_id=%s chat_type=%s text_preview=%r",
-        tid,
+        "[REGISTER_HANDLER_ENTER] tg_ref=%s chat_type=%s text=%s",
+        redacted_ref(tid),
         message.chat.type,
-        text_preview,
+        text_summary(message.text),
     )
 
     if message.chat.type != "private":
-        log.info("[REGISTER_HANDLER_RETURN] tg_id=%s reason=not_private", tid)
+        log.info("[REGISTER_HANDLER_RETURN] tg_ref=%s reason=not_private", redacted_ref(tid))
         return
     if not message.from_user:
-        log.info("[REGISTER_HANDLER_RETURN] tg_id=%s reason=no_from_user", tid)
+        log.info("[REGISTER_HANDLER_RETURN] tg_ref=%s reason=no_from_user", redacted_ref(tid))
         return
     if not register_service.is_waiting_register_input(tg_id=message.from_user.id):
-        log.info("[REGISTER_HANDLER_RETURN] tg_id=%s reason=not_waiting_register", tid)
+        log.info("[REGISTER_HANDLER_RETURN] tg_ref=%s reason=not_waiting_register", redacted_ref(tid))
         return
     text = message.text or ""
     preview_or_err = register_service.preview_register(tg_id=message.from_user.id, text=text)
     if not hasattr(preview_or_err, "token"):
         await message.reply(text=preview_or_err.message)
-        log.info("[REGISTER_HANDLER_RETURN] tg_id=%s reason=replied_invalid_preview", tid)
+        log.info("[REGISTER_HANDLER_RETURN] tg_ref=%s reason=replied_invalid_preview", redacted_ref(tid))
         return
 
     preview = preview_or_err
@@ -140,4 +159,4 @@ async def register_input_message_handler(message: Message) -> None:
             ]
         ),
     )
-    log.info("[REGISTER_HANDLER_RETURN] tg_id=%s reason=replied_preview_ok", tid)
+    log.info("[REGISTER_HANDLER_RETURN] tg_ref=%s reason=replied_preview_ok", redacted_ref(tid))

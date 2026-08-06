@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import secrets
-from datetime import time
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,9 @@ from infra.shift_web_config import current_year_month, load_shift_web_config
 from infra.telegram_webapp_auth import tg_user_id_from_init_data, validate_telegram_init_data
 from repositories import admin_list_repo, employee_shift_config_repo
 from services import shift_import_service, shift_web_session
+from services.shift_view_service import filter_shift_config_rows, shift_view_for_tg_id
+from services.employee_shift_day_service import load_calendar_map
+from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
 
@@ -154,6 +157,106 @@ def _row_to_json(row) -> dict[str, Any]:
     }
 
 
+def _calendar_display_by_employee(
+    *,
+    year_month: str,
+    employee_ids: list[str],
+    as_of: date,
+) -> dict[str, dict[str, Any]]:
+    """从 Google 同步的日班表生成列表展示字段（今日班次 + 是否多班次）。"""
+    if not employee_ids:
+        return {}
+    cal_map = load_calendar_map(year_month=year_month, employee_ids=employee_ids)
+    by_emp: dict[str, list[tuple[date, object]]] = {eid: [] for eid in employee_ids}
+    ym_prefix = str(year_month)
+    for (eid, wd), ds in cal_map.items():
+        if wd.strftime("%Y-%m") != ym_prefix:
+            continue
+        by_emp.setdefault(eid, []).append((wd, ds))
+
+    out: dict[str, dict[str, Any]] = {}
+    for eid in employee_ids:
+        entries = sorted(by_emp.get(eid, []), key=lambda x: x[0])
+        codes: list[str] = []
+        seen: set[str] = set()
+        for _, ds in entries:
+            if ds.is_rest or not ds.shift_code:
+                continue
+            if ds.shift_code not in seen:
+                seen.add(ds.shift_code)
+                codes.append(ds.shift_code)
+
+        today = cal_map.get((eid, as_of))
+        today_range = ""
+        today_cin = ""
+        today_cout = ""
+        today_code = ""
+        if today is not None:
+            if today.is_rest:
+                today_range = "月休"
+            else:
+                today_range = today.shift_time_range
+                today_code = today.shift_code
+                today_cin = today.checkin.strftime("%H:%M:%S")
+                today_cout = today.checkout.strftime("%H:%M:%S")
+
+        codes_str = "→".join(codes) if len(codes) > 1 else (codes[0] if codes else "")
+        if today_range == "月休":
+            display_shift = "月休"
+            display_checkin = ""
+            display_checkout = ""
+        elif today_range:
+            display_shift = (
+                f"{codes_str} · 今日{today_code} {today_range}"
+                if codes_str and len(codes) > 1
+                else today_range
+            )
+            display_checkin = today_cin
+            display_checkout = today_cout
+        elif codes_str:
+            display_shift = codes_str
+            display_checkin = ""
+            display_checkout = ""
+        else:
+            display_shift = ""
+            display_checkin = ""
+            display_checkout = ""
+
+        out[eid] = {
+            "calendar_shift_codes": codes_str,
+            "calendar_shift_time_range": today_range,
+            "calendar_checkin": today_cin,
+            "calendar_checkout": today_cout,
+            "calendar_today_code": today_code,
+            "has_multiple_shifts": len(codes) > 1,
+            "display_shift": display_shift,
+            "display_checkin": display_checkin,
+            "display_checkout": display_checkout,
+        }
+    return out
+
+
+def _rows_to_json(
+    rows,
+    *,
+    year_month: str,
+    as_of: date | None = None,
+) -> list[dict[str, Any]]:
+    cfg = load_shift_web_config()
+    ref = as_of or datetime.now(ZoneInfo(cfg.timezone_name)).date()
+    cal = _calendar_display_by_employee(
+        year_month=year_month,
+        employee_ids=[str(r.employee_id) for r in rows],
+        as_of=ref,
+    )
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = _row_to_json(row)
+        item.update(cal.get(str(row.employee_id), {}))
+        out.append(item)
+    return out
+
+
 async def _handle_exchange_session(request: web.Request) -> web.Response:
     """用 Telegram initData 换取 web_session（避免部分客户端拿不到 initData 头）。"""
     try:
@@ -186,7 +289,7 @@ def _tg_id_from_init_data_raw(request: web.Request, init_data: str) -> int | Non
 
 
 async def _handle_list(request: web.Request) -> web.Response:
-    _, err = _require_admin(request)
+    tg_id, err = _require_admin(request)
     if err:
         return err
     ym = (request.query.get("year_month") or "").strip()
@@ -196,8 +299,17 @@ async def _handle_list(request: web.Request) -> web.Response:
     if not _YM_RE.match(ym):
         return web.json_response({"ok": False, "message": "invalid year_month"}, status=400)
     rows = employee_shift_config_repo.list_by_year_month(year_month=ym)
+    view = shift_view_for_tg_id(tg_id=tg_id)
+    rows = filter_shift_config_rows(rows=rows, year_month=ym, view=view)
+    cfg = load_shift_web_config()
+    as_of = datetime.now(ZoneInfo(cfg.timezone_name)).date()
     return web.json_response(
-        {"ok": True, "year_month": ym, "rows": [_row_to_json(r) for r in rows]},
+        {
+            "ok": True,
+            "year_month": ym,
+            "display_date": as_of.isoformat(),
+            "rows": _rows_to_json(rows, year_month=ym, as_of=as_of),
+        },
         headers={"Cache-Control": "no-store"},
     )
 
@@ -314,6 +426,8 @@ async def _do_send_export(
     if not _YM_RE.match(ym):
         return web.json_response({"ok": False, "message": "invalid year_month"}, status=400)
     rows = employee_shift_config_repo.list_by_year_month(year_month=ym)
+    view = shift_view_for_tg_id(tg_id=target)
+    rows = filter_shift_config_rows(rows=rows, year_month=ym, view=view)
     bot: Bot = request.app["bot"]
     fname = f"shift_export_{ym}.csv"
     data = shift_import_service.encode_shift_config_csv(year_month=ym, rows=rows)
@@ -371,7 +485,7 @@ async def _handle_send_export(request: web.Request) -> web.Response:
 
 
 async def _handle_export_csv(request: web.Request) -> web.Response:
-    _, err = _require_admin(request)
+    tg_id, err = _require_admin(request)
     if err:
         for k, v in _download_cors_headers(request).items():
             err.headers[k] = v
@@ -383,6 +497,8 @@ async def _handle_export_csv(request: web.Request) -> web.Response:
     if not _YM_RE.match(ym):
         return web.json_response({"ok": False, "message": "invalid year_month"}, status=400)
     rows = employee_shift_config_repo.list_by_year_month(year_month=ym)
+    view = shift_view_for_tg_id(tg_id=tg_id)
+    rows = filter_shift_config_rows(rows=rows, year_month=ym, view=view)
     body = shift_import_service.encode_shift_config_csv(year_month=ym, rows=rows)
     fname = f"shift_export_{ym}.csv"
     headers = {
@@ -446,12 +562,15 @@ async def _handle_import_batch(request: web.Request) -> web.Response:
             status=400,
         )
     listed = employee_shift_config_repo.list_by_year_month(year_month=ym_out)
+    cfg = load_shift_web_config()
+    as_of = datetime.now(ZoneInfo(cfg.timezone_name)).date()
     return web.json_response(
         {
             "ok": True,
             "saved": saved,
             "year_month": ym_out,
-            "rows": [_row_to_json(r) for r in listed],
+            "display_date": as_of.isoformat(),
+            "rows": _rows_to_json(listed, year_month=ym_out, as_of=as_of),
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -474,7 +593,7 @@ async def _handle_index(_request: web.Request) -> web.Response:
     index = _STATIC_DIR / "index.html"
     if not index.is_file():
         return web.Response(text="shift app not found", status=404)
-    return web.FileResponse(index)
+    return web.FileResponse(index, headers={"Cache-Control": "no-store, max-age=0"})
 
 
 def register_shift_web_routes(app: web.Application) -> None:

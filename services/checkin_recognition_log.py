@@ -8,6 +8,7 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from domain.checkin_image_extraction import CheckinImageExtraction
+from infra.log_redaction import presence, redacted_ref, text_summary
 
 log = logging.getLogger(__name__)
 
@@ -91,18 +92,12 @@ def log_checkin_ai_text(
             ordered.append(f"{key}={fields[key]!r}")
 
     log.info(
-        "[CHECKIN_AI_TEXT] phase=%s tg_id=%s %s",
+        "[CHECKIN_AI_TEXT] phase=%s tg_ref=%s fields=%s raw=%s",
         phase,
-        tg_id if tg_id is not None else "",
-        " ".join(ordered) if ordered else "(empty)",
+        redacted_ref(tg_id),
+        len(ordered),
+        text_summary(raw),
     )
-    if raw and str(raw).strip():
-        log.info(
-            "[CHECKIN_AI_TEXT] phase=%s tg_id=%s raw_json_begin\n%s\nraw_json_end",
-            phase,
-            tg_id if tg_id is not None else "",
-            str(raw).strip(),
-        )
 
 
 def log_checkin_recognition(
@@ -131,21 +126,21 @@ def log_checkin_recognition(
             clock_local = str(clock_time_utc)
 
     log.info(
-        "[CHECKIN_RECOGNIZE] stage=%s tg_id=%s employee_id=%s composite=%s "
-        "ocr_name=%r ocr_hint=%r ocr_time=%r ocr_date=%r ocr_tz=%r "
-        "expected_user=%r expected_name=%r matter=%r error=%s clock_utc=%s clock_local=%s",
+        "[CHECKIN_RECOGNIZE] stage=%s tg_ref=%s employee_ref=%s composite=%s "
+        "ocr_name=%s ocr_hint=%s ocr_time=%s ocr_date=%s ocr_tz=%s "
+        "expected_user=%s expected_name=%s matter=%s error=%s clock_utc=%s clock_local=%s",
         stage,
-        tg_id,
-        employee_id or "",
+        redacted_ref(tg_id),
+        redacted_ref(employee_id),
         composite_screenshot,
-        (ext.display_name if ext else None),
-        (ext.username_hint if ext else None),
-        (ext.clock_time if ext else None),
-        (ext.clock_date if ext else None),
-        (ext.timezone_iana if ext else None),
-        expected_username,
-        expected_english_name,
-        matter,
+        presence(ext.display_name if ext else None),
+        presence(ext.username_hint if ext else None),
+        ext.clock_time if ext else "",
+        ext.clock_date if ext else "",
+        ext.timezone_iana if ext else "",
+        presence(expected_username),
+        presence(expected_english_name),
+        presence(matter),
         error_code or "",
         clock_time_utc.isoformat() if clock_time_utc else "",
         clock_local,

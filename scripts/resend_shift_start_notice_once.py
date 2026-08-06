@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from infra.bot import build_app
 from repositories import shifts_repo
 from services.audit_service import build_shift_start_group_notice_html_for_shift
 
-DEFAULT_GROUP_ID = -1003200046237
+DEFAULT_GROUP_ID = int(os.getenv("SHIFT_START_NOTICE_GROUP_ID", "0"))
 CANONICAL_SHIFT_ID = 0
 
 
@@ -34,6 +35,9 @@ def main() -> None:
     shift_id = int(sys.argv[1]) if len(sys.argv) > 1 else CANONICAL_SHIFT_ID
     shift = shifts_repo.get_by_id(shift_id)
     chat_id = int(shift.attendance_group_id) if shift and shift.attendance_group_id else DEFAULT_GROUP_ID
+    if chat_id == 0:
+        print("请通过 SHIFT_START_NOTICE_GROUP_ID 或 shift.attendance_group_id 指定目标群")
+        sys.exit(1)
 
     text = build_shift_start_group_notice_html_for_shift(shift_id=shift_id)
     if not text:

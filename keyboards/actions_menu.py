@@ -2,16 +2,26 @@ from __future__ import annotations
 
 from aiogram.types import Message
 
+from infra.checkin_remote_diff_config import requires_remote_diff_checkin
 from infra.shift_web_config import build_shift_web_app_url, current_year_month, load_shift_web_config
 from services.shift_web_session import create_session
 from keyboards.group_actions import build_single_action_inline_or_callback
 from keyboards.main_menu import build_group_reply_keyboard, build_private_reply_keyboard
 from repositories import registrations_repo
+from services.leave_flow_guard import (
+    check_can_back,
+    check_can_leave,
+    compute_open_leave_draft_info,
+    requires_leave_back_copy_fallback,
+    requires_leave_mutual_exclusion,
+)
+
 MENU_TEXT = "请选择功能（使用输入框下方按钮；输入 / 可打开命令）："
-# 群聊：输入框下方常驻四键（ReplyKeyboard）提示文案
 GROUP_REPLY_MENU_TEXT = "功能菜单（底部按钮或 /start）"
-# 群聊单键 Inline（带 ↗ 填入模板）提示
 _GROUP_INLINE_HINT = "请点击下方按钮操作"
+_GROUP_INLINE_HINT_REMOTE = (
+    "请点击 ↗ 填入模板并附带截图发送；若提示无法选择对话，请点「复制」后粘贴"
+)
 
 
 def build_shift_web_app_url_for_admin(*, tg_id: int) -> str | None:
@@ -34,7 +44,6 @@ async def reply_actions_menu(*, message: Message, is_admin: bool, tg_id: int | N
             ),
         )
         return
-    # 群聊目标效果：仅弹出输入框下方 2×2 常驻键（签到/签退/离岗/返岗），不附带消息内 Inline 四宫格
     await message.reply(
         GROUP_REPLY_MENU_TEXT,
         reply_markup=build_group_reply_keyboard(),
@@ -50,14 +59,69 @@ async def reply_group_single_fill_menu(
     """点底部某一键后：只弹对应一个带 ↗ 的按钮（签到→签到，签退→签退…）。"""
     uid = tg_id if tg_id is not None else (message.from_user.id if message.from_user else None)
     reg = registrations_repo.get_by_tg_id(int(uid)) if uid is not None else None
+    chat_id = int(message.chat.id)
+    chat_title = message.chat.title if message.chat else None
+    is_remote_group = requires_remote_diff_checkin(chat_id=chat_id, chat_title=chat_title)
+    # 工号打卡群签到/签退需附截图，保留「复制」；YYMG 离岗/返岗单独加「复制」
+    copy_fallback = (
+        is_remote_group
+        and action in ("signin", "signout")
+    ) or (
+        requires_leave_back_copy_fallback(chat_id=chat_id)
+        and action in ("leave", "back")
+    )
+
     if not reg:
-        markup = build_single_action_inline_or_callback(action=action)
+        markup = build_single_action_inline_or_callback(
+            action=action,
+            copy_fallback=copy_fallback,
+            remote_diff=is_remote_group,
+        )
         await message.reply("请先私聊机器人完成注册（英文名$工号）。", reply_markup=markup)
         return
+    if message.chat.type in ("group", "supergroup") and action == "leave":
+        ok, hint = check_can_leave(
+            employee_id=str(reg.employee_id),
+            chat_id=chat_id,
+        )
+        if not ok:
+            await message.reply(hint or "无法离岗")
+            return
+    if message.chat.type in ("group", "supergroup") and action == "back":
+        ok, hint = check_can_back(
+            employee_id=str(reg.employee_id),
+            chat_id=chat_id,
+        )
+        if not ok:
+            await message.reply(hint or "无法返岗")
+            return
     name = (reg.english_name or "").strip() or "未命名"
+    leave_duration = None
+    leave_overtime = False
+    if (
+        message.chat.type in ("group", "supergroup")
+        and action == "back"
+        and requires_leave_mutual_exclusion(chat_id=chat_id)
+    ):
+        leave_info = compute_open_leave_draft_info(
+            employee_id=str(reg.employee_id),
+            chat_id=chat_id,
+        )
+        if leave_info is not None:
+            leave_duration = leave_info.duration_text
+            leave_overtime = leave_info.overtime
     markup = build_single_action_inline_or_callback(
         action=action,
         english_name=name,
         employee_id=str(reg.employee_id),
+        copy_fallback=copy_fallback,
+        leave_duration=leave_duration,
+        leave_overtime=leave_overtime,
+        remote_diff=is_remote_group,
     )
-    await message.reply(_GROUP_INLINE_HINT, reply_markup=markup)
+    hint = (
+        _GROUP_INLINE_HINT_REMOTE
+        if copy_fallback
+        else _GROUP_INLINE_HINT
+    )
+    await message.reply(hint, reply_markup=markup)

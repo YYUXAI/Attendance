@@ -7,7 +7,6 @@ from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
-from aiogram.types import BufferedInputFile
 
 from services import group_attendance_summary_service
 
@@ -15,7 +14,7 @@ log = logging.getLogger(__name__)
 
 
 def _hour_min() -> tuple[int, int]:
-    raw = (os.getenv("GROUP_DAILY_SUMMARY_TIME") or "23:00").strip()
+    raw = (os.getenv("GROUP_DAILY_SUMMARY_TIME") or "23:30").strip()
     try:
         hh, mm = raw.split(":", 1)
         h = max(0, min(int(hh), 23))
@@ -27,6 +26,13 @@ def _hour_min() -> tuple[int, int]:
 
 def _tz() -> str:
     return (os.getenv("GROUP_DAILY_SUMMARY_TZ") or "Asia/Shanghai").strip() or "Asia/Shanghai"
+
+
+def _skip_dates() -> set[str]:
+    raw = (os.getenv("GROUP_DAILY_SUMMARY_SKIP_DATE") or "").strip()
+    if not raw:
+        return set()
+    return {p.strip() for p in raw.replace("，", ",").split(",") if p.strip()}
 
 
 def _seconds_to_next() -> float:
@@ -50,6 +56,9 @@ async def run_group_daily_summary_worker(*, bot: Bot) -> None:
         try:
             tz = ZoneInfo(_tz())
             d = datetime.now(tz).date()
+            if d.isoformat() in _skip_dates():
+                log.info("group_summary: skip date %s", d.isoformat())
+                continue
             for gid in group_attendance_summary_service.list_attendance_group_ids():
                 gname = await group_attendance_summary_service.resolve_group_display_name(
                     bot=bot, chat_id=int(gid)
@@ -61,14 +70,10 @@ async def run_group_daily_summary_worker(*, bot: Bot) -> None:
                 )
                 if not rows:
                     continue
-                text = group_attendance_summary_service.summarize_text(rows=rows, target_date=d)
-                csv_body = group_attendance_summary_service.encode_csv(rows=rows)
-                await bot.send_message(chat_id=int(gid), text=text)
-                await bot.send_document(
-                    chat_id=int(gid),
-                    document=BufferedInputFile(file=csv_body, filename=f"group_{gid}_{d.isoformat()}.csv"),
-                    caption=f"本群当日打卡明细 {d.isoformat()}",
+                text = group_attendance_summary_service.summarize_text(
+                    rows=rows, target_date=d, chat_id=int(gid)
                 )
+                await bot.send_message(chat_id=int(gid), text=text)
                 log.info("group_summary: sent gid=%s rows=%s", gid, len(rows))
         except Exception:
             log.exception("group_summary cycle failed")

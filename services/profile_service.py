@@ -10,8 +10,10 @@ from domain.shared.result import ServiceResult
 from repositories import clock_records_repo, profile_repo
 from services.group_attendance_summary_service import (
     _as_time,
+    _day_schedule_from_calendar,
     compute_month_stats_for_employee,
 )
+from services.employee_shift_day_service import load_calendar_map
 
 
 def _display_name_or_fallback(english_name: Optional[str]) -> str:
@@ -73,6 +75,21 @@ def get_my_profile_by_tg_id(*, tg_id: int, now_utc: Optional[datetime] = None) -
         shift_cfg=shift_cfg,
         tz_name=tz_name,
     )
+    calendar_map = load_calendar_map(year_month=year_month, employee_ids=[employee_id])
+    _, _, _, today_shift_label = _day_schedule_from_calendar(
+        employee_id=employee_id,
+        d=as_of_local,
+        row={
+            "employee_id": employee_id,
+            "cin": cin,
+            "cout": cout,
+            "rest_days": rest_raw,
+            "shift_range": shift_cfg.shift_time_range or "",
+        },
+        calendar_map=calendar_map,
+    )
+    if today_shift_label:
+        shift_time_display = today_shift_label.replace("~", " - ")
     chat_id = clock_records_repo.get_latest_chat_id_for_employee(employee_id=employee_id)
     stats = compute_month_stats_for_employee(
         employee_id=employee_id,
@@ -81,10 +98,12 @@ def get_my_profile_by_tg_id(*, tg_id: int, now_utc: Optional[datetime] = None) -
         month_start=month_start,
         month_end=month_end,
         as_of_local=as_of_local,
+        year_month=year_month,
         checkin=cin,
         checkout=cout,
         rest_days_raw=rest_raw,
         tz_name=tz_name,
+        calendar_map=calendar_map,
     )
 
     msg = (

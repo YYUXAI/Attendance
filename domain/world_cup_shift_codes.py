@@ -38,13 +38,42 @@ _DEFAULT_CODES: dict[str, tuple[str, str]] = {
     "WO": ("21:00", "09:00"),
     "WP": ("22:00", "10:00"),
     "WQ": ("23:00", "11:00"),
+    "WX": ("05:00", "17:00"),
+    "WY": ("06:00", "15:00"),
+}
+
+# 统筹部排班表图例单字母班次（与 W 前缀 12h 班不同，多为 9h）
+_SINGLE_LETTER_CODES: dict[str, tuple[str, str]] = {
+    "R": ("00:00", "09:00"),
+    "S": ("01:00", "10:00"),
+    "X": ("05:00", "14:00"),
+    "Y": ("06:00", "15:00"),
+    "A": ("07:00", "16:00"),
+    "B": ("08:00", "17:00"),
+    "C": ("09:00", "18:00"),
+    "D": ("10:00", "19:00"),
+    "E": ("11:00", "20:00"),
+    "F": ("12:00", "21:00"),
+    "G": ("13:00", "22:00"),
+    "H": ("14:00", "23:00"),
+    "I": ("15:00", "00:00"),
+    "J": ("16:00", "01:00"),
+    "K": ("17:00", "02:00"),
+    "L": ("18:00", "03:00"),
+    "M": ("19:00", "04:00"),
+    "N": ("20:00", "05:00"),
+    "O": ("21:00", "06:00"),
+    "P": ("22:00", "07:00"),
+    "Q": ("23:00", "08:00"),
 }
 
 _TIME_RANGE_RE = re.compile(
     r"(\d{1,2}:\d{2})\s*[-~～至到]\s*(\d{1,2}:\d{2})",
     re.I,
 )
-_CODE_RE = re.compile(r"^W[A-Z]$")
+_W_CODE_RE = re.compile(r"^W[A-Z]$")
+_SINGLE_CODE_RE = re.compile(r"^[A-Z]$")
+_LEGEND_CODE_RE = re.compile(r"^(?:W[A-Z]|[A-Z])$")
 
 
 def _parse_hm(raw: str) -> time:
@@ -54,7 +83,8 @@ def _parse_hm(raw: str) -> time:
 
 def default_shift_catalog() -> dict[str, ShiftCodeRange]:
     out: dict[str, ShiftCodeRange] = {}
-    for code, (cin, cout) in _DEFAULT_CODES.items():
+    merged = {**_SINGLE_LETTER_CODES, **_DEFAULT_CODES}
+    for code, (cin, cout) in merged.items():
         out[code] = ShiftCodeRange(code=code, checkin=_parse_hm(cin), checkout=_parse_hm(cout))
     return out
 
@@ -77,7 +107,7 @@ def merge_legend_from_sheet_rows(
         cells = [str(c or "").strip() for c in row]
         for i, cell in enumerate(cells):
             up = cell.upper()
-            if not _CODE_RE.fullmatch(up):
+            if not _LEGEND_CODE_RE.fullmatch(up):
                 continue
             window = ""
             if i + 1 < len(cells):

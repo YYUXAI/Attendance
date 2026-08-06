@@ -8,6 +8,9 @@ from aiogram.types import CallbackQuery, Message
 
 from keyboards.actions_menu import reply_actions_menu, reply_group_single_fill_menu
 from keyboards.main_menu import GROUP_REPLY_MENU_TEXTS
+from repositories import registrations_repo
+from repositories.admin_list_repo import is_admin_by_tg_id
+from services.leave_flow_guard import check_can_back, check_can_leave
 
 _GROUP_BOTTOM_ACTION = {
     "签到": "signin",
@@ -15,10 +18,10 @@ _GROUP_BOTTOM_ACTION = {
     "离岗": "leave",
     "返岗": "back",
 }
-from repositories.admin_list_repo import is_admin_by_tg_id
 
 router = Router()
 log = logging.getLogger(__name__)
+
 
 async def _send_actions_menu(message: Message) -> None:
     user = message.from_user
@@ -48,6 +51,30 @@ async def group_bottom_menu_trigger(message: Message) -> None:
     if not action:
         await _send_actions_menu(message)
         return
+    reg = registrations_repo.get_by_tg_id(int(user.id))
+    if not reg:
+        await reply_group_single_fill_menu(
+            message=message,
+            action=action,
+            tg_id=int(user.id),
+        )
+        return
+    if action == "leave":
+        ok, hint = check_can_leave(
+            employee_id=str(reg.employee_id),
+            chat_id=int(message.chat.id),
+        )
+        if not ok:
+            await message.reply(hint or "无法离岗")
+            return
+    if action == "back":
+        ok, hint = check_can_back(
+            employee_id=str(reg.employee_id),
+            chat_id=int(message.chat.id),
+        )
+        if not ok:
+            await message.reply(hint or "无法返岗")
+            return
     await reply_group_single_fill_menu(
         message=message,
         action=action,

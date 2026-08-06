@@ -22,7 +22,7 @@ from repositories.clock_records_repo import insert_clock_record
 TZ = ZoneInfo("Asia/Shanghai")
 SOURCE_YM = "2026-06"
 TARGET_YM = "2026-05"
-DEFAULT_CHAT_ID = -1003200046237
+DEFAULT_CHAT_ID = int(os.getenv("SEED_FAKE_ATTENDANCE_CHAT_ID", "0"))
 FAKE_FILE_ID = "fake_may_seed"
 
 

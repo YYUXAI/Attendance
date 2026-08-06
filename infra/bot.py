@@ -26,6 +26,13 @@ from infra.bot_commands import register_bot_commands
 log = logging.getLogger(__name__)
 
 
+def _bot_commands_enabled() -> bool:
+    configured = os.getenv("ATTENDANCE_REGISTER_BOT_COMMANDS")
+    if configured is not None:
+        return configured.strip().lower() in {"1", "true", "yes", "on"}
+    return (os.getenv("ATTENDANCE_RUN_MODE") or "polling").strip().lower() != "webhook"
+
+
 def build_app() -> tuple[Bot, Dispatcher]:
     load_dotenv(override=True, encoding="utf-8")
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -51,6 +58,9 @@ def build_app() -> tuple[Bot, Dispatcher]:
 
     @dp.startup()
     async def _on_startup() -> None:
+        if not _bot_commands_enabled():
+            log.info("bot_commands: skipped in webhook mode")
+            return
         try:
             await register_bot_commands(bot=bot)
         except Exception as e:

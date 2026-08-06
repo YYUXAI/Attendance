@@ -76,6 +76,137 @@ def normalize_clock_time_text(value: str) -> Optional[str]:
     return None
 
 
+_PM_PERIODS = frozenset({"下午", "晚上", "傍晚"})
+_AM_PERIODS = frozenset({"上午", "早上", "凌晨"})
+
+
+def _infer_chinese_period_from_raw(*, clock_time: str, raw_text: str) -> str:
+    """从 AI 原文中推断上午/下午（Google 北京时间页常见「下午6:40」）。"""
+    raw = raw_text or ""
+    ct = (clock_time or "").strip()
+    if not ct or not raw:
+        return ""
+    parts = ct.split(":")
+    if len(parts) < 2:
+        return ""
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        return ""
+    flex_patterns = [
+        rf"{hour}:{minute:02d}",
+        rf"{hour:02d}:{minute:02d}",
+    ]
+    if hour < 10:
+        flex_patterns.append(rf"0?{hour}:{minute:02d}")
+
+    for period in _PM_PERIODS | _AM_PERIODS:
+        if period not in raw:
+            continue
+        for fp in flex_patterns:
+            if re.search(rf"{period}\s*{re.escape(fp)}", raw):
+                return period
+            if re.search(rf"{period}{re.escape(fp)}", raw):
+                return period
+
+    if any(p in raw for p in _PM_PERIODS) and 1 <= hour <= 11:
+        return "下午"
+    if any(p in raw for p in _AM_PERIODS) and 1 <= hour <= 12:
+        return "上午"
+    return ""
+
+
+def resolve_remote_diff_clock_time(
+    *,
+    clock_time: str | None,
+    clock_period: str | None = None,
+    raw_text: str | None = None,
+    reference_utc: datetime | None = None,
+    shift_timezone: str = "Asia/Shanghai",
+    max_skew_minutes: int = 30,
+) -> str | None:
+    """
+    remote_diff 专用：识别上午/下午并统一为 24 小时制。
+    若 AI 只返回 6:40 但发送时刻为 18:41，会在偏差约 12 小时时按下午校正。
+    即使 AI 错填 clock_period=上午，只要 ±12 小时能贴近发图时间，仍优先纠正。
+    """
+    ct = (clock_time or "").strip()
+    if not ct:
+        return None
+
+    period = (clock_period or "").strip()
+    for p in _PM_PERIODS | _AM_PERIODS:
+        if p in period:
+            period = p
+            break
+    else:
+        period = _infer_chinese_period_from_raw(clock_time=ct, raw_text=raw_text or "")
+
+    period_normed: str | None = None
+    if period and period not in ct:
+        period_normed = normalize_clock_time_text(f"{period}{ct.lstrip()}")
+
+    plain_normed = normalize_clock_time_text(ct)
+    normed = period_normed or plain_normed
+    if not normed or reference_utc is None:
+        return normed
+
+    try:
+        tz = ZoneInfo(shift_timezone if shift_timezone in ALLOWED_TIMEZONES else "Asia/Shanghai")
+    except Exception:
+        tz = ZoneInfo("Asia/Shanghai")
+    ref = reference_utc if reference_utc.tzinfo else reference_utc.replace(tzinfo=timezone.utc)
+    ref_local = ref.astimezone(tz)
+
+    def _skew_minutes(candidate: str) -> float | None:
+        t = _parse_clock_time(candidate)
+        if t is None:
+            return None
+        work_date = ref_local.date()
+        local_dt = datetime.combine(work_date, t, tzinfo=tz)
+        return abs((local_dt.astimezone(timezone.utc) - ref).total_seconds()) / 60.0
+
+    def _flip_12h(candidate: str) -> str | None:
+        parts = candidate.split(":")
+        if len(parts) < 2:
+            return None
+        try:
+            hour = int(parts[0])
+        except ValueError:
+            return None
+        rest = ":".join(parts[1:])
+        if hour < 12:
+            return normalize_clock_time_text(f"下午{hour}:{rest}")
+        if hour == 12:
+            return normalize_clock_time_text(f"上午12:{rest}")
+        return normalize_clock_time_text(f"上午{hour - 12}:{rest}")
+
+    # 先收集候选：period 结果、原文纯时间、以及各自的 ±12 小时翻转
+    candidates: list[str] = []
+    for c in (normed, plain_normed):
+        if c and c not in candidates:
+            candidates.append(c)
+        if c:
+            flipped = _flip_12h(c)
+            if flipped and flipped not in candidates:
+                candidates.append(flipped)
+
+    best: str | None = None
+    best_skew: float | None = None
+    for c in candidates:
+        sk = _skew_minutes(c)
+        if sk is None:
+            continue
+        if sk <= max_skew_minutes and (best_skew is None or sk < best_skew):
+            best = c
+            best_skew = sk
+    if best is not None:
+        return best
+
+    return normed
+
+
 def clock_time_grounded_in_raw(clock_time: str, raw: str) -> bool:
     """规范化时钟须在模型 JSON 原文中有可对应片段（含上午/下午写法）。"""
     if not clock_time or not raw:
@@ -102,6 +233,7 @@ def clock_time_grounded_in_raw(clock_time: str, raw: str) -> bool:
             return True
     return False
 _DATE_RE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})$")
+_MONTH_DAY_RE = re.compile(r"^(\d{1,2})-(\d{1,2})$")
 _ISO_DATE_IN_TEXT_RE = re.compile(r"\b(20\d{2}-\d{1,2}-\d{1,2})\b")
 # TIME.IS 佛历：佛历2569年6月1日；OCR 可能用全角括号、粘连无空格
 _BUDDHIST_DATE_RE = re.compile(
@@ -125,9 +257,72 @@ def _gregorian_year_from_ocr_year(year: int) -> int:
     return year
 
 
+def _format_month_day(month: int, day: int) -> str:
+    return f"{month:02d}-{day:02d}"
+
+
+def _valid_month_day(month: int, day: int) -> bool:
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        return False
+    try:
+        date(2000, month, day)
+    except ValueError:
+        return False
+    return True
+
+
+def parse_clock_month_day(raw: str | None) -> tuple[int, int] | None:
+    """解析 MM-DD 或 YYYY-MM-DD，只返回 (month, day)。"""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    m = _MONTH_DAY_RE.match(s)
+    if m:
+        month, day = int(m.group(1)), int(m.group(2))
+        return (month, day) if _valid_month_day(month, day) else None
+    iso = normalize_clock_date_iso(s)
+    if not iso:
+        return None
+    full = _parse_clock_date_strict(iso)
+    if full is None:
+        return None
+    return full.month, full.day
+
+
+def normalize_clock_date_month_day(raw: str | None) -> str | None:
+    """将日期规范为 MM-DD（打卡字段标准格式，不含年份）。"""
+    md = parse_clock_month_day(raw)
+    if md is None:
+        return None
+    return _format_month_day(md[0], md[1])
+
+
+def normalize_clock_date_iso(raw: str | None) -> str | None:
+    """将 YYYY-MM-DD 规范为公历；佛历 25xx 年自动减 543（2569-06-19 → 2026-06-19）。"""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    m = _DATE_RE.match(s)
+    if not m:
+        dm = re.search(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", s)
+        if not dm:
+            return None
+        y, mo, d = int(dm.group(1)), int(dm.group(2)), int(dm.group(3))
+    else:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    gy = _gregorian_year_from_ocr_year(y)
+    if not (2000 <= gy <= 2099 and 1 <= mo <= 12 and 1 <= d <= 31):
+        return None
+    try:
+        date(gy, mo, d)
+    except ValueError:
+        return None
+    return f"{gy}-{mo:02d}-{d:02d}"
+
+
 def _date_from_buddhist_match(m: re.Match[str]) -> str:
-    gy = _gregorian_year_from_ocr_year(int(m.group(1)))
-    return f"{gy}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    month, day = int(m.group(2)), int(m.group(3))
+    return _format_month_day(month, day)
 
 
 def _extract_buddhist_date(normalized: str) -> Optional[str]:
@@ -185,7 +380,7 @@ def normalize_ocr_date_text(text: str, *, expected_date: str | None = None) -> s
 def extract_clock_date_from_text(text: str, *, expected_date: str | None = None) -> Optional[str]:
     """
     从 OCR 文本解析打卡日期（不用数字模糊拼接）。
-    佛历 25xx年M月D日、公历 20xx年M月D日、YYYY-MM-DD。
+    返回 MM-DD；支持佛历/公历中文日期行与 YYYY-MM-DD。
     """
     if not text:
         return None
@@ -195,11 +390,62 @@ def extract_clock_date_from_text(text: str, *, expected_date: str | None = None)
         return buddhist
     m_cn = _CHINESE_GREGORIAN_DATE_RE.search(normalized)
     if m_cn:
-        return f"{m_cn.group(1)}-{int(m_cn.group(2)):02d}-{int(m_cn.group(3)):02d}"
+        return _format_month_day(int(m_cn.group(2)), int(m_cn.group(3)))
     dm = _ISO_DATE_IN_TEXT_RE.search(normalized)
     if dm:
-        return dm.group(1)
+        return normalize_clock_date_month_day(dm.group(1))
     return None
+
+
+def date_matches_expected_month_day(*, clock_date: str | None, expected_date: str) -> bool:
+    exp = _parse_clock_date_strict(expected_date)
+    cur_md = parse_clock_month_day(clock_date)
+    if exp is None or cur_md is None:
+        return False
+    return cur_md == (exp.month, exp.day)
+
+
+def reconcile_clock_date(
+    *,
+    clock_date: str | None,
+    raw_text: str,
+    expected_date: str,
+) -> str | None:
+    """
+    从模型原文纠正智谱误读的日期（如 6/22 读成 6/19）。
+    返回与 expected_date 月日一致的 MM-DD；无法纠正时返回规范化后的原值。
+    """
+    exp = _parse_clock_date_strict(expected_date)
+    norm = normalize_clock_date_month_day(clock_date)
+    if exp is not None and norm:
+        cur_md = parse_clock_month_day(norm)
+        if cur_md == (exp.month, exp.day):
+            return norm
+
+    sources: list[str] = []
+    if raw_text:
+        sources.append(raw_text)
+
+    for text in sources:
+        parsed = extract_clock_date_from_text(text, expected_date=expected_date)
+        if not parsed:
+            continue
+        parsed_md = parse_clock_month_day(parsed)
+        if parsed_md is not None and exp is not None and parsed_md == (exp.month, exp.day):
+            return parsed
+
+    # 智谱仅 JSON 误读日（如 6/22→6/19），且原文无中文日期行时，采纳发消息当天月日
+    has_cn_date_line = any(
+        _BUDDHIST_DATE_RE.search(t)
+        or _BUDDHIST_LOOSE_RE.search(t)
+        or _CHINESE_GREGORIAN_DATE_RE.search(t)
+        for t in sources
+    )
+    if not has_cn_date_line and exp is not None and norm:
+        cur_md = parse_clock_month_day(norm)
+        if cur_md is not None and cur_md[0] == exp.month and cur_md != (exp.month, exp.day):
+            return _format_month_day(exp.month, exp.day)
+    return norm
 
 
 def extract_clock_date_for_checkin(
@@ -213,12 +459,12 @@ def extract_clock_date_for_checkin(
     """
     parsed = extract_clock_date_from_text(text, expected_date=expected_date)
     exp_dt = _parse_clock_date_strict(expected_date)
-    parsed_dt = _parse_clock_date_strict(parsed) if parsed else None
-    if parsed_dt is not None and exp_dt is not None and _same_month_day(parsed_dt, exp_dt):
+    parsed_md = parse_clock_month_day(parsed) if parsed else None
+    if parsed_md is not None and exp_dt is not None and parsed_md == (exp_dt.month, exp_dt.day):
         return parsed
-    llm = (llm_clock_date or "").strip()
-    llm_dt = _parse_clock_date_strict(llm) if llm else None
-    if llm_dt is not None and exp_dt is not None and _same_month_day(llm_dt, exp_dt):
+    llm = normalize_clock_date_month_day(llm_clock_date)
+    llm_md = parse_clock_month_day(llm) if llm else None
+    if llm_md is not None and exp_dt is not None and llm_md == (exp_dt.month, exp_dt.day):
         return llm
     if parsed:
         return None
@@ -275,14 +521,11 @@ def evaluate_clock_date(
 ) -> ClockDateStatus:
     tz_name = _resolve_timezone(extraction, shift_timezone)
     expected = now_utc.astimezone(ZoneInfo(tz_name)).date()
-    raw = (extraction.clock_date or "").strip()
-    if not raw:
-        return "missing" if require_date else "ok"
-    parsed = _parse_clock_date_strict(raw)
-    if parsed is None:
+    cur_md = parse_clock_month_day(extraction.clock_date)
+    if cur_md is None:
         return "missing" if require_date else "ok"
     # 业务要求：日期仅校验月/日，不校验年份
-    if not _same_month_day(parsed, expected):
+    if cur_md != (expected.month, expected.day):
         return "mismatch"
     return "ok"
 
@@ -293,25 +536,39 @@ def evaluate_clock_time(
     shift_timezone: str,
     now_utc: datetime,
     max_skew_minutes: int,
+    raw_text: str | None = None,
 ) -> tuple[ClockTimeStatus, Optional[datetime]]:
     if not extraction.clock_time:
         return "missing", None
-    t = _parse_clock_time(extraction.clock_time)
+
+    ref = now_utc if now_utc.tzinfo else now_utc.replace(tzinfo=timezone.utc)
+    resolved = resolve_remote_diff_clock_time(
+        clock_time=extraction.clock_time,
+        clock_period=None,
+        raw_text=raw_text or "",
+        reference_utc=ref,
+        shift_timezone=shift_timezone,
+        max_skew_minutes=max_skew_minutes,
+    )
+    if not resolved:
+        return "invalid_format", None
+    t = _parse_clock_time(resolved)
     if t is None:
         return "invalid_format", None
 
     tz_name = _resolve_timezone(extraction, shift_timezone)
     tz = ZoneInfo(tz_name)
-    local_now = now_utc.astimezone(tz)
-    if extraction.clock_date:
-        work_date = _parse_clock_date_strict(extraction.clock_date) or local_now.date()
+    local_now = ref.astimezone(tz)
+    cur_md = parse_clock_month_day(extraction.clock_date)
+    if cur_md is not None:
+        work_date = date(local_now.year, cur_md[0], cur_md[1])
     else:
         work_date = local_now.date()
 
     local_dt = datetime.combine(work_date, t, tzinfo=tz)
     clock_utc = local_dt.astimezone(timezone.utc)
 
-    skew_sec = abs((clock_utc - now_utc).total_seconds())
+    skew_sec = abs((clock_utc - ref).total_seconds())
     if skew_sec > max_skew_minutes * 60:
         return "skew", None
     return "ok", clock_utc

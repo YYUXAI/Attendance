@@ -35,9 +35,9 @@ def load_google_sheets_config() -> GoogleSheetsConfig:
         root = Path(__file__).resolve().parents[1]
         creds = str((root / creds).resolve())
     try:
-        interval = int(os.getenv("GOOGLE_SHEETS_SYNC_INTERVAL_SECONDS") or "3600")
+        interval = int(os.getenv("GOOGLE_SHEETS_SYNC_INTERVAL_SECONDS") or "14400")
     except ValueError:
-        interval = 3600
+        interval = 14400
     year_month = (os.getenv("GOOGLE_SHEETS_YEAR_MONTH") or "").strip()
     return GoogleSheetsConfig(
         enabled=enabled,

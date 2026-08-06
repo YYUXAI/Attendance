@@ -9,11 +9,18 @@ from domain.clock_matter import (
     parse_employee_id_from_text,
     parse_english_name_from_text,
     parse_matter_from_text,
+    validate_caption_for_remote_diff,
     validate_caption_identity_for_sender,
 )
+from infra.checkin_remote_diff_config import requires_remote_diff_checkin
+from infra.test_group_google_config import is_test_group_chat
 from services import checkin_ai_orchestrator, checkin_service
 from services.checkin_recognition_log import log_checkin_recognition
 from services.checkin_user_message import user_message_for_checkin_error
+from services.bbq_google_sheets_export_service import schedule_bbq_sheets_sync_after_checkin
+from services.test_group_google_sheets_service import (
+    schedule_test_group_sheets_sync_after_checkin,
+)
 router = Router()
 log = logging.getLogger(__name__)
 
@@ -66,11 +73,48 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
 
     employee_id, shift_id, english_name, _department_name, _cin, _cout, _tz = prepared
 
-    caption_err = validate_caption_identity_for_sender(
-        caption=message.caption,
-        english_name=english_name,
-        employee_id=employee_id,
+    chat_id = int(message.chat.id)
+    chat_title = message.chat.title if message.chat else None
+    allowed, deny_reason = checkin_service.should_accept_checkin_for_chat_roster(
+        chat_id=chat_id,
+        employee_id=str(employee_id),
+        tz_name="Asia/Shanghai",
     )
+    ai_dry_run = checkin_service.should_run_ai_without_persist(
+        chat_id=chat_id,
+        employee_id=str(employee_id),
+        roster_allowed=allowed,
+        chat_title=chat_title,
+    )
+    if not allowed and not ai_dry_run:
+        # 非正式群且非 AI dry-run：不走识别、不入库；前台仍回成功以免打扰。
+        success_text = f"{matter}成功"
+        await message.reply(text=success_text)
+        log.info(
+            "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=chat_roster_denied detail=%s chat_id=%s employee_id=%s",
+            message.from_user.id,
+            deny_reason,
+            chat_id,
+            employee_id,
+        )
+        return
+
+    from infra.checkin_employee_id_only_config import requires_employee_id_only_checkin
+
+    is_remote_group = requires_remote_diff_checkin(chat_id=chat_id, chat_title=chat_title)
+    if is_remote_group or requires_employee_id_only_checkin(
+        chat_id=chat_id, chat_title=chat_title
+    ):
+        caption_err = validate_caption_for_remote_diff(
+            caption=message.caption,
+            employee_id=employee_id,
+        )
+    else:
+        caption_err = validate_caption_identity_for_sender(
+            caption=message.caption,
+            english_name=english_name,
+            employee_id=employee_id,
+        )
     if caption_err:
         cap_en = parse_english_name_from_text(message.caption)
         cap_eid = parse_employee_id_from_text(message.caption)
@@ -92,14 +136,28 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
 
         sent_utc = sent_utc.replace(tzinfo=timezone.utc)
     # 按业务要求：截图时间统一按北京时间校验，不跟随班次时区。
-    ai_out = await checkin_ai_orchestrator.resolve_clock_time_with_ai(
-        bot=bot,
-        file_id=file_id,
-        tg_id=message.from_user.id,
-        shift_timezone="Asia/Shanghai",
-        message_sent_utc=sent_utc,
-        caption=message.caption,
-    )
+    try:
+        ai_out = await checkin_ai_orchestrator.resolve_clock_time_with_ai(
+            bot=bot,
+            file_id=file_id,
+            tg_id=message.from_user.id,
+            shift_timezone="Asia/Shanghai",
+            message_sent_utc=sent_utc,
+            caption=message.caption,
+            chat_id=chat_id,
+            chat_title=chat_title,
+        )
+    except Exception:
+        log.exception(
+            "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=ai_exception",
+            message.from_user.id,
+        )
+        err_text = "打卡失败：识别异常，请稍后重试。"
+        try:
+            await message.reply(text=err_text)
+        except Exception:
+            await message.answer(text=err_text)
+        return
     if not isinstance(ai_out, checkin_ai_orchestrator.CheckinAiResolveResult):
         try:
             await message.reply(text=ai_out.message)
@@ -116,6 +174,29 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
             message.from_user.id,
             ai_out.error_code,
         )
+        return
+
+    if ai_dry_run:
+        log_checkin_recognition(
+            stage="ai_dry_run_ok",
+            tg_id=int(message.from_user.id),
+            extraction=ai_out.extraction,
+            employee_id=employee_id,
+            clock_time_utc=ai_out.clock_time_utc,
+            matter=matter,
+        )
+        log.info(
+            "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=ai_dry_run_success chat_id=%s employee_id=%s clock_time_utc=%s",
+            message.from_user.id,
+            chat_id,
+            employee_id,
+            ai_out.clock_time_utc,
+        )
+        success_text = f"{matter}成功"
+        try:
+            await message.reply(text=success_text)
+        except Exception:
+            await message.answer(text=success_text)
         return
 
     checkin_service.persist_clock_record(
@@ -140,10 +221,27 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
         message.from_user.id,
         ai_out.clock_time_utc,
     )
+    if is_test_group_chat(chat_id=chat_id, chat_title=chat_title):
+        success_text = checkin_service.format_test_group_success_message(
+            english_name=english_name or "",
+            clock_time_utc=ai_out.clock_time_utc,
+            matter=matter,
+            timezone_name="Asia/Shanghai",
+        )
+    else:
+        success_text = f"{matter}成功"
     try:
-        await message.reply(text=f"{matter}成功")
+        await message.reply(text=success_text)
     except Exception:
-        await message.answer(text=f"{matter}成功")
+        await message.answer(text=success_text)
+    schedule_test_group_sheets_sync_after_checkin(
+        bot=bot,
+        chat_id=int(message.chat.id),
+    )
+    schedule_bbq_sheets_sync_after_checkin(
+        bot=bot,
+        chat_id=int(message.chat.id),
+    )
 
 
 CHECKIN_FILTER = F.chat.type.in_({"group", "supergroup"}) & (F.photo | F.document)

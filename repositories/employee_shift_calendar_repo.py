@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Iterable
+from dataclasses import dataclass
+from typing import Iterable, List, Optional
 
 from infra.db import get_cursor
+
+
+@dataclass(frozen=True)
+class EmployeeShiftCalendarRow:
+    employee_id: str
+    work_date: date
+    cell_raw: str
+    shift_code: str
+    cell_kind: str
 
 
 def ensure_table() -> None:
@@ -73,3 +83,55 @@ def delete_not_in(*, year_month: str, employee_ids: Iterable[str]) -> int:
                 (year_month, ids),
             )
         return int(cur.rowcount or 0)
+
+
+def get_by_work_date(
+    *,
+    year_month: str,
+    employee_id: str,
+    work_date: date,
+) -> Optional[EmployeeShiftCalendarRow]:
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT employee_id, work_date, cell_raw, shift_code, cell_kind
+            FROM public.employee_shift_calendar
+            WHERE year_month = %s AND employee_id = %s AND work_date = %s
+            """,
+            (str(year_month), str(employee_id), work_date),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return EmployeeShiftCalendarRow(*row)
+
+
+def list_for_month(
+    *,
+    year_month: str,
+    employee_ids: Iterable[str] | None = None,
+) -> List[EmployeeShiftCalendarRow]:
+    ids = [str(x) for x in employee_ids] if employee_ids else None
+    with get_cursor() as cur:
+        if ids:
+            cur.execute(
+                """
+                SELECT employee_id, work_date, cell_raw, shift_code, cell_kind
+                FROM public.employee_shift_calendar
+                WHERE year_month = %s AND employee_id = ANY(%s::varchar[])
+                ORDER BY employee_id, work_date
+                """,
+                (str(year_month), ids),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT employee_id, work_date, cell_raw, shift_code, cell_kind
+                FROM public.employee_shift_calendar
+                WHERE year_month = %s
+                ORDER BY employee_id, work_date
+                """,
+                (str(year_month),),
+            )
+        rows = cur.fetchall() or []
+    return [EmployeeShiftCalendarRow(*r) for r in rows]
