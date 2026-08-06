@@ -68,15 +68,15 @@ def build_private_reply_keyboard(
 
 
 def build_group_reply_keyboard():
-    """群聊底部：/ 命令（群隐私开启时普通「签到」文字 Bot 收不到）。"""
+    """群聊底部常驻：签到/签退/离岗/返岗（点击后打开功能菜单）。"""
     rows = [
         [
-            KeyboardButton(text="/signin"),
-            KeyboardButton(text="/signout"),
+            KeyboardButton(text="签到"),
+            KeyboardButton(text="签退"),
         ],
         [
-            KeyboardButton(text="/leave"),
-            KeyboardButton(text="/back"),
+            KeyboardButton(text="离岗"),
+            KeyboardButton(text="返岗"),
         ],
     ]
     return build_reply_keyboard(rows=rows)
