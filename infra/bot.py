@@ -12,6 +12,7 @@ from handlers.admin_export_test import router as admin_export_test_router
 from handlers.admin_test import router as admin_test_router
 from handlers.checkin import router as checkin_router
 from handlers.menu import router as menu_router
+from handlers.private_callback_session import PrivateAttendanceCallbackSessionExitMiddleware
 from handlers.profile import router as profile_router
 from handlers.register import router as register_router
 # --- 已下线：报备休息 / 私聊离岗审批 / 审批 / QC（勿取消注释）---
@@ -34,7 +35,10 @@ def _bot_commands_enabled() -> bool:
 
 
 def build_app() -> tuple[Bot, Dispatcher]:
-    load_dotenv(override=True, encoding="utf-8")
+    load_dotenv(
+        override=(os.getenv("ATTENDANCE_DOTENV_OVERRIDE") or "1").strip() != "0",
+        encoding="utf-8",
+    )
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN")
@@ -48,6 +52,7 @@ def build_app() -> tuple[Bot, Dispatcher]:
     dp.include_router(profile_router)
     dp.include_router(register_router)
     dp.include_router(checkin_router)
+    dp.callback_query.outer_middleware(PrivateAttendanceCallbackSessionExitMiddleware())
     # --- 已下线 Handler（报备休息 / 私聊离岗审批 / 审批 / QC）---
     # dp.include_router(rest_router)
     # dp.include_router(approval_router)

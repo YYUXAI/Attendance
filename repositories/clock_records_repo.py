@@ -58,6 +58,74 @@ def insert_clock_record(
         )
 
 
+def has_telegram_source(
+    *,
+    bot_owner: str,
+    source_chat_id: int,
+    source_message_id: int,
+) -> bool:
+    del bot_owner
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM public.clock_records
+            WHERE source_chat_id = %s
+              AND source_message_id = %s
+            """,
+            (int(source_chat_id), int(source_message_id)),
+        )
+        return cur.fetchone() is not None
+
+
+def insert_telegram_clock_record(
+    *,
+    bot_owner: str,
+    source_chat_id: int,
+    source_message_id: int,
+    file_id: str,
+    tg_id: int,
+    employee_id: str,
+    shift_id: int | None,
+    clock_time_utc,
+    clock_action: str | None = None,
+) -> bool:
+    ensure_clock_action_column()
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO public.clock_records (
+                chat_id, file_id, tg_id, employee_id, shift_id,
+                clock_time, clock_action,
+                source_bot_owner, source_chat_id, source_message_id
+            ) VALUES (
+                %s, %s, %s, %s, %s,
+                %s, %s,
+                %s, %s, %s
+            )
+            ON CONFLICT (
+                source_chat_id, source_message_id
+            ) WHERE source_chat_id IS NOT NULL
+              AND source_message_id IS NOT NULL
+            DO NOTHING
+            RETURNING id
+            """,
+            (
+                int(source_chat_id),
+                file_id,
+                int(tg_id),
+                str(employee_id),
+                shift_id,
+                clock_time_utc,
+                clock_action,
+                bot_owner,
+                int(source_chat_id),
+                int(source_message_id),
+            ),
+        )
+        return cur.fetchone() is not None
+
+
 def get_latest_chat_id_for_employee(*, employee_id: str) -> int | None:
     """最近一条打卡所在群，用于无 shift_id 时的个人统计。"""
     with get_cursor() as cur:

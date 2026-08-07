@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable, List
 from aiogram import Bot, Dispatcher
 
 from infra.bot import build_app
+from infra.bot_owner import load_attendance_bot_owner
 from infra.daily_report_config import load_daily_report_api_config, load_daily_report_config
 from infra.daily_report_http import run_daily_report_http_server
 from infra.google_sheets_config import load_google_sheets_config
@@ -37,6 +38,7 @@ def prepare_runtime(
 ) -> AttendanceRuntime:
     """初始化 Bot / Dispatcher / 后台 Worker（不含启动）。"""
     configure_logging()
+    load_attendance_bot_owner()
     employee_shift_config_repo.ensure_table()
     temporary_leave_records_repo.ensure_table()
     ensure_clock_action_column()

@@ -42,6 +42,22 @@ def get_by_tg_username(tg_username: str) -> Optional[RegistrationRow]:
         return RegistrationRow(*row)
 
 
+def get_by_tg_id_cur(cur: Cursor, *, tg_id: int) -> Optional[RegistrationRow]:
+    cur.execute(
+        """
+        SELECT id, employee_id, tg_id, english_name, tg_username, registered_chat_id,
+               organization_id, shift_id
+        FROM public.registrations
+        WHERE tg_id = %s
+        """,
+        (int(tg_id),),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    return RegistrationRow(*row)
+
+
 def get_by_tg_id(tg_id: int) -> Optional[RegistrationRow]:
     with get_cursor() as cur:
         cur.execute(
@@ -191,6 +207,38 @@ def bind_tg_to_registration(
             ),
         )
         return int(cur.rowcount or 0) > 0
+
+
+def bind_tg_to_registration_cur(
+    cur: Cursor,
+    *,
+    employee_id: str,
+    tg_id: int,
+    english_name: str,
+    registered_at_utc,
+    registered_chat_id: int,
+    tg_username: Optional[str],
+) -> bool:
+    cur.execute(
+        """
+        UPDATE public.registrations
+        SET tg_id = %s,
+            english_name = %s,
+            registered_at = %s,
+            registered_chat_id = %s,
+            tg_username = %s
+        WHERE employee_id = %s AND tg_id IS NULL
+        """,
+        (
+            int(tg_id),
+            english_name,
+            registered_at_utc,
+            int(registered_chat_id),
+            tg_username,
+            str(employee_id).strip(),
+        ),
+    )
+    return int(cur.rowcount or 0) > 0
 
 
 def list_by_shift_id_cur(cur: Cursor, *, shift_id: int) -> List[RegistrationRow]:

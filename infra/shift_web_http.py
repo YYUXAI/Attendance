@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import secrets
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
@@ -14,6 +13,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import BufferedInputFile
 
 from infra.shift_web_config import current_year_month, load_shift_web_config
+from infra.log_redaction import redacted_ref
 from infra.telegram_webapp_auth import tg_user_id_from_init_data, validate_telegram_init_data
 from repositories import admin_list_repo, employee_shift_config_repo
 from services import shift_import_service, shift_web_session
@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 log = logging.getLogger(__name__)
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "shift_app"
+SHIFT_WEB_BOT_KEY: web.AppKey[Bot] = web.AppKey("shift_web_bot", Bot)
 _YM_RE = re.compile(r"^\d{4}-\d{2}$")
 _TELEGRAM_CORS_ORIGINS = frozenset(
     {
@@ -51,29 +52,12 @@ def _download_cors_headers(request: web.Request) -> dict[str, str]:
 
 def _init_data_from_request(request: web.Request) -> str | None:
     header = (request.headers.get("X-Telegram-Init-Data") or "").strip()
-    if header:
-        return header
-    q = request.query.get("initData") or request.query.get("init_data")
-    return str(q).strip() if q else None
-
-
-def _api_token_from_request(request: web.Request) -> str | None:
-    auth = request.headers.get("Authorization") or ""
-    if auth.lower().startswith("bearer "):
-        return auth[7:].strip() or None
-    key = request.headers.get("X-API-Key")
-    if key:
-        return key.strip() or None
-    q = request.query.get("api_token")
-    return str(q).strip() if q else None
+    return header or None
 
 
 def _web_session_from_request(request: web.Request) -> str | None:
     header = (request.headers.get("X-Web-Session") or "").strip()
-    if header:
-        return header
-    q = request.query.get("web_session")
-    return str(q).strip() if q else None
+    return header or None
 
 
 def _tg_id_from_init_data(request: web.Request) -> int | None:
@@ -84,16 +68,7 @@ def _tg_id_from_init_data(request: web.Request) -> int | None:
 
 
 def _require_admin(request: web.Request) -> tuple[int, web.Response | None]:
-    """WebApp：优先 initData；URL 里过期的 web_session 不阻断。浏览器开发模式可走 API Key。"""
-    cfg = load_shift_web_config()
-    if cfg.browser_dev:
-        from infra.daily_report_config import load_daily_report_api_config
-
-        expected = load_daily_report_api_config().token
-        token = _api_token_from_request(request)
-        if expected and token and secrets.compare_digest(token, expected):
-            return 0, None
-
+    """只接受由 Attendance 自身 admin_list 授权的管理员。"""
     session = _web_session_from_request(request)
     if session:
         tg_id = shift_web_session.verify_session(session)
@@ -112,7 +87,7 @@ def _require_admin(request: web.Request) -> tuple[int, web.Response | None]:
         return 0, web.json_response(
             {
                 "ok": False,
-                "message": "链接已过期，请在 Telegram 私聊里点底部「班次」重新打开",
+                "message": "链接已过期，请在 Telegram 私聊里点「班表」重新打开",
                 "code": "session_expired",
             },
             status=401,
@@ -120,7 +95,7 @@ def _require_admin(request: web.Request) -> tuple[int, web.Response | None]:
     return 0, web.json_response(
         {
             "ok": False,
-            "message": "请在 Telegram 私聊机器人里点「班次」打开本页",
+            "message": "请在 Telegram 私聊机器人里点「班表」打开本页",
             "code": "auth_required",
         },
         status=401,
@@ -281,7 +256,7 @@ async def _handle_exchange_session(request: web.Request) -> web.Response:
 
 
 def _tg_id_from_init_data_raw(request: web.Request, init_data: str) -> int | None:
-    bot: Bot = request.app["bot"]
+    bot: Bot = request.app.get(SHIFT_WEB_BOT_KEY) or request.app["bot"]
     parsed = validate_telegram_init_data(init_data=init_data, bot_token=bot.token)
     if not parsed:
         return None
@@ -334,7 +309,7 @@ async def _do_send_template(
         ym = current_year_month(tz_name=cfg.timezone_name)
     if not _YM_RE.match(ym):
         return web.json_response({"ok": False, "message": "invalid year_month"}, status=400)
-    bot: Bot = request.app["bot"]
+    bot: Bot = request.app.get(SHIFT_WEB_BOT_KEY) or request.app["bot"]
     fname = f"shift_template_{ym}.csv"
     data = shift_import_service.template_csv_bytes(year_month=ym)
     try:
@@ -347,7 +322,7 @@ async def _do_send_template(
             ),
         )
     except TelegramForbiddenError:
-        log.warning("shift_template forbidden tg_id=%s", target)
+        log.warning("shift_template forbidden tg_ref=%s", redacted_ref(target))
         return web.json_response(
             {
                 "ok": False,
@@ -355,19 +330,19 @@ async def _do_send_template(
             },
             status=403,
         )
-    except TelegramBadRequest as e:
-        log.warning("shift_template bad request tg_id=%s: %s", target, e)
+    except TelegramBadRequest:
+        log.warning("shift_template bad request tg_ref=%s", redacted_ref(target))
         return web.json_response(
-            {"ok": False, "message": f"发送失败：{e}"},
+            {"ok": False, "message": "发送失败：Telegram 未接受该文件，请稍后重试。"},
             status=400,
         )
-    except Exception as e:
-        log.warning("shift_template send failed tg_id=%s: %s", target, e)
+    except Exception:
+        log.exception("shift_template send failed tg_ref=%s", redacted_ref(target))
         return web.json_response(
-            {"ok": False, "message": f"发送失败：{e}"},
+            {"ok": False, "message": "发送失败，请稍后重试。"},
             status=500,
         )
-    log.info("shift_template sent to tg_id=%s ym=%s", target, ym)
+    log.info("shift_template sent tg_ref=%s ym=%s", redacted_ref(target), ym)
     return web.json_response({"ok": True, "message": "已发送到您的 Telegram 私聊"})
 
 
@@ -428,7 +403,7 @@ async def _do_send_export(
     rows = employee_shift_config_repo.list_by_year_month(year_month=ym)
     view = shift_view_for_tg_id(tg_id=target)
     rows = filter_shift_config_rows(rows=rows, year_month=ym, view=view)
-    bot: Bot = request.app["bot"]
+    bot: Bot = request.app.get(SHIFT_WEB_BOT_KEY) or request.app["bot"]
     fname = f"shift_export_{ym}.csv"
     data = shift_import_service.encode_shift_config_csv(year_month=ym, rows=rows)
     try:
@@ -445,12 +420,24 @@ async def _do_send_export(
             },
             status=403,
         )
-    except TelegramBadRequest as e:
-        return web.json_response({"ok": False, "message": f"发送失败：{e}"}, status=400)
-    except Exception as e:
-        log.warning("shift_export send failed tg_id=%s: %s", target, e)
-        return web.json_response({"ok": False, "message": f"发送失败：{e}"}, status=500)
-    log.info("shift_export sent to tg_id=%s ym=%s rows=%s", target, ym, len(rows))
+    except TelegramBadRequest:
+        log.warning("shift_export bad request tg_ref=%s", redacted_ref(target))
+        return web.json_response(
+            {"ok": False, "message": "发送失败：Telegram 未接受该文件，请稍后重试。"},
+            status=400,
+        )
+    except Exception:
+        log.exception("shift_export send failed tg_ref=%s", redacted_ref(target))
+        return web.json_response(
+            {"ok": False, "message": "发送失败，请稍后重试。"},
+            status=500,
+        )
+    log.info(
+        "shift_export sent tg_ref=%s ym=%s rows=%s",
+        redacted_ref(target),
+        ym,
+        len(rows),
+    )
     return web.json_response({"ok": True, "message": "已发送到您的 Telegram 私聊"})
 
 

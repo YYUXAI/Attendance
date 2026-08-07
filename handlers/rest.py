@@ -9,6 +9,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from keyboards.leave_types import build_leave_type_keyboard
 from services import approval_service
 from services import register_service
+from infra.bot_owner import load_attendance_bot_owner
 from services import rest_service
 from services import temporary_leave_service
 
@@ -49,7 +50,10 @@ async def leave_begin_callback(callback: CallbackQuery) -> None:
         await callback.message.reply(text="请先私信机器人，再点击【报备休息】提交休假申请。")
         return
 
-    register_service.clear_waiting_register_input(tg_id=user.id)
+    register_service.clear_waiting_register_input(
+        bot_owner=load_attendance_bot_owner(),
+        tg_id=user.id,
+    )
 
     res = rest_service.begin_leave_application(tg_id=user.id)
     if not res.ok:
@@ -122,7 +126,15 @@ async def leave_flow_text_handler(message: Message) -> None:
     tid = message.from_user.id if message.from_user else None
     text_for_log = (message.text or "")[:200]
     phase_pre = rest_service.get_leave_phase(tg_id=tid) if tid is not None else None
-    reg_wait_pre = register_service.is_waiting_register_input(tg_id=tid) if tid is not None else False
+    reg_wait_pre = (
+        register_service.is_waiting_register_input(
+            bot_owner=load_attendance_bot_owner(),
+            tg_id=tid,
+            private_chat_id=int(message.chat.id),
+        )
+        if tid is not None
+        else False
+    )
     leave_exp_pre = rest_service.is_leave_flow_expecting_text(tg_id=tid) if tid is not None else False
     log.info(
         "[REST_HANDLER_ENTER] tg_id=%s chat_type=%s phase=%s register_waiting=%s leave_expecting=%s text_preview=%r",
@@ -145,7 +157,11 @@ async def leave_flow_text_handler(message: Message) -> None:
     text = message.text or ""
     text_for_log = text if len(text) <= 200 else text[:200] + "…"
     phase = rest_service.get_leave_phase(tg_id=tid)
-    register_waiting = register_service.is_waiting_register_input(tg_id=tid)
+    register_waiting = register_service.is_waiting_register_input(
+        bot_owner=load_attendance_bot_owner(),
+        tg_id=tid,
+        private_chat_id=int(message.chat.id),
+    )
     leave_expecting = rest_service.is_leave_flow_expecting_text(tg_id=tid)
     log.info(
         "[REST_HANDLER_STATE] tg_id=%s phase=%s register_waiting=%s leave_expecting=%s text_preview=%r",

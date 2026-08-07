@@ -44,18 +44,12 @@ def current_year_month(*, tz_name: str) -> str:
 def build_shift_web_app_url(
     *,
     year_month: str | None = None,
-    web_session: str | None = None,
 ) -> str | None:
     cfg = load_shift_web_config()
     if not cfg.enabled or not cfg.public_base_url:
         return None
     ym = year_month or current_year_month(tz_name=cfg.timezone_name)
-    url = f"{cfg.public_base_url}/shift-app/index.html?year_month={ym}"
-    if web_session:
-        from urllib.parse import urlencode
-
-        url = f"{url}&{urlencode({'web_session': web_session})}"
-    return url
+    return f"{cfg.public_base_url}/shift-app/index.html?year_month={ym}"
 
 
 def build_checkin_web_app_url(*, web_session: str) -> str | None:

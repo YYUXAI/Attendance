@@ -1,0 +1,25 @@
+[Unit]
+Description=UX助手 Attendance Shift Web
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/shawn/Attendance-unified-dev
+EnvironmentFile=/home/shawn/Attendance-unified-dev/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=ATTENDANCE_DOTENV_OVERRIDE=0
+Environment=ATTENDANCE_BOT_OWNER=ux_assistant
+Environment=SHIFT_WEB_HOST=127.0.0.1
+Environment=SHIFT_WEB_PORT=18084
+ExecStart=/home/shawn/Attendance-unified-dev/.venv/bin/python /home/shawn/Attendance-unified-dev/shift_web_app.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/shawn/Attendance-unified-dev/logs
+UMask=0077
+
+[Install]
+WantedBy=default.target

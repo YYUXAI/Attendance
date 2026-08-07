@@ -12,7 +12,9 @@ from domain.clock_matter import (
     validate_caption_for_remote_diff,
     validate_caption_identity_for_sender,
 )
+from infra.bot_owner import load_attendance_bot_owner
 from infra.checkin_remote_diff_config import requires_remote_diff_checkin
+from infra.log_redaction import redacted_ref
 from infra.test_group_google_config import is_test_group_chat
 from services import checkin_ai_orchestrator, checkin_service
 from services.checkin_recognition_log import log_checkin_recognition
@@ -33,8 +35,8 @@ async def _reply_checkin(message: Message, text: str) -> None:
             await message.answer(text=text)
         except Exception:
             log.exception(
-                "checkin: failed to reply tg_id=%s",
-                message.from_user.id if message.from_user else None,
+                "checkin: failed to reply tg_ref=%s",
+                redacted_ref(message.from_user.id if message.from_user else None),
             )
 
 
@@ -58,14 +60,17 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
 
     file_id = _extract_file_id(message)
     if not file_id:
-        log.info("[CHECKIN_HANDLER_RETURN] tg_id=%s reason=no_attachment", message.from_user.id)
+        log.info(
+            "[CHECKIN_HANDLER_RETURN] tg_ref=%s reason=no_attachment",
+            redacted_ref(message.from_user.id),
+        )
         return
 
     matter = parse_matter_from_text(message.caption)
     if matter not in {"签到", "签退"}:
         log.info(
-            "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=no_matter_in_caption_skip",
-            message.from_user.id,
+            "[CHECKIN_HANDLER_RETURN] tg_ref=%s reason=no_matter_in_caption_skip",
+            redacted_ref(message.from_user.id),
         )
         await _reply_checkin(
             message,
@@ -82,8 +87,8 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
     if not isinstance(prepared, tuple):
         await message.reply(text=prepared.message)
         log.info(
-            "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=validate_failed_replied code=%s",
-            message.from_user.id,
+            "[CHECKIN_HANDLER_RETURN] tg_ref=%s reason=validate_failed_replied code=%s",
+            redacted_ref(message.from_user.id),
             prepared.error_code,
         )
         return
@@ -104,15 +109,15 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
         chat_title=chat_title,
     )
     if not allowed and not ai_dry_run:
-        # 非正式群且非 AI dry-run：不走识别、不入库；前台仍回成功以免打扰。
+        # 保持原 Attendance 行为；融合边界只负责阻止重复落账。
         success_text = f"{matter}成功"
         await message.reply(text=success_text)
         log.info(
-            "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=chat_roster_denied detail=%s chat_id=%s employee_id=%s",
-            message.from_user.id,
+            "[CHECKIN_HANDLER_RETURN] tg_ref=%s reason=chat_roster_denied detail=%s chat_ref=%s employee_ref=%s",
+            redacted_ref(message.from_user.id),
             deny_reason,
-            chat_id,
-            employee_id,
+            redacted_ref(chat_id),
+            redacted_ref(employee_id),
         )
         return
 
@@ -137,14 +142,25 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
         cap_eid = parse_employee_id_from_text(message.caption)
         await message.reply(text=user_message_for_checkin_error(caption_err))
         log.info(
-            "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=caption_identity_mismatch "
-            "cap_en=%r cap_eid=%r reg_en=%r reg_eid=%r",
-            message.from_user.id,
-            cap_en,
-            cap_eid,
-            english_name,
-            employee_id,
+            "[CHECKIN_HANDLER_RETURN] tg_ref=%s reason=caption_identity_mismatch "
+            "cap_name_ref=%s cap_employee_ref=%s reg_name_ref=%s reg_employee_ref=%s",
+            redacted_ref(message.from_user.id),
+            redacted_ref(cap_en),
+            redacted_ref(cap_eid),
+            redacted_ref(english_name),
+            redacted_ref(employee_id),
         )
+        return
+
+    bot_owner = load_attendance_bot_owner()
+    source_message_id = int(message.message_id)
+    if checkin_service.has_processed_telegram_checkin(
+        bot_owner=bot_owner,
+        source_chat_id=chat_id,
+        source_message_id=source_message_id,
+    ):
+        await _reply_checkin(message, "该打卡消息已处理，本次未重复记账。")
+        log.info("[CHECKIN_HANDLER_RETURN] reason=telegram_source_already_processed")
         return
 
     if ai_dry_run:
@@ -174,8 +190,8 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
         )
     except Exception:
         log.exception(
-            "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=ai_exception",
-            message.from_user.id,
+            "[CHECKIN_HANDLER_RETURN] tg_ref=%s reason=ai_exception",
+            redacted_ref(message.from_user.id),
         )
         err_text = "打卡失败：识别异常，请稍后重试。"
         try:
@@ -195,8 +211,8 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
             error_code=ai_out.error_code,
         )
         log.info(
-            "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=ai_failed_replied code=%s",
-            message.from_user.id,
+            "[CHECKIN_HANDLER_RETURN] tg_ref=%s reason=ai_failed_replied code=%s",
+            redacted_ref(message.from_user.id),
             ai_out.error_code,
         )
         return
@@ -211,10 +227,10 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
             matter=matter,
         )
         log.info(
-            "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=ai_dry_run_success chat_id=%s employee_id=%s clock_time_utc=%s",
-            message.from_user.id,
-            chat_id,
-            employee_id,
+            "[CHECKIN_HANDLER_RETURN] tg_ref=%s reason=ai_dry_run_success chat_ref=%s employee_ref=%s clock_time_utc=%s",
+            redacted_ref(message.from_user.id),
+            redacted_ref(chat_id),
+            redacted_ref(employee_id),
             ai_out.clock_time_utc,
         )
         ext = ai_out.extraction
@@ -235,15 +251,21 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
             await message.answer(text=success_text)
         return
 
-    checkin_service.persist_clock_record(
+    _, inserted = checkin_service.persist_telegram_clock_record(
+        bot_owner=bot_owner,
+        source_chat_id=chat_id,
+        source_message_id=source_message_id,
         tg_id=message.from_user.id,
-        chat_id=message.chat.id,
         file_id=file_id,
         employee_id=employee_id,
         shift_id=shift_id,
         clock_time_utc=ai_out.clock_time_utc,
         clock_action=matter,
     )
+    if not inserted:
+        await _reply_checkin(message, "该打卡消息已处理，本次未重复记账。")
+        log.info("[CHECKIN_HANDLER_RETURN] reason=telegram_source_race_deduplicated")
+        return
     log_checkin_recognition(
         stage="saved",
         tg_id=int(message.from_user.id),
@@ -253,8 +275,8 @@ async def _handle_checkin_message(message: Message, bot: Bot) -> None:
         matter=matter,
     )
     log.info(
-        "[CHECKIN_HANDLER_RETURN] tg_id=%s reason=success_silent clock_time_utc=%s",
-        message.from_user.id,
+        "[CHECKIN_HANDLER_RETURN] tg_ref=%s reason=success_silent clock_time_utc=%s",
+        redacted_ref(message.from_user.id),
         ai_out.clock_time_utc,
     )
     if is_test_group_chat(chat_id=chat_id, chat_title=chat_title):
@@ -287,10 +309,10 @@ CHECKIN_FILTER = F.chat.type.in_({"group", "supergroup"}) & (F.photo | F.documen
 async def checkin_message_handler(message: Message, bot: Bot) -> None:
     tid = message.from_user.id if message.from_user else None
     log.info(
-        "[CHECKIN_HANDLER_ENTER] tg_id=%s chat_type=%s chat_id=%s has_photo=%s has_document=%s",
-        tid,
+        "[CHECKIN_HANDLER_ENTER] tg_ref=%s chat_type=%s chat_ref=%s has_photo=%s has_document=%s",
+        redacted_ref(tid),
         message.chat.type,
-        message.chat.id,
+        redacted_ref(message.chat.id),
         message.photo is not None,
         message.document is not None,
     )
@@ -301,9 +323,9 @@ async def checkin_message_handler(message: Message, bot: Bot) -> None:
 async def checkin_edited_message_handler(message: Message, bot: Bot) -> None:
     tid = message.from_user.id if message.from_user else None
     log.info(
-        "[CHECKIN_EDIT_HANDLER_ENTER] tg_id=%s chat_type=%s chat_id=%s",
-        tid,
+        "[CHECKIN_EDIT_HANDLER_ENTER] tg_ref=%s chat_type=%s chat_ref=%s",
+        redacted_ref(tid),
         message.chat.type,
-        message.chat.id,
+        redacted_ref(message.chat.id),
     )
     await _handle_checkin_message(message, bot)

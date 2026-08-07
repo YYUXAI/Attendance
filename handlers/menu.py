@@ -4,12 +4,14 @@ import logging
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, User
 
+from infra.bot_owner import load_attendance_bot_owner
 from keyboards.actions_menu import reply_actions_menu, reply_group_single_fill_menu
 from keyboards.main_menu import GROUP_REPLY_MENU_TEXTS
 from repositories import registrations_repo
 from repositories.admin_list_repo import is_admin_by_tg_id
+from services import register_service
 from services.leave_flow_guard import check_can_back, check_can_leave
 
 _GROUP_BOTTOM_ACTION = {
@@ -23,8 +25,13 @@ router = Router()
 log = logging.getLogger(__name__)
 
 
-async def _send_actions_menu(message: Message) -> None:
-    user = message.from_user
+async def _send_actions_menu(message: Message, *, user: User | None = None) -> None:
+    user = user or message.from_user
+    if message.chat.type == "private" and user:
+        register_service.clear_waiting_register_input(
+            bot_owner=load_attendance_bot_owner(),
+            tg_id=int(user.id),
+        )
     is_admin = is_admin_by_tg_id(tg_id=int(user.id)) if user else False
     await reply_actions_menu(
         message=message,
@@ -35,6 +42,11 @@ async def _send_actions_menu(message: Message) -> None:
 
 @router.message(CommandStart())
 async def start_command_handler(message: Message) -> None:
+    await _send_actions_menu(message)
+
+
+@router.message(Command("attendance"), F.chat.type == "private")
+async def attendance_menu_command(message: Message) -> None:
     await _send_actions_menu(message)
 
 
@@ -114,19 +126,24 @@ async def show_menu_callback(callback: CallbackQuery) -> None:
     await callback.answer()
     if callback.message is None:
         return
-    user = callback.from_user
-    is_admin = is_admin_by_tg_id(tg_id=int(user.id))
-    await reply_actions_menu(message=callback.message, is_admin=is_admin, tg_id=int(user.id))
+    await _send_actions_menu(callback.message, user=callback.from_user)
+
+
+@router.callback_query(F.data == "uxa:attendance_menu")
+async def unified_attendance_menu_callback(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if callback.message is None:
+        return
+    await _send_actions_menu(callback.message, user=callback.from_user)
 
 
 async def _disabled_legacy_callback(callback: CallbackQuery, *, tag: str) -> None:
-    """已下线功能（报备休息/私聊离岗审批/审批/QC）旧按钮：静默忽略，仅记日志。"""
+    """已下线功能旧按钮：保持原 Attendance 静默处理契约。"""
     await callback.answer()
     tg_id = callback.from_user.id if callback.from_user else None
     log.info("disabled_feature callback=%s tg_id=%s data=%r", tag, tg_id, callback.data)
 
 
-# --- 报备休息（请假）---
 @router.callback_query(F.data == "noop:rest")
 async def disabled_rest_begin_callback(callback: CallbackQuery) -> None:
     await _disabled_legacy_callback(callback, tag="noop:rest")
@@ -152,7 +169,6 @@ async def disabled_rest_approval_callback(callback: CallbackQuery) -> None:
     await _disabled_legacy_callback(callback, tag="leave:apr")
 
 
-# --- 私聊离岗报备 + 审批 ---
 @router.callback_query(F.data == "tleave:begin")
 async def disabled_tleave_begin_callback(callback: CallbackQuery) -> None:
     await _disabled_legacy_callback(callback, tag="tleave:begin")
@@ -173,7 +189,6 @@ async def disabled_tleave_approval_callback(callback: CallbackQuery) -> None:
     await _disabled_legacy_callback(callback, tag="apr:TEMPORARY_LEAVE")
 
 
-# --- 质检（QC）---
 @router.callback_query(F.data.startswith("qc:"))
 async def disabled_qc_callback(callback: CallbackQuery) -> None:
     await _disabled_legacy_callback(callback, tag="qc")

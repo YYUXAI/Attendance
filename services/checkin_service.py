@@ -5,7 +5,11 @@ from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
 
 from domain.shared.result import ServiceResult
-from repositories.clock_records_repo import insert_clock_record
+from repositories.clock_records_repo import (
+    has_telegram_source,
+    insert_clock_record,
+    insert_telegram_clock_record,
+)
 from repositories.organizations_repo import get_department_name_by_id
 from repositories import employee_shift_config_repo, employee_shift_roster_repo, profile_repo
 from services.employee_shift_day_service import get_daily_shift
@@ -216,6 +220,50 @@ def persist_clock_record(
         clock_action=clock_action,
     )
     return resolved
+
+
+def has_processed_telegram_checkin(
+    *,
+    bot_owner: str,
+    source_chat_id: int,
+    source_message_id: int,
+) -> bool:
+    return has_telegram_source(
+        bot_owner=bot_owner,
+        source_chat_id=source_chat_id,
+        source_message_id=source_message_id,
+    )
+
+
+def persist_telegram_clock_record(
+    *,
+    bot_owner: str,
+    source_chat_id: int,
+    source_message_id: int,
+    tg_id: int,
+    file_id: str,
+    employee_id: str,
+    shift_id: int | None,
+    clock_time_utc: datetime | None = None,
+    clock_action: str | None = None,
+) -> tuple[datetime, bool]:
+    resolved = clock_time_utc or datetime.now(timezone.utc)
+    if resolved.tzinfo is None:
+        resolved = resolved.replace(tzinfo=timezone.utc)
+    else:
+        resolved = resolved.astimezone(timezone.utc)
+    inserted = insert_telegram_clock_record(
+        bot_owner=bot_owner,
+        source_chat_id=source_chat_id,
+        source_message_id=source_message_id,
+        file_id=file_id,
+        tg_id=tg_id,
+        employee_id=employee_id,
+        shift_id=shift_id,
+        clock_time_utc=resolved,
+        clock_action=clock_action,
+    )
+    return resolved, inserted
 
 
 def _format_time_hm(t: object) -> str:

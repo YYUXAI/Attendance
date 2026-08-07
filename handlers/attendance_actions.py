@@ -16,6 +16,7 @@ from aiogram.types import (
 )
 
 from infra.daily_report_config import load_daily_report_config
+from infra.bot_owner import load_attendance_bot_owner
 from infra.log_redaction import redacted_ref
 from keyboards.actions_menu import build_shift_web_app_url_for_admin
 from keyboards.actions_menu import reply_group_single_fill_menu
@@ -24,7 +25,7 @@ from repositories import (
     registrations_repo,
     temporary_leave_records_repo,
 )
-from services import attendance_export_service, checkin_service
+from services import attendance_export_service, checkin_service, register_service
 from services.leave_flow_guard import check_can_back, check_can_leave, format_leave_duration_minutes
 
 router = Router()
@@ -222,6 +223,10 @@ async def open_shift_web_app_message(message: Message) -> None:
     user = _require_user(message)
     if not user or message.chat.type != "private":
         return
+    register_service.clear_waiting_register_input(
+        bot_owner=load_attendance_bot_owner(),
+        tg_id=int(user.id),
+    )
     await _open_shift_web_app(message=message, tg_id=int(user.id))
 
 
@@ -269,6 +274,11 @@ async def export_today_message(message: Message) -> None:
     user = _require_user(message)
     if not user:
         return
+    if message.chat.type == "private":
+        register_service.clear_waiting_register_input(
+            bot_owner=load_attendance_bot_owner(),
+            tg_id=int(user.id),
+        )
     await _prompt_export_range(message=message, tg_id=int(user.id))
 
 

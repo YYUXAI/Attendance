@@ -5,9 +5,8 @@ from aiogram.types import Message, ReplyKeyboardRemove
 from infra.checkin_remote_diff_config import requires_remote_diff_checkin
 from infra.gateway_group_scope import is_omni_group_chat
 from infra.shift_web_config import build_shift_web_app_url, current_year_month, load_shift_web_config
-from services.shift_web_session import create_session
 from keyboards.group_actions import build_single_action_inline_or_callback
-from keyboards.main_menu import build_group_reply_keyboard, build_private_reply_keyboard
+from keyboards.main_menu import build_group_reply_keyboard, build_private_actions_inline
 from repositories import registrations_repo
 from services.leave_flow_guard import (
     check_can_back,
@@ -18,6 +17,7 @@ from services.leave_flow_guard import (
 )
 
 MENU_TEXT = "请选择功能（使用输入框下方按钮；输入 / 可打开命令）："
+PRIVATE_REPLY_KEYBOARD_REMOVAL_TEXT = "旧版底部菜单已收起。"
 GROUP_REPLY_MENU_TEXT = "功能菜单（底部按钮或 /start）"
 _GROUP_INLINE_HINT = "请点击下方按钮操作"
 _GROUP_INLINE_HINT_REMOTE = (
@@ -27,11 +27,11 @@ _GROUP_INLINE_HINT_REMOTE = (
 
 
 def build_shift_web_app_url_for_admin(*, tg_id: int) -> str | None:
-    """每次生成带新 web_session 的链接；WebApp 内也可用 initData 换票。"""
+    """生成无凭据的 WebApp 地址；页面使用 Telegram initData 换短期会话。"""
+    del tg_id
     cfg = load_shift_web_config()
     ym = current_year_month(tz_name=cfg.timezone_name)
-    session = create_session(tg_id=tg_id)
-    return build_shift_web_app_url(year_month=ym, web_session=session)
+    return build_shift_web_app_url(year_month=ym)
 
 
 async def reply_actions_menu(*, message: Message, is_admin: bool, tg_id: int | None = None) -> None:
@@ -39,8 +39,12 @@ async def reply_actions_menu(*, message: Message, is_admin: bool, tg_id: int | N
     if message.chat.type == "private":
         shift_url = build_shift_web_app_url_for_admin(tg_id=int(uid)) if uid is not None and is_admin else None
         await message.reply(
+            PRIVATE_REPLY_KEYBOARD_REMOVAL_TEXT,
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await message.reply(
             MENU_TEXT,
-            reply_markup=build_private_reply_keyboard(
+            reply_markup=build_private_actions_inline(
                 is_admin=is_admin,
                 shift_web_app_url=shift_url,
             ),

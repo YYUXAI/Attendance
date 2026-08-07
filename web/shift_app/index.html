@@ -369,11 +369,7 @@
 
     const yearMonth = params.get('year_month') || '';
 
-    const webSession = params.get('web_session') || '';
-
-    let sessionToken = webSession;
-
-    const devApiToken = params.get('api_token') || '';
+    let sessionToken = '';
 
     document.getElementById('ymLabel').textContent = '月份：' + (yearMonth || '（未指定）');
 
@@ -484,14 +480,7 @@
     function resolveInitData() {
 
       if (tg?.initData && String(tg.initData).length > 0) return tg.initData;
-
-      const hash = (location.hash || '').replace(/^#/, '');
-
-      if (hash && hash.includes('hash=')) return hash;
-
-      const hp = new URLSearchParams(hash);
-
-      return hp.get('tgWebAppData') || params.get('initData') || params.get('init_data') || '';
+      return '';
 
     }
 
@@ -499,7 +488,7 @@
 
     function hasAuthMaterial() {
 
-      return !!(sessionToken || telegramInitData || devApiToken);
+      return !!(sessionToken || telegramInitData);
 
     }
 
@@ -603,8 +592,6 @@
 
       if (telegramInitData) h['X-Telegram-Init-Data'] = telegramInitData;
 
-      else if (devApiToken) h['X-API-Key'] = devApiToken;
-
       return h;
 
     }
@@ -612,14 +599,7 @@
 
 
     function apiUrl(path) {
-
-      let url = path;
-
-      if (sessionToken) {
-        url += (url.includes('?') ? '&' : '?') + 'web_session=' + encodeURIComponent(sessionToken);
-      }
-
-      return url;
+      return path;
 
     }
 
@@ -1590,5 +1570,4 @@
 </body>
 
 </html>
-
 

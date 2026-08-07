@@ -1,0 +1,24 @@
+[Unit]
+Description=UX助手 Attendance Telegram webhook ingress
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/shawn/Attendance-unified-dev
+EnvironmentFile=-/home/shawn/Attendance-unified-dev/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=ATTENDANCE_DOTENV_OVERRIDE=0
+Environment=ATTENDANCE_BOT_OWNER=ux_assistant
+Environment=ATTENDANCE_RUN_MODE=webhook
+Environment=ATTENDANCE_REGISTER_BOT_COMMANDS=0
+Environment=ATTENDANCE_WEBHOOK_RUN_WORKERS=0
+ExecStart=/home/shawn/Attendance-unified-dev/.venv/bin/uvicorn webhook_app:app --host 127.0.0.1 --port 8001
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+UMask=0077
+
+[Install]
+WantedBy=default.target

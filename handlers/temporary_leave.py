@@ -7,6 +7,7 @@ from aiogram.filters import BaseFilter
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from services import register_service
+from infra.bot_owner import load_attendance_bot_owner
 from services import temporary_leave_service
 
 router = Router()
@@ -23,7 +24,11 @@ class TemporaryLeavePrivateFlowExpectingTextFilter(BaseFilter):
         user = message.from_user
         if not user:
             return False
-        if register_service.is_waiting_register_input(tg_id=user.id):
+        if register_service.is_waiting_register_input(
+            bot_owner=load_attendance_bot_owner(),
+            tg_id=user.id,
+            private_chat_id=int(message.chat.id),
+        ):
             return False
         return temporary_leave_service.is_temporary_leave_flow_expecting_text(tg_id=user.id)
 
@@ -39,7 +44,10 @@ async def temporary_leave_begin_callback(callback: CallbackQuery) -> None:
         await callback.message.reply(text=temporary_leave_service.MSG_NOT_PRIVATE)
         return
 
-    register_service.clear_waiting_register_input(tg_id=user.id)
+    register_service.clear_waiting_register_input(
+        bot_owner=load_attendance_bot_owner(),
+        tg_id=user.id,
+    )
     res = temporary_leave_service.begin_temporary_leave_application(tg_id=user.id)
     if not res.ok:
         await callback.message.reply(text=res.message)
@@ -81,7 +89,11 @@ async def temporary_leave_flow_text_handler(message: Message) -> None:
     tid = message.from_user.id
     text = message.text or ""
 
-    if register_service.is_waiting_register_input(tg_id=tid):
+    if register_service.is_waiting_register_input(
+        bot_owner=load_attendance_bot_owner(),
+        tg_id=tid,
+        private_chat_id=int(message.chat.id),
+    ):
         await message.reply(text=_REGISTER_BLOCKS_MSG)
         return
 
