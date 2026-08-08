@@ -26,6 +26,8 @@ from gateway_provider.contracts import (
     event_request_canonical_value,
     event_response_value,
 )
+from gateway_provider.checkin_module import is_group_checkin, process_group_checkin
+from gateway_provider.gateway_file_client import GatewayFileReader
 from gateway_provider.profile_module import profile_text_for_tg_id
 from domain.action_drafts import (
     build_back_draft,
@@ -54,8 +56,9 @@ class GatewayRouteOwnershipMismatchError(RuntimeError):
 
 
 class AttendanceGatewayEventModule:
-    def __init__(self, database_url: str) -> None:
+    def __init__(self, database_url: str, file_reader: GatewayFileReader) -> None:
         self._database_url = database_url
+        self._file_reader = file_reader
 
     def process_event(self, request: GatewayEventRequest) -> GatewayEventResponse:
         request_hash = _request_hash(request)
@@ -83,7 +86,11 @@ class AttendanceGatewayEventModule:
                         strict=True,
                     )
 
-                response = _process_attendance_event(request, cursor)
+                response = _process_attendance_event(
+                    request,
+                    cursor,
+                    self._file_reader,
+                )
                 response_value = event_response_value(response)
                 cursor.execute(
                     """
@@ -113,6 +120,7 @@ def _request_hash(request: GatewayEventRequest) -> str:
 def _process_attendance_event(
     request: GatewayEventRequest,
     cursor: Cursor,
+    file_reader: GatewayFileReader,
 ) -> GatewayEventResponse:
     update = request.telegramUpdate
     if isinstance(update, TelegramInlineQueryUpdate):
@@ -153,6 +161,8 @@ def _process_attendance_event(
         request.routeReason == "GROUP_OWNER"
         and message.chat.type in {"group", "supergroup"}
     ):
+        if is_group_checkin(update):
+            return process_group_checkin(request, cursor, update, file_reader)
         group_action = {
             "/att_signin": ("signin", "签到"),
             "/att_signout": ("signout", "签退"),

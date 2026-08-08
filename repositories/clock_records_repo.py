@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, List
 
+from psycopg2.extensions import cursor as Cursor
+
 from infra.db import get_cursor
 
 
@@ -13,6 +15,64 @@ class ClockRecordRow:
     shift_id: int
     clock_time: Any
     clock_action: str | None = None
+
+
+def has_telegram_source_cur(
+    cursor: Cursor,
+    *,
+    source_chat_id: int,
+    source_message_id: int,
+) -> bool:
+    cursor.execute(
+        """
+        SELECT 1
+        FROM public.clock_records
+        WHERE source_chat_id = %s
+          AND source_message_id = %s
+        """,
+        (int(source_chat_id), int(source_message_id)),
+    )
+    return cursor.fetchone() is not None
+
+
+def insert_gateway_clock_record_cur(
+    cursor: Cursor,
+    *,
+    source_chat_id: int,
+    source_message_id: int,
+    file_ref: str,
+    tg_id: int,
+    employee_id: str,
+    shift_id: int | None,
+    clock_time_utc: Any,
+    clock_action: str,
+) -> bool:
+    cursor.execute(
+        """
+        INSERT INTO public.clock_records (
+            chat_id, file_id, tg_id, employee_id, shift_id,
+            clock_time, clock_action, source_chat_id, source_message_id
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (
+            source_chat_id, source_message_id
+        ) WHERE source_chat_id IS NOT NULL
+          AND source_message_id IS NOT NULL
+        DO NOTHING
+        RETURNING id
+        """,
+        (
+            int(source_chat_id),
+            file_ref,
+            int(tg_id),
+            str(employee_id),
+            shift_id,
+            clock_time_utc,
+            clock_action,
+            int(source_chat_id),
+            int(source_message_id),
+        ),
+    )
+    return cursor.fetchone() is not None
 
 
 def ensure_clock_action_column() -> None:

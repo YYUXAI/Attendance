@@ -54,6 +54,10 @@ def _formal_group_roster_source_by_chat_id() -> dict[int, str]:
     return out
 
 
+def formal_group_roster_source_for_chat(*, chat_id: int) -> str | None:
+    return _formal_group_roster_source_by_chat_id().get(int(chat_id))
+
+
 def should_accept_checkin_for_chat_roster(
     *, chat_id: int, employee_id: str, tz_name: str
 ) -> tuple[bool, str]:

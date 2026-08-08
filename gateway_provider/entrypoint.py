@@ -18,8 +18,14 @@ def _required_environment(name: str) -> str:
 app = create_attendance_gateway_provider_app(
     AttendanceGatewayProviderConfig(
         database_url=_required_environment("ATTENDANCE_DATABASE_URL"),
-        gateway_bearer_token=_required_environment(
+        gateway_to_attendance_bearer_token=_required_environment(
             "GATEWAY_TO_ATTENDANCE_BEARER_TOKEN"
+        ),
+        gateway_internal_base_url=_required_environment(
+            "GATEWAY_INTERNAL_BASE_URL"
+        ),
+        attendance_to_gateway_bearer_token=_required_environment(
+            "ATTENDANCE_TO_GATEWAY_BEARER_TOKEN"
         ),
     )
 )

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Iterator
 from zoneinfo import ZoneInfo
 
 import psycopg2
+import pytest
 from fastapi.testclient import TestClient
 
 from gateway_provider.app import (
@@ -15,6 +22,8 @@ from gateway_provider.app import (
 
 
 _TEST_GATEWAY_CREDENTIAL = "gateway-to-attendance-test-credential"
+_TEST_ATTENDANCE_TO_GATEWAY_CREDENTIAL = "attendance-to-gateway-test-credential"
+_TEST_UNUSED_GATEWAY_BASE_URL = "http://127.0.0.1:19089"
 
 
 def _database_url() -> str:
@@ -52,6 +61,10 @@ def _apply_gateway_provider_migration() -> None:
                 ("74808",),
             )
             cursor.execute(
+                "DELETE FROM employee_shift_roster WHERE employee_id = %s",
+                ("74808",),
+            )
+            cursor.execute(
                 "DELETE FROM employee_shift_calendar WHERE employee_id = %s",
                 ("74808",),
             )
@@ -66,7 +79,11 @@ def test_attendance_command_returns_namespaced_menu_action() -> None:
     app = create_attendance_gateway_provider_app(
         AttendanceGatewayProviderConfig(
             database_url=_database_url(),
-            gateway_bearer_token=_TEST_GATEWAY_CREDENTIAL,
+            gateway_to_attendance_bearer_token=_TEST_GATEWAY_CREDENTIAL,
+            gateway_internal_base_url=_TEST_UNUSED_GATEWAY_BASE_URL,
+            attendance_to_gateway_bearer_token=(
+                _TEST_ATTENDANCE_TO_GATEWAY_CREDENTIAL
+            ),
         )
     )
 
@@ -128,15 +145,63 @@ def _attendance_command_event() -> dict[str, object]:
     }
 
 
-def _provider_client() -> TestClient:
+def _provider_client(
+    gateway_base_url: str = _TEST_UNUSED_GATEWAY_BASE_URL,
+) -> TestClient:
     return TestClient(
         create_attendance_gateway_provider_app(
             AttendanceGatewayProviderConfig(
                 database_url=_database_url(),
-                gateway_bearer_token=_TEST_GATEWAY_CREDENTIAL,
+                gateway_to_attendance_bearer_token=_TEST_GATEWAY_CREDENTIAL,
+                gateway_internal_base_url=gateway_base_url,
+                attendance_to_gateway_bearer_token=(
+                    _TEST_ATTENDANCE_TO_GATEWAY_CREDENTIAL
+                ),
             )
         )
     )
+
+
+@contextmanager
+def _gateway_file_server(
+    *,
+    file_ref: str,
+    payload: bytes,
+) -> Iterator[tuple[str, list[str | None]]]:
+    authorizations: list[str | None] = []
+    digest = base64.b64encode(hashlib.sha256(payload).digest()).decode("ascii")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            authorizations.append(self.headers.get("Authorization"))
+            if self.path != f"/internal/v1/telegram-files/{file_ref}":
+                self.send_error(404)
+                return
+            if self.headers.get("Authorization") != (
+                f"Bearer {_TEST_ATTENDANCE_TO_GATEWAY_CREDENTIAL}"
+            ):
+                self.send_error(401)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Digest", f"sha-256={digest}")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format: str, *args: object) -> None:
+            del format, args
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}", authorizations
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_gateway_bearer_is_required() -> None:
@@ -443,6 +508,59 @@ def _group_report_event(
                 "text": text,
             },
         },
+    }
+
+
+def _group_checkin_event(
+    *,
+    event_number: int,
+    file_ref: str,
+    tg_id: int = 81002,
+) -> dict[str, object]:
+    return {
+        "protocolVersion": "1.0",
+        "eventId": f"evt-attendance-checkin-{event_number}",
+        "target": "ATTENDANCE",
+        "routeReason": "GROUP_OWNER",
+        "conversationId": "telegram:chat:-10081002",
+        "receivedAt": "2026-08-08T08:00:01Z",
+        "telegramUpdate": {
+            "update_id": event_number,
+            "message": {
+                "message_id": event_number,
+                "date": 1786176000,
+                "chat": {
+                    "id": -10081002,
+                    "type": "supergroup",
+                    "title": "Mutable title",
+                },
+                "from": {
+                    "id": tg_id,
+                    "is_bot": False,
+                    "first_name": "Checkin",
+                },
+                "caption": (
+                    "#打卡\n英文名：GRANDFOR\n工号：74808\n事项：签到"
+                ),
+                "photo": [
+                    {
+                        "file_id": "gateway-private-telegram-file-id",
+                        "file_unique_id": "gateway-private-unique-id",
+                        "width": 1280,
+                        "height": 720,
+                        "file_size": 20,
+                    }
+                ],
+            },
+        },
+        "telegramFiles": [
+            {
+                "fileRef": file_ref,
+                "kind": "PHOTO",
+                "mimeType": "image/jpeg",
+                "sizeBytes": 20,
+            }
+        ],
     }
 
 
@@ -1000,6 +1118,125 @@ def test_leave_and_back_callbacks_render_current_business_drafts() -> None:
             "离岗时长：25分钟\n提示：你已超时\n原因："
         ),
     }
+
+
+def test_group_photo_checkin_reads_gateway_file_and_persists_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _apply_gateway_provider_migration()
+    monkeypatch.setenv("FORMAL_GROUP_ROSTER_SOURCE_MAP", "-10081002:main")
+    monkeypatch.setenv("CHECKIN_AI_ENABLED", "false")
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 81002, -10081002),
+            )
+            cursor.execute(
+                """
+                INSERT INTO employee_shift_roster (
+                    year_month, source, employee_id
+                ) VALUES (%s, %s, %s)
+                """,
+                ("2026-08", "main", "74808"),
+            )
+    file_ref = "tgf_0123456789abcdef0123456789abcdef01234567"
+    event = _group_checkin_event(event_number=1401, file_ref=file_ref)
+
+    with _gateway_file_server(
+        file_ref=file_ref,
+        payload=b"gateway-image-bytes",
+    ) as (gateway_base_url, authorizations):
+        client = _provider_client(gateway_base_url)
+        headers = {"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"}
+        response = client.post(
+            "/integration/gateway/v1/events",
+            headers=headers,
+            json=event,
+        )
+        duplicate = client.post(
+            "/integration/gateway/v1/events",
+            headers=headers,
+            json=event,
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["actions"] == [
+        {
+            "actionId": "evt-attendance-checkin-1401.reply",
+            "type": "SEND_MESSAGE",
+            "chatId": -10081002,
+            "replyToMessageId": 1401,
+            "text": "签到成功",
+        }
+    ]
+    assert duplicate.json() == {**response.json(), "result": "DUPLICATE"}
+    assert authorizations == [
+        f"Bearer {_TEST_ATTENDANCE_TO_GATEWAY_CREDENTIAL}"
+    ]
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT file_id, employee_id, clock_time, clock_action,
+                       source_chat_id, source_message_id
+                FROM clock_records
+                WHERE employee_id = %s
+                """,
+                ("74808",),
+            )
+            rows = cursor.fetchall()
+    assert rows == [
+        (
+            file_ref,
+            "74808",
+            datetime(2026, 8, 8, 8, 0, tzinfo=timezone.utc),
+            "签到",
+            -10081002,
+            1401,
+        )
+    ]
+
+
+def test_group_photo_checkin_outside_roster_fails_without_false_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _apply_gateway_provider_migration()
+    monkeypatch.setenv("FORMAL_GROUP_ROSTER_SOURCE_MAP", "-10081002:main")
+    monkeypatch.setenv("CHECKIN_AI_ENABLED", "false")
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 81002, -10081002),
+            )
+    file_ref = "tgf_1123456789abcdef0123456789abcdef01234567"
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=_group_checkin_event(event_number=1402, file_ref=file_ref),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["actions"][0]["text"] == (
+        "打卡失败：您不在本群当前班表，未记账。"
+    )
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM clock_records WHERE employee_id = %s",
+                ("74808",),
+            )
+            assert cursor.fetchone() == (0,)
 
 
 def test_registration_confirmation_binds_the_pre_registered_employee() -> None:

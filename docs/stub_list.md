@@ -2,7 +2,7 @@
 ## Summary
 Gateway clean-break V1 新增 `gateway_provider/`、`gateway_processed_events` migration 和公开 HTTP 行为测试；该新增切片无 Stub、Mock、No-op、Placeholder、Hardcode、默认成功或吞错。
 
-旧 Attendance Telegram ownership 中仍有以下两个已确认问题。它们阻塞最终 clean-break 验收，必须在 Attendance 完整迁移切片删除或以当前业务规则完整实现。
+旧 Attendance Telegram ownership 中仍有以下一个已确认问题。它阻塞最终 clean-break 验收，必须在 Attendance 完整迁移切片删除。
 ## Items
 ### 1. 已下线 leave/tleave/QC 旧 callback 保持 no-op
 - 类型：No-op
@@ -13,15 +13,4 @@ Gateway clean-break V1 新增 `gateway_provider/`、`gateway_processed_events` m
 - 当前影响：统一壳不再声明或转发这些旧 callback；它们只保留在旧 Attendance 自身代码中。
 - 风险等级：Low
 - 建议后续处理：独立业务目标中决定删除旧按钮协议，或按新规则恢复完整 handler。
-- 是否阻塞需求达成：是
-
-### 2. 非允许考勤群仍可能返回旧的成功文案
-- 类型：默认成功
-- 对应 Review 问题：旧 check-in chat roster deny 分支不落库但回复成功
-- 位置线索：`handlers/checkin.py`
-- 无法修复原因：这是融合前 Attendance 业务语义；本轮明确禁止修复与双 Bot 无直接因果关系的旧业务 bug。
-- 缺失条件：产品对非允许群的最终提示和兼容策略。
-- 当前影响：不影响双 Bot 来源幂等，但可能让旧 Attendance 场景产生误导提示。
-- 风险等级：Medium
-- 建议后续处理：另立 Attendance 业务目标，确定失败提示及审计策略后修复。
 - 是否阻塞需求达成：是

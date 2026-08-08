@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 from handlers.attendance_actions import router as attendance_actions_router
 from handlers.admin_export_test import router as admin_export_test_router
 from handlers.admin_test import router as admin_test_router
-from handlers.checkin import router as checkin_router
 from handlers.menu import router as menu_router
 # --- 已下线：报备休息 / 私聊离岗审批 / 审批 / QC（勿取消注释）---
 # from handlers.rest import router as rest_router
@@ -46,7 +45,6 @@ def build_app() -> tuple[Bot, Dispatcher]:
     dp.include_router(admin_export_test_router)
     dp.include_router(attendance_actions_router)
     dp.include_router(menu_router)
-    dp.include_router(checkin_router)
     # --- 已下线 Handler（报备休息 / 私聊离岗审批 / 审批 / QC）---
     # dp.include_router(rest_router)
     # dp.include_router(approval_router)

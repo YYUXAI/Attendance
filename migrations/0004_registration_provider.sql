@@ -120,6 +120,17 @@ CREATE TABLE IF NOT EXISTS public.employee_shift_calendar (
     UNIQUE (year_month, employee_id, work_date)
 );
 
+CREATE TABLE IF NOT EXISTS public.employee_shift_roster (
+    year_month VARCHAR(7) NOT NULL,
+    source VARCHAR(16) NOT NULL,
+    employee_id VARCHAR(64) NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (year_month, source, employee_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_employee_shift_roster_month_source
+    ON public.employee_shift_roster (year_month, source);
+
 CREATE TABLE IF NOT EXISTS public.clock_records (
     id BIGSERIAL PRIMARY KEY,
     chat_id BIGINT NOT NULL,

@@ -51,6 +51,9 @@ class TelegramMessage(BaseModel):
     chat: TelegramChat
     sender: TelegramUser | None = Field(default=None, alias="from")
     text: str | None = None
+    caption: str | None = None
+    photo: list[dict[str, object]] | None = None
+    document: dict[str, object] | None = None
 
 
 class TelegramMessageUpdate(BaseModel):
@@ -93,6 +96,16 @@ class TelegramInlineQueryUpdate(BaseModel):
     inline_query: TelegramInlineQuery
 
 
+class TelegramFileReference(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    fileRef: StableId
+    kind: Literal["PHOTO", "DOCUMENT"]
+    fileName: Annotated[str, StringConstraints(min_length=1, max_length=255)] | None = None
+    mimeType: Annotated[str, StringConstraints(min_length=3, max_length=128)] | None = None
+    sizeBytes: Annotated[int, Field(ge=0, le=20 * 1024 * 1024)] | None = None
+
+
 class GatewayEventRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -110,6 +123,9 @@ class GatewayEventRequest(BaseModel):
     receivedAt: str
     telegramUpdate: (
         TelegramMessageUpdate | TelegramCallbackUpdate | TelegramInlineQueryUpdate
+    )
+    telegramFiles: Annotated[list[TelegramFileReference], Field(max_length=20)] = (
+        Field(default_factory=list)
     )
 
     @field_validator("receivedAt")

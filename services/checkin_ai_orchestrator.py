@@ -4,10 +4,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from io import BytesIO
 from typing import Optional
-
-from aiogram import Bot
 
 from domain.checkin_image_extraction import CheckinImageExtraction
 from domain.clock_matter import validate_caption_for_remote_diff, validate_caption_identity_for_sender
@@ -31,57 +28,6 @@ class CheckinAiResolveResult:
     used_ai_time: bool
     verified_image_user: bool
     extraction: Optional[CheckinImageExtraction]
-
-
-async def download_telegram_file_bytes(*, bot: Bot, file_id: str) -> Optional[bytes]:
-    try:
-        tg_file = await bot.get_file(file_id)
-        if not tg_file.file_path:
-            return None
-        buf = BytesIO()
-        await bot.download_file(tg_file.file_path, destination=buf)
-        data = buf.getvalue()
-        return data if data else None
-    except Exception:
-        log.exception("checkin_ai: failed to download file_id=%s", file_id)
-        return None
-
-
-async def resolve_clock_time_with_ai(
-    *,
-    bot: Bot,
-    file_id: str,
-    tg_id: int,
-    shift_timezone: str,
-    config: Optional[CheckinAiConfig] = None,
-    message_sent_utc: Optional[datetime] = None,
-    caption: str | None = None,
-    chat_id: int | None = None,
-    chat_title: str | None = None,
-) -> ServiceResult | CheckinAiResolveResult:
-    image_bytes = await download_telegram_file_bytes(bot=bot, file_id=file_id)
-    if not image_bytes:
-        return ServiceResult(
-            ok=False,
-            message="打卡失败，无法下载截图，请重试",
-            error_code="AI_DOWNLOAD_FAILED",
-        )
-    log.info(
-        "checkin_ai: image downloaded file_id=%s sha256=%s bytes=%s",
-        file_id,
-        hashlib.sha256(image_bytes).hexdigest()[:16],
-        len(image_bytes),
-    )
-    return await resolve_clock_time_with_ai_from_bytes(
-        image_bytes=image_bytes,
-        tg_id=tg_id,
-        shift_timezone=shift_timezone,
-        config=config,
-        message_sent_utc=message_sent_utc,
-        caption=caption,
-        chat_id=chat_id,
-        chat_title=chat_title,
-    )
 
 
 async def resolve_clock_time_with_ai_from_bytes(

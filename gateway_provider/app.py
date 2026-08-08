@@ -18,6 +18,7 @@ from gateway_provider.event_module import (
     GatewayEventIdConflictError,
     GatewayRouteOwnershipMismatchError,
 )
+from gateway_provider.gateway_file_client import GatewayFileReader
 
 
 logger = logging.getLogger(__name__)
@@ -26,19 +27,33 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class AttendanceGatewayProviderConfig:
     database_url: str
-    gateway_bearer_token: str
+    gateway_to_attendance_bearer_token: str
+    gateway_internal_base_url: str
+    attendance_to_gateway_bearer_token: str
 
     def __post_init__(self) -> None:
         if not self.database_url.strip():
             raise ValueError("database_url is required")
-        if len(self.gateway_bearer_token) < 32:
-            raise ValueError("gateway_bearer_token must contain at least 32 characters")
+        if len(self.gateway_to_attendance_bearer_token) < 32:
+            raise ValueError(
+                "gateway_to_attendance_bearer_token must contain at least 32 characters"
+            )
+        if self.gateway_to_attendance_bearer_token == (
+            self.attendance_to_gateway_bearer_token
+        ):
+            raise ValueError("Gateway credentials must be direction-specific")
 
 
 def create_attendance_gateway_provider_app(
     config: AttendanceGatewayProviderConfig,
 ) -> FastAPI:
-    event_module = AttendanceGatewayEventModule(config.database_url)
+    event_module = AttendanceGatewayEventModule(
+        config.database_url,
+        GatewayFileReader(
+            base_url=config.gateway_internal_base_url,
+            bearer_token=config.attendance_to_gateway_bearer_token,
+        ),
+    )
     app = FastAPI(title="Attendance Gateway Provider", version="1.0.0")
 
     @app.post("/integration/gateway/v1/events")
@@ -48,7 +63,7 @@ def create_attendance_gateway_provider_app(
     ) -> JSONResponse:
         if not _bearer_token_matches(
             authorization,
-            expected=config.gateway_bearer_token,
+            expected=config.gateway_to_attendance_bearer_token,
         ):
             return _error_response(
                 status_code=401,
