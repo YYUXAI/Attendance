@@ -82,12 +82,19 @@ def _apply_gateway_provider_migration() -> None:
 
 def _apply_provider_health_migrations() -> None:
     _apply_gateway_provider_migration()
-    migration = (
-        Path(__file__).parent / "migrations/0005_webapp_sessions.sql"
-    ).read_text(encoding="utf-8")
+    migration_directory = Path(__file__).parent / "migrations"
+    migrations = [
+        (migration_directory / name).read_text(encoding="utf-8")
+        for name in ("0005_webapp_sessions.sql", "0006_delivery_receipts.sql")
+    ]
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(migration)
+            for migration in migrations:
+                cursor.execute(migration)
+            cursor.execute(
+                "DELETE FROM attendance_gateway_delivery_receipts "
+                "WHERE receipt_id LIKE 'receipt-health-%'"
+            )
 
 
 def test_provider_health_and_readiness_verify_owned_database() -> None:
@@ -106,10 +113,58 @@ def test_provider_health_and_readiness_verify_owned_database() -> None:
         "database": True,
         "requiredTables": {
             "gatewayProcessedEvents": True,
+            "deliveryReceipts": True,
             "businessTruth": True,
             "webappSessions": True,
         },
+        "operational": {
+            "permanentDeliveryFailures": 0,
+            "uncertainDeliveries": 0,
+        },
     }
+
+
+def test_provider_readiness_exposes_terminal_delivery_failures() -> None:
+    _apply_provider_health_migrations()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM attendance_gateway_delivery_receipts "
+                "WHERE receipt_id = 'receipt-health-terminal-0001'"
+            )
+            cursor.execute(
+                """
+                INSERT INTO attendance_gateway_delivery_receipts (
+                    receipt_id, action_id, related_event_id, correlation_id,
+                    request_hash, status, receipt_payload, processed_at
+                )
+                VALUES (
+                    'receipt-health-terminal-0001',
+                    'action-health-terminal-0001',
+                    NULL,
+                    'health-terminal-correlation',
+                    %s,
+                    'PERMANENTLY_FAILED',
+                    '{}'::jsonb,
+                    clock_timestamp()
+                )
+                """,
+                ("a" * 64,),
+            )
+
+    readiness = _provider_client().get("/readyz")
+
+    assert readiness.status_code == 503
+    assert readiness.json()["operational"] == {
+        "permanentDeliveryFailures": 1,
+        "uncertainDeliveries": 0,
+    }
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM attendance_gateway_delivery_receipts "
+                "WHERE receipt_id = 'receipt-health-terminal-0001'"
+            )
 
 
 def test_provider_health_fails_closed_when_database_is_unavailable() -> None:
@@ -138,8 +193,13 @@ def test_provider_health_fails_closed_when_database_is_unavailable() -> None:
         "database": False,
         "requiredTables": {
             "gatewayProcessedEvents": False,
+            "deliveryReceipts": False,
             "businessTruth": False,
             "webappSessions": False,
+        },
+        "operational": {
+            "permanentDeliveryFailures": None,
+            "uncertainDeliveries": None,
         },
     }
 

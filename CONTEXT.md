@@ -16,7 +16,7 @@ Gateway 文件只通过 `GET /internal/v1/telegram-files/{fileRef}` 读取。Att
 
 ## Database ownership
 
-`migrations/0003_gateway_provider.sql` 和 `migrations/0004_registration_provider.sql` 定义空库可重复执行的 Provider schema。Attendance 只连接 `ATTENDANCE_DATABASE_URL`；Provider 请求与 WebApp 请求均在该数据库作用域内执行。禁止跨库读取和运行时 fallback。
+`migrations/0003_gateway_provider.sql` 到 `migrations/0006_delivery_receipts.sql` 定义空库可重复执行的 Provider schema、注册状态、WebApp session 和 terminal delivery receipt。迁移使用 immutable checksum 与 advisory lock；重复执行为 no-op，已应用 SQL 变化时 fail closed。Attendance 只连接 `ATTENDANCE_DATABASE_URL`；Provider 请求与 WebApp 请求均在该数据库作用域内执行。禁止跨库读取和运行时 fallback。
 
 ## Security boundaries
 
@@ -24,3 +24,4 @@ Gateway 文件只通过 `GET /internal/v1/telegram-files/{fileRef}` 读取。Att
 - WebApp session 使用独立签名 secret，固定 issuer、audience、subject、expiry 和 session ID。
 - Attendance 进程发现任何 Telegram owner credential 时拒绝启动。
 - canonical protocol 只存在于 UXAssistant-Gateway `contracts/v1`；本仓库仅保留本地严格验证实现。
+- `/readyz` 只检查 Attendance 自有数据库、必需表和 terminal receipt operational state；`PERMANENTLY_FAILED` 或 `UNCERTAIN` receipt 会使 readiness fail closed，不读取 Gateway transport truth。

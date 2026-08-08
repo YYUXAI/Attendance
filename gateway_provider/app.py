@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from gateway_provider.contracts import (
+    GatewayDeliveryReceiptRequest,
     GatewayEventRequest,
     event_response_value,
 )
@@ -22,6 +23,11 @@ from gateway_provider.gateway_file_client import GatewayFileReader
 from gateway_provider.health import (
     check_database_liveness,
     read_provider_readiness,
+)
+from gateway_provider.receipt_module import (
+    AttendanceGatewayReceiptModule,
+    GatewayReceiptActionNotFoundError,
+    GatewayReceiptIdConflictError,
 )
 from gateway_provider.summary_module import read_attendance_summary
 
@@ -59,6 +65,7 @@ def create_attendance_gateway_provider_app(
             bearer_token=config.attendance_to_gateway_bearer_token,
         ),
     )
+    receipt_module = AttendanceGatewayReceiptModule(config.database_url)
     app = FastAPI(title="Attendance Gateway Provider", version="1.0.0")
 
     @app.get("/healthz")
@@ -127,6 +134,64 @@ def create_attendance_gateway_provider_app(
                 details={"provider": "ATTENDANCE", "eventId": event.eventId},
             )
         return JSONResponse(event_response_value(response), status_code=200)
+
+    @app.post("/integration/gateway/v1/delivery-receipts")
+    async def process_gateway_delivery_receipt(
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> JSONResponse:
+        if not _bearer_token_matches(
+            authorization,
+            expected=config.gateway_to_attendance_bearer_token,
+        ):
+            return _error_response(
+                status_code=401,
+                code="UNAUTHORIZED",
+                message="Gateway 凭据无效。",
+            )
+        try:
+            raw_receipt = await request.json()
+            receipt = GatewayDeliveryReceiptRequest.model_validate(
+                raw_receipt,
+                strict=True,
+            )
+        except (ValueError, ValidationError) as error:
+            return _validation_error_response(error)
+        try:
+            result = await run_in_threadpool(
+                receipt_module.process_receipt,
+                receipt,
+            )
+        except GatewayReceiptIdConflictError:
+            return _error_response(
+                status_code=409,
+                code="RECEIPT_ID_CONFLICT",
+                message="receiptId 已绑定到不同终态。",
+            )
+        except GatewayReceiptActionNotFoundError:
+            return _error_response(
+                status_code=404,
+                code="ACTION_NOT_FOUND",
+                message="Attendance 不拥有该 Gateway action。",
+            )
+        except Exception as error:
+            logger.error(
+                "Attendance Gateway receipt processing failed",
+                extra={"error_type": type(error).__name__},
+            )
+            return _error_response(
+                status_code=500,
+                code="INTERNAL_ERROR",
+                message="Attendance 回执处理失败。",
+            )
+        return JSONResponse(
+            {
+                "protocolVersion": "1.0",
+                "receiptId": receipt.receiptId,
+                "result": result,
+            },
+            status_code=200,
+        )
 
     @app.get("/integration/gateway/v1/attendance-summary")
     async def read_gateway_attendance_summary(

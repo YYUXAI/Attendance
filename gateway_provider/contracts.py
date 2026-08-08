@@ -267,6 +267,89 @@ class GatewayEventResponse(BaseModel):
     ]
 
 
+class GatewayTelegramResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    accepted: Literal[True]
+    chatId: int | None = None
+    messageId: Annotated[int, Field(ge=0)] | None = None
+    fileId: Annotated[
+        str,
+        StringConstraints(min_length=1, max_length=1024),
+    ] | None = None
+
+
+class GatewayReceiptFailure(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    code: Literal[
+        "INVALID_ACTION",
+        "FORBIDDEN",
+        "NOT_FOUND",
+        "RATE_LIMIT_EXHAUSTED",
+        "TELEGRAM_ERROR",
+        "NETWORK_UNKNOWN",
+        "ACTION_EXPIRED",
+    ]
+    terminal: Literal[True]
+
+
+class GatewayDeliveryReceiptRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    protocolVersion: Literal["1.0"]
+    receiptId: StableId
+    provider: Literal["ATTENDANCE"]
+    actionId: StableId
+    relatedEventId: StableId | None = None
+    correlationId: Annotated[
+        str,
+        StringConstraints(
+            min_length=1,
+            max_length=256,
+            pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]+$",
+        ),
+    ] | None = None
+    status: Literal[
+        "DELIVERED",
+        "PERMANENTLY_FAILED",
+        "UNCERTAIN",
+        "SUPERSEDED",
+    ]
+    attemptedAt: str
+    telegramResult: GatewayTelegramResult | None = None
+    failure: GatewayReceiptFailure | None = None
+
+    @field_validator("attemptedAt")
+    @classmethod
+    def validate_attempted_at(cls, value: str) -> str:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError("attemptedAt must be an ISO-8601 date-time") from error
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("attemptedAt must include a UTC offset")
+        return value
+
+    @model_validator(mode="after")
+    def validate_terminal_shape(self) -> "GatewayDeliveryReceiptRequest":
+        if (self.relatedEventId is None) == (self.correlationId is None):
+            raise ValueError(
+                "receipt requires exactly one relatedEventId or correlationId"
+            )
+        if self.status == "DELIVERED":
+            if self.telegramResult is None or self.failure is not None:
+                raise ValueError("DELIVERED receipt requires only telegramResult")
+            return self
+        if self.failure is None or self.telegramResult is not None:
+            raise ValueError("failed receipt requires only failure")
+        if self.status == "UNCERTAIN" and self.failure.code != "NETWORK_UNKNOWN":
+            raise ValueError("UNCERTAIN receipt requires NETWORK_UNKNOWN")
+        if self.status == "SUPERSEDED" and self.failure.code != "ACTION_EXPIRED":
+            raise ValueError("SUPERSEDED receipt requires ACTION_EXPIRED")
+        return self
+
+
 def event_request_canonical_value(request: GatewayEventRequest) -> dict[str, object]:
     return request.model_dump(mode="json", by_alias=True, exclude_none=True)
 
