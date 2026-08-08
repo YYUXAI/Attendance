@@ -6,16 +6,8 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message, User
 
-from keyboards.actions_menu import reply_actions_menu, reply_group_single_fill_menu
-from keyboards.main_menu import GROUP_REPLY_MENU_TEXTS
-from repositories import registrations_repo
+from keyboards.actions_menu import reply_actions_menu
 from repositories.admin_list_repo import is_admin_by_tg_id
-from services.leave_flow_guard import check_can_back, check_can_leave
-
-_GROUP_BOTTOM_ACTION = {
-    "离岗": "leave",
-    "返岗": "back",
-}
 
 router = Router()
 log = logging.getLogger(__name__)
@@ -39,75 +31,6 @@ async def start_command_handler(message: Message) -> None:
 @router.message(Command("attendance"), F.chat.type == "private")
 async def attendance_menu_command(message: Message) -> None:
     await _send_actions_menu(message)
-
-
-_GROUP_CMD_ACTION = {
-    "leave": "leave",
-    "back": "back",
-}
-
-
-async def _run_group_bottom_action(message: Message, *, action: str) -> None:
-    user = message.from_user
-    if not user:
-        return
-    reg = registrations_repo.get_by_tg_id(int(user.id))
-    if not reg:
-        await reply_group_single_fill_menu(
-            message=message,
-            action=action,
-            tg_id=int(user.id),
-        )
-        return
-    if action == "leave":
-        ok, hint = check_can_leave(
-            employee_id=str(reg.employee_id),
-            chat_id=int(message.chat.id),
-        )
-        if not ok:
-            await message.reply(hint or "无法离岗")
-            return
-    if action == "back":
-        ok, hint = check_can_back(
-            employee_id=str(reg.employee_id),
-            chat_id=int(message.chat.id),
-        )
-        if not ok:
-            await message.reply(hint or "无法返岗")
-            return
-    await reply_group_single_fill_menu(
-        message=message,
-        action=action,
-        tg_id=int(user.id),
-    )
-
-
-@router.message(
-    Command(*_GROUP_CMD_ACTION.keys()),
-    F.chat.type.in_({"group", "supergroup"}),
-)
-async def group_slash_action_command(message: Message) -> None:
-    """群隐私开启时，仅 / 命令与普通 @ 消息会送达 Bot。"""
-    cmd = (message.text or "").split()[0].lstrip("/").split("@", 1)[0].lower()
-    action = _GROUP_CMD_ACTION.get(cmd)
-    if action:
-        await _run_group_bottom_action(message, action=action)
-
-
-@router.message(
-    F.text.in_(set(GROUP_REPLY_MENU_TEXTS)),
-    F.chat.type.in_({"group", "supergroup"}),
-)
-async def group_bottom_menu_trigger(message: Message) -> None:
-    """群聊底部按钮：只弹与所点项相同的一个 ↗ 按钮。"""
-    user = message.from_user
-    if not user:
-        return
-    action = _GROUP_BOTTOM_ACTION.get((message.text or "").strip())
-    if not action:
-        await _send_actions_menu(message)
-        return
-    await _run_group_bottom_action(message, action=action)
 
 
 @router.callback_query(F.data == "menu:show")

@@ -136,3 +136,23 @@ CREATE TABLE IF NOT EXISTS public.clock_records (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_clock_records_telegram_source
     ON public.clock_records (source_chat_id, source_message_id)
     WHERE source_chat_id IS NOT NULL AND source_message_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS public.temporary_leave_records (
+    id BIGSERIAL PRIMARY KEY,
+    employee_id VARCHAR(64) NOT NULL,
+    english_name VARCHAR(128) NOT NULL,
+    tg_id BIGINT NOT NULL,
+    chat_id BIGINT NOT NULL,
+    leave_at TIMESTAMPTZ NOT NULL,
+    back_at TIMESTAMPTZ,
+    duration_minutes INTEGER,
+    reason TEXT,
+    remark_required BOOLEAN NOT NULL DEFAULT FALSE,
+    status VARCHAR(16) NOT NULL DEFAULT 'OPEN' CHECK (
+        status IN ('OPEN', 'CLOSED')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_temporary_leave_records_open
+    ON public.temporary_leave_records (employee_id, chat_id, leave_at DESC)
+    WHERE status = 'OPEN';

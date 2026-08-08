@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import psycopg2
 from psycopg2.extensions import cursor as Cursor
@@ -25,9 +27,19 @@ from gateway_provider.contracts import (
     event_response_value,
 )
 from gateway_provider.profile_module import profile_text_for_tg_id
-from domain.action_drafts import build_checkin_draft
-from repositories import registrations_repo
+from domain.action_drafts import (
+    build_back_draft,
+    build_checkin_draft,
+    build_leave_draft,
+    report_reason,
+)
+from repositories import registrations_repo, temporary_leave_records_repo
 from services import register_service
+from services.leave_flow_guard import (
+    LEAVE_BACK_OVERTIME_MINUTES,
+    format_leave_duration_minutes,
+    requires_leave_mutual_exclusion,
+)
 from services.register_service import RegisterPreview
 
 
@@ -115,6 +127,8 @@ def _process_attendance_event(
             return _show_profile(request, cursor, update)
         if callback_data in {"att:signin", "att:signout"}:
             return _show_group_action(request, cursor, update)
+        if callback_data in {"att:leave", "att:back"}:
+            return _show_leave_back_action(request, cursor, update)
         for operation in ("confirm", "cancel"):
             prefix = f"att:register:{operation}:"
             if callback_data.startswith(prefix):
@@ -140,15 +154,38 @@ def _process_attendance_event(
         and message.chat.type in {"group", "supergroup"}
     ):
         group_action = {
-            "/att_signin": "签到",
-            "/att_signout": "签退",
+            "/att_signin": ("signin", "签到"),
+            "/att_signout": ("signout", "签退"),
+            "/att_leave": ("leave", "离岗"),
+            "/att_back": ("back", "返岗"),
         }.get(_command_name(message.text) or "")
-        if group_action is not None:
+        if group_action is not None and group_action[0] in {"signin", "signout"}:
             return _show_group_message_action(
                 request,
                 cursor,
                 update,
-                label=group_action,
+                label=group_action[1],
+            )
+        if group_action is not None:
+            return _show_leave_back_message_action(
+                request,
+                cursor,
+                update,
+                operation=group_action[0],
+            )
+        if message.text is not None and "#离岗报备" in message.text:
+            return _process_group_leave_report(
+                request,
+                cursor,
+                update,
+                operation="leave",
+            )
+        if message.text is not None and "#返岗报备" in message.text:
+            return _process_group_leave_report(
+                request,
+                cursor,
+                update,
+                operation="back",
             )
         raise GatewayRouteOwnershipMismatchError()
     if (
@@ -502,6 +539,170 @@ def _show_group_message_action(
     )
 
 
+def _show_leave_back_action(
+    request: GatewayEventRequest,
+    cursor: Cursor,
+    update: TelegramCallbackUpdate,
+) -> GatewayEventResponse:
+    callback = update.callback_query
+    message = callback.message
+    if message.chat.type not in {"group", "supergroup"}:
+        raise GatewayRouteOwnershipMismatchError()
+    operation = callback.data.removeprefix("att:")
+    if operation not in {"leave", "back"}:
+        raise GatewayRouteOwnershipMismatchError()
+    text, reply_markup = _leave_back_content(
+        cursor,
+        tg_id=callback.sender.id,
+        chat_id=message.chat.id,
+        operation=operation,
+        now_utc=_received_at_utc(request.receivedAt),
+    )
+    return _callback_message_response(
+        request,
+        callback_id=callback.id,
+        chat_id=message.chat.id,
+        reply_to_message_id=message.message_id,
+        text=text,
+        reply_markup=reply_markup,
+    )
+
+
+def _show_leave_back_message_action(
+    request: GatewayEventRequest,
+    cursor: Cursor,
+    update: TelegramMessageUpdate,
+    *,
+    operation: str,
+) -> GatewayEventResponse:
+    message = update.message
+    sender = message.sender
+    if sender is None:
+        raise GatewayRouteOwnershipMismatchError()
+    text, reply_markup = _leave_back_content(
+        cursor,
+        tg_id=sender.id,
+        chat_id=message.chat.id,
+        operation=operation,
+        now_utc=_received_at_utc(request.receivedAt),
+    )
+    return GatewayEventResponse(
+        protocolVersion="1.0",
+        eventId=request.eventId,
+        result="PROCESSED",
+        session=UnchangedSessionDirective(directive="UNCHANGED"),
+        actions=[
+            SendMessageAction(
+                actionId=f"{request.eventId}.reply",
+                type="SEND_MESSAGE",
+                chatId=message.chat.id,
+                replyToMessageId=message.message_id,
+                text=text,
+                replyMarkup=reply_markup,
+            )
+        ],
+    )
+
+
+def _leave_back_content(
+    cursor: Cursor,
+    *,
+    tg_id: int,
+    chat_id: int,
+    operation: str,
+    now_utc: datetime,
+) -> tuple[str, InlineKeyboardMarkup | None]:
+    registration = registrations_repo.get_by_tg_id_cur(cursor, tg_id=tg_id)
+    if registration is None:
+        return "请先私聊机器人完成注册（英文名$工号）。", None
+    cursor.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (f"leave:{registration.employee_id}:{chat_id}",),
+    )
+    open_record = temporary_leave_records_repo.get_latest_open_cur(
+        cursor,
+        employee_id=registration.employee_id,
+        chat_id=chat_id,
+    )
+    mutual_exclusion = requires_leave_mutual_exclusion(chat_id=chat_id)
+    if operation == "leave" and mutual_exclusion and open_record is not None:
+        return "您已离岗", None
+    if operation == "back" and mutual_exclusion and open_record is None:
+        return "您还未点击离岗", None
+    now_local = now_utc.astimezone(ZoneInfo("Asia/Shanghai"))
+    name = registration.english_name or ""
+    if operation == "leave":
+        label = "离岗"
+        draft = build_leave_draft(
+            english_name=name,
+            employee_id=registration.employee_id,
+            now_local=now_local,
+        )
+    else:
+        label = "返岗"
+        duration = None
+        overtime = False
+        if open_record is not None and isinstance(open_record.leave_at, datetime):
+            minutes = max(
+                0,
+                int((now_utc - _as_utc(open_record.leave_at)).total_seconds() // 60),
+            )
+            duration = format_leave_duration_minutes(minutes)
+            overtime = minutes >= LEAVE_BACK_OVERTIME_MINUTES
+        draft = build_back_draft(
+            english_name=name,
+            employee_id=registration.employee_id,
+            leave_duration=duration,
+            leave_overtime=overtime,
+            now_local=now_local,
+        )
+    return (
+        f"请点击下方按钮填入{label}模板。",
+        InlineKeyboardMarkup(
+            inlineKeyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=label,
+                        switchInlineQueryCurrentChat=draft,
+                    )
+                ]
+            ]
+        ),
+    )
+
+
+def _callback_message_response(
+    request: GatewayEventRequest,
+    *,
+    callback_id: str,
+    chat_id: int,
+    reply_to_message_id: int,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> GatewayEventResponse:
+    return GatewayEventResponse(
+        protocolVersion="1.0",
+        eventId=request.eventId,
+        result="PROCESSED",
+        session=UnchangedSessionDirective(directive="UNCHANGED"),
+        actions=[
+            AnswerCallbackAction(
+                actionId=f"{request.eventId}.callback",
+                type="ANSWER_CALLBACK",
+                callbackQueryId=callback_id,
+            ),
+            SendMessageAction(
+                actionId=f"{request.eventId}.reply",
+                type="SEND_MESSAGE",
+                chatId=chat_id,
+                replyToMessageId=reply_to_message_id,
+                text=text,
+                replyMarkup=reply_markup,
+            ),
+        ],
+    )
+
+
 def _group_action_content(
     cursor: Cursor,
     *,
@@ -551,6 +752,131 @@ def _answer_inline_query(
             )
         ],
     )
+
+
+def _process_group_leave_report(
+    request: GatewayEventRequest,
+    cursor: Cursor,
+    update: TelegramMessageUpdate,
+    *,
+    operation: str,
+) -> GatewayEventResponse:
+    message = update.message
+    sender = message.sender
+    if sender is None:
+        raise GatewayRouteOwnershipMismatchError()
+    registration = registrations_repo.get_by_tg_id_cur(cursor, tg_id=sender.id)
+    if registration is None:
+        return _group_report_message(
+            request,
+            chat_id=message.chat.id,
+            reply_to_message_id=message.message_id,
+            text="请先私聊机器人完成注册（英文名$工号）。",
+        )
+
+    employee_id = registration.employee_id
+    cursor.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (f"leave:{employee_id}:{message.chat.id}",),
+    )
+    occurred_at = _received_at_utc(request.receivedAt)
+    open_record = temporary_leave_records_repo.get_latest_open_cur(
+        cursor,
+        employee_id=employee_id,
+        chat_id=message.chat.id,
+        for_update=True,
+    )
+    mutual_exclusion = requires_leave_mutual_exclusion(chat_id=message.chat.id)
+    if operation == "leave":
+        if mutual_exclusion and open_record is not None:
+            return _group_report_message(
+                request,
+                chat_id=message.chat.id,
+                reply_to_message_id=message.message_id,
+                text="您已离岗",
+            )
+        temporary_leave_records_repo.insert_leave_cur(
+            cursor,
+            employee_id=employee_id,
+            english_name=(registration.english_name or "").strip() or "未命名",
+            tg_id=sender.id,
+            chat_id=message.chat.id,
+            leave_at_utc=occurred_at,
+            reason=report_reason(message.text),
+        )
+        return _group_report_without_actions(request)
+    if operation != "back":
+        raise GatewayRouteOwnershipMismatchError()
+    if open_record is None:
+        return _group_report_message(
+            request,
+            chat_id=message.chat.id,
+            reply_to_message_id=message.message_id,
+            text="您还未点击离岗",
+        )
+    leave_at = open_record.leave_at
+    if not isinstance(leave_at, datetime):
+        raise RuntimeError("temporary leave record has invalid leave_at")
+    leave_at_utc = _as_utc(leave_at)
+    duration_minutes = max(
+        0,
+        int((occurred_at - leave_at_utc).total_seconds() // 60),
+    )
+    if not temporary_leave_records_repo.close_leave_cur(
+        cursor,
+        record_id=open_record.id,
+        back_at_utc=occurred_at,
+        duration_minutes=duration_minutes,
+        remark_required=duration_minutes > 30,
+    ):
+        raise RuntimeError("temporary leave record close lost ownership")
+    return _group_report_without_actions(request)
+
+
+def _group_report_without_actions(
+    request: GatewayEventRequest,
+) -> GatewayEventResponse:
+    return GatewayEventResponse(
+        protocolVersion="1.0",
+        eventId=request.eventId,
+        result="PROCESSED",
+        session=UnchangedSessionDirective(directive="UNCHANGED"),
+        actions=[],
+    )
+
+
+def _group_report_message(
+    request: GatewayEventRequest,
+    *,
+    chat_id: int,
+    reply_to_message_id: int,
+    text: str,
+) -> GatewayEventResponse:
+    return GatewayEventResponse(
+        protocolVersion="1.0",
+        eventId=request.eventId,
+        result="PROCESSED",
+        session=UnchangedSessionDirective(directive="UNCHANGED"),
+        actions=[
+            SendMessageAction(
+                actionId=f"{request.eventId}.reply",
+                type="SEND_MESSAGE",
+                chatId=chat_id,
+                replyToMessageId=reply_to_message_id,
+                text=text,
+            )
+        ],
+    )
+
+
+def _received_at_utc(value: str) -> datetime:
+    return _as_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _command_name(text: str | None) -> str | None:

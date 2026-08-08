@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
 from aiogram.types import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup
 
-from domain.action_drafts import build_checkin_draft
-from domain.registration.rules import normalize_english_name_for_template
+from domain.action_drafts import (
+    build_back_draft,
+    build_checkin_draft,
+    build_leave_draft,
+)
 
 _SWITCH_QUERY_MAX = 256
-_TZ = ZoneInfo("Asia/Shanghai")
 _BOT_MENTION = "@zpxinbot"
 
 
@@ -17,44 +16,6 @@ def _clip_query(text: str) -> str:
     """保留开头换行（用于 @bot 与 #标签 分行）；仅去掉末尾空白。"""
     clipped = (text or "").rstrip()
     return clipped if len(clipped) <= _SWITCH_QUERY_MAX else clipped[:_SWITCH_QUERY_MAX]
-
-
-def _now_local_str() -> str:
-    return datetime.now(_TZ).strftime("%H:%M:%S")
-
-
-def build_leave_draft(*, english_name: str, employee_id: str) -> str:
-    _ = employee_id
-    name = normalize_english_name_for_template(english_name) or "未命名"
-    # 开头换行：Telegram 加 @bot 后 → @zpxinbot↵#离岗报备（与签到同样不在模板里写 @bot）
-    return (
-        f"\n#离岗报备\n"
-        f"人员：{name}\n"
-        f"时间：{_now_local_str()}\n"
-        f"原因："
-    )
-
-
-def build_back_draft(
-    *,
-    english_name: str,
-    employee_id: str,
-    leave_duration: str | None = None,
-    leave_overtime: bool = False,
-) -> str:
-    _ = employee_id
-    name = normalize_english_name_for_template(english_name) or "未命名"
-    text = (
-        f"\n#返岗报备\n"
-        f"人员：{name}\n"
-        f"时间：{_now_local_str()}\n"
-    )
-    if leave_duration is not None:
-        text += f"离岗时长：{leave_duration}\n"
-    if leave_overtime:
-        text += "提示：你已超时\n"
-    text += "原因："
-    return text
 
 
 def build_draft_for_action(

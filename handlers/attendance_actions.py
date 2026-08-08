@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
@@ -20,135 +19,14 @@ from infra.log_redaction import redacted_ref
 from keyboards.actions_menu import build_shift_web_app_url_for_admin
 from repositories import (
     admin_list_repo,
-    registrations_repo,
-    temporary_leave_records_repo,
 )
 from services import attendance_export_service, checkin_service, register_service
-from services.leave_flow_guard import check_can_back, check_can_leave, format_leave_duration_minutes
 
 router = Router()
 log = logging.getLogger(__name__)
 
-_GROUP_CHAT = F.chat.type.in_({"group", "supergroup"})
-
 def _require_user(message: Message):
     return message.from_user
-
-
-def _reason_from_leave_message(text: str | None) -> str:
-    """从离岗/返岗模板正文提取「原因：」后用户填写内容。"""
-    for line in (text or "").splitlines():
-        s = line.strip()
-        if s.startswith("原因：") or s.startswith("原因:"):
-            return s.split("：", 1)[-1].split(":", 1)[-1].strip()[:500]
-    return (text or "").strip()[:500]
-
-
-def _user_context(*, tg_id: int):
-    reg = registrations_repo.get_by_tg_id(int(tg_id))
-    if not reg:
-        return None, "请先私聊机器人完成注册（英文名$工号）。"
-    name = (reg.english_name or "").strip() or "未命名"
-    return reg, name
-
-
-@router.message(_GROUP_CHAT, F.text.func(lambda t: bool(t and "#离岗报备" in t)))
-async def parse_leave_sent(message: Message) -> None:
-    user = _require_user(message)
-    if not user:
-        return
-    reg, info = _user_context(tg_id=int(user.id))
-    if not reg:
-        log.info(
-            "[LEAVE_RECORD] action=leave_skip tg_ref=%s chat_ref=%s reason=not_registered",
-            redacted_ref(user.id),
-            redacted_ref(message.chat.id),
-        )
-        return
-    ok, hint = check_can_leave(
-        employee_id=str(reg.employee_id),
-        chat_id=int(message.chat.id),
-    )
-    if not ok:
-        await message.reply(hint or "无法离岗")
-        log.info(
-            "[LEAVE_RECORD] action=leave_blocked tg_ref=%s chat_ref=%s employee_ref=%s reason=%s",
-            redacted_ref(user.id),
-            redacted_ref(message.chat.id),
-            redacted_ref(reg.employee_id),
-            hint,
-        )
-        return
-    record_id = temporary_leave_records_repo.insert_leave(
-        employee_id=str(reg.employee_id),
-        english_name=str(info),
-        tg_id=int(user.id),
-        chat_id=int(message.chat.id),
-        leave_at_utc=datetime.now(timezone.utc),
-        reason=_reason_from_leave_message(message.text),
-    )
-    log.info(
-        "[LEAVE_RECORD] action=leave id=%s tg_ref=%s chat_ref=%s employee_ref=%s",
-        record_id,
-        redacted_ref(user.id),
-        redacted_ref(message.chat.id),
-        redacted_ref(reg.employee_id),
-    )
-
-
-@router.message(_GROUP_CHAT, F.text.func(lambda t: bool(t and "#返岗报备" in t)))
-async def parse_back_sent(message: Message) -> None:
-    user = _require_user(message)
-    if not user:
-        return
-    reg, info = _user_context(tg_id=int(user.id))
-    if not reg:
-        log.info(
-            "[LEAVE_RECORD] action=back_skip tg_ref=%s chat_ref=%s reason=not_registered",
-            redacted_ref(user.id),
-            redacted_ref(message.chat.id),
-        )
-        return
-    ok, hint = check_can_back(
-        employee_id=str(reg.employee_id),
-        chat_id=int(message.chat.id),
-    )
-    if not ok:
-        await message.reply(hint or "无法返岗")
-        log.info(
-            "[LEAVE_RECORD] action=back_blocked tg_ref=%s chat_ref=%s employee_ref=%s reason=%s",
-            redacted_ref(user.id),
-            redacted_ref(message.chat.id),
-            redacted_ref(reg.employee_id),
-            hint,
-        )
-        return
-    open_rec = temporary_leave_records_repo.get_latest_open(
-        employee_id=str(reg.employee_id),
-        chat_id=int(message.chat.id),
-    )
-    if not open_rec:
-        return
-    now_utc = datetime.now(timezone.utc)
-    leave_at = open_rec.leave_at
-    if isinstance(leave_at, datetime) and leave_at.tzinfo is None:
-        leave_at = leave_at.replace(tzinfo=timezone.utc)
-    mins = max(0, int((now_utc - leave_at).total_seconds() // 60))
-    temporary_leave_records_repo.close_leave(
-        record_id=int(open_rec.id),
-        back_at_utc=now_utc,
-        duration_minutes=mins,
-        remark_required=mins > 30,
-    )
-    log.info(
-        "[LEAVE_RECORD] action=back id=%s tg_ref=%s chat_ref=%s employee_ref=%s mins=%s duration=%s",
-        open_rec.id,
-        redacted_ref(user.id),
-        redacted_ref(message.chat.id),
-        redacted_ref(reg.employee_id),
-        mins,
-        format_leave_duration_minutes(mins),
-    )
 
 
 async def _open_shift_web_app(*, message: Message, tg_id: int) -> None:

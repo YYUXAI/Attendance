@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional
 
+from psycopg2.extensions import cursor as Cursor
+
 from infra.db import get_cursor
 
 
@@ -20,6 +22,90 @@ class TemporaryLeaveRecordRow:
     reason: str | None
     remark_required: bool
     status: str
+
+
+def insert_leave_cur(
+    cursor: Cursor,
+    *,
+    employee_id: str,
+    english_name: str,
+    tg_id: int,
+    chat_id: int,
+    leave_at_utc: datetime,
+    reason: str | None,
+) -> int:
+    cursor.execute(
+        """
+        INSERT INTO public.temporary_leave_records (
+            employee_id, english_name, tg_id, chat_id, leave_at, reason, status
+        ) VALUES (%s, %s, %s, %s, %s, %s, 'OPEN')
+        RETURNING id
+        """,
+        (
+            str(employee_id),
+            str(english_name),
+            int(tg_id),
+            int(chat_id),
+            leave_at_utc,
+            reason,
+        ),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        raise RuntimeError("insert_leave returned no id")
+    return int(row[0])
+
+
+def get_latest_open_cur(
+    cursor: Cursor,
+    *,
+    employee_id: str,
+    chat_id: int,
+    for_update: bool = False,
+) -> Optional[TemporaryLeaveRecordRow]:
+    cursor.execute(
+        f"""
+        SELECT id, employee_id, english_name, tg_id, chat_id, leave_at, back_at,
+               duration_minutes, reason, remark_required, status
+        FROM public.temporary_leave_records
+        WHERE employee_id = %s
+          AND chat_id = %s
+          AND status = 'OPEN'
+        ORDER BY leave_at DESC
+        LIMIT 1
+        {"FOR UPDATE" if for_update else ""}
+        """,
+        (str(employee_id), int(chat_id)),
+    )
+    row = cursor.fetchone()
+    return TemporaryLeaveRecordRow(*row) if row else None
+
+
+def close_leave_cur(
+    cursor: Cursor,
+    *,
+    record_id: int,
+    back_at_utc: datetime,
+    duration_minutes: int,
+    remark_required: bool,
+) -> bool:
+    cursor.execute(
+        """
+        UPDATE public.temporary_leave_records
+        SET back_at = %s,
+            duration_minutes = %s,
+            remark_required = %s,
+            status = 'CLOSED'
+        WHERE id = %s AND status = 'OPEN'
+        """,
+        (
+            back_at_utc,
+            int(duration_minutes),
+            bool(remark_required),
+            int(record_id),
+        ),
+    )
+    return int(cursor.rowcount or 0) == 1
 
 
 def ensure_table() -> None:

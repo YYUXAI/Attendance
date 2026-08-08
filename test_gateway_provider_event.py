@@ -36,6 +36,10 @@ def _apply_gateway_provider_migration() -> None:
                 cursor.execute(migration)
             cursor.execute("DELETE FROM attendance_registration_sessions")
             cursor.execute(
+                "DELETE FROM temporary_leave_records WHERE tg_id IN (%s, %s)",
+                (81001, 81002),
+            )
+            cursor.execute(
                 "DELETE FROM gateway_processed_events WHERE event_id LIKE %s",
                 ("evt-attendance-%",),
             )
@@ -315,18 +319,23 @@ def _profile_callback_event() -> dict[str, object]:
     return event
 
 
-def _group_action_callback_event(data: str) -> dict[str, object]:
+def _group_action_callback_event(
+    data: str,
+    *,
+    event_number: int = 1201,
+    received_at: str = "2026-08-08T08:00:00Z",
+) -> dict[str, object]:
     return {
         "protocolVersion": "1.0",
-        "eventId": "evt-attendance-group-1201",
+        "eventId": f"evt-attendance-group-{event_number}",
         "target": "ATTENDANCE",
         "routeReason": "CALLBACK_NAMESPACE",
         "conversationId": "telegram:chat:-10081002",
-        "receivedAt": "2026-08-08T08:00:00Z",
+        "receivedAt": received_at,
         "telegramUpdate": {
-            "update_id": 1201,
+            "update_id": event_number,
             "callback_query": {
-                "id": "callback-1201",
+                "id": f"callback-{event_number}",
                 "from": {
                     "id": 81002,
                     "is_bot": False,
@@ -395,6 +404,41 @@ def _group_action_command_event(text: str) -> dict[str, object]:
                     "id": 81002,
                     "is_bot": False,
                     "first_name": "Group",
+                },
+                "text": text,
+            },
+        },
+    }
+
+
+def _group_report_event(
+    *,
+    event_number: int,
+    text: str,
+    received_at: str,
+    tg_id: int = 81002,
+) -> dict[str, object]:
+    return {
+        "protocolVersion": "1.0",
+        "eventId": f"evt-attendance-report-{event_number}",
+        "target": "ATTENDANCE",
+        "routeReason": "GROUP_OWNER",
+        "conversationId": "telegram:chat:-10081002",
+        "receivedAt": received_at,
+        "telegramUpdate": {
+            "update_id": event_number,
+            "message": {
+                "message_id": event_number,
+                "date": 1786176000 + event_number,
+                "chat": {
+                    "id": -10081002,
+                    "type": "supergroup",
+                    "title": "Mutable title",
+                },
+                "from": {
+                    "id": tg_id,
+                    "is_bot": False,
+                    "first_name": "Report",
                 },
                 "text": text,
             },
@@ -761,6 +805,201 @@ def test_group_attendance_command_returns_the_same_registered_fill_action() -> N
             },
         }
     ]
+
+
+def test_group_leave_command_returns_the_registered_leave_fill_action() -> None:
+    _apply_gateway_provider_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 81002, -10081002),
+            )
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=_group_action_command_event("/att_leave"),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["actions"] == [
+        {
+            "actionId": "evt-attendance-group-1203.reply",
+            "type": "SEND_MESSAGE",
+            "chatId": -10081002,
+            "replyToMessageId": 703,
+            "text": "请点击下方按钮填入离岗模板。",
+            "replyMarkup": {
+                "inlineKeyboard": [
+                    [
+                        {
+                            "text": "离岗",
+                            "switchInlineQueryCurrentChat": (
+                                "\n#离岗报备\n人员：GRANDFOR\n时间：16:02:00\n原因："
+                            ),
+                        }
+                    ]
+                ]
+            },
+        }
+    ]
+
+
+def test_group_leave_and_back_reports_mutate_one_record_idempotently() -> None:
+    _apply_gateway_provider_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 81002, -10081002),
+            )
+    client = _provider_client()
+    headers = {"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"}
+    leave_event = _group_report_event(
+        event_number=1301,
+        text="#离岗报备\n人员：GRANDFOR\n时间：16:00:00\n原因：客户来电",
+        received_at="2026-08-08T08:00:00Z",
+    )
+    back_event = _group_report_event(
+        event_number=1302,
+        text="#返岗报备\n人员：GRANDFOR\n时间：16:25:00\n原因：处理完成",
+        received_at="2026-08-08T08:25:00Z",
+    )
+
+    leave = client.post(
+        "/integration/gateway/v1/events",
+        headers=headers,
+        json=leave_event,
+    )
+    duplicate_leave = client.post(
+        "/integration/gateway/v1/events",
+        headers=headers,
+        json=leave_event,
+    )
+    back = client.post(
+        "/integration/gateway/v1/events",
+        headers=headers,
+        json=back_event,
+    )
+
+    assert leave.status_code == 200, leave.text
+    assert leave.json()["actions"] == []
+    assert duplicate_leave.json() == {**leave.json(), "result": "DUPLICATE"}
+    assert back.status_code == 200, back.text
+    assert back.json()["actions"] == []
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT status, reason, duration_minutes, remark_required,
+                       leave_at, back_at
+                FROM temporary_leave_records
+                WHERE employee_id = %s AND chat_id = %s
+                """,
+                ("74808", -10081002),
+            )
+            rows = cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0][:4] == ("CLOSED", "客户来电", 25, False)
+    assert rows[0][4].isoformat() == "2026-08-08T08:00:00+00:00"
+    assert rows[0][5].isoformat() == "2026-08-08T08:25:00+00:00"
+
+
+def test_unregistered_group_leave_report_fails_explicitly_without_a_record() -> None:
+    _apply_gateway_provider_migration()
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=_group_report_event(
+            event_number=1303,
+            text="#离岗报备\n原因：未注册",
+            received_at="2026-08-08T09:00:00Z",
+        ),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["actions"][0]["text"] == (
+        "请先私聊机器人完成注册（英文名$工号）。"
+    )
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM temporary_leave_records WHERE tg_id = %s",
+                (81002,),
+            )
+            assert cursor.fetchone() == (0,)
+
+
+def test_leave_and_back_callbacks_render_current_business_drafts() -> None:
+    _apply_gateway_provider_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 81002, -10081002),
+            )
+    client = _provider_client()
+    headers = {"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"}
+
+    leave_callback = client.post(
+        "/integration/gateway/v1/events",
+        headers=headers,
+        json=_group_action_callback_event("att:leave"),
+    )
+    client.post(
+        "/integration/gateway/v1/events",
+        headers=headers,
+        json=_group_report_event(
+            event_number=1301,
+            text="#离岗报备\n原因：客户来电",
+            received_at="2026-08-08T08:00:00Z",
+        ),
+    )
+    back_callback = client.post(
+        "/integration/gateway/v1/events",
+        headers=headers,
+        json=_group_action_callback_event(
+            "att:back",
+            event_number=1204,
+            received_at="2026-08-08T08:25:00Z",
+        ),
+    )
+
+    assert leave_callback.status_code == 200, leave_callback.text
+    leave_button = leave_callback.json()["actions"][1]["replyMarkup"][
+        "inlineKeyboard"
+    ][0][0]
+    assert leave_button == {
+        "text": "离岗",
+        "switchInlineQueryCurrentChat": (
+            "\n#离岗报备\n人员：GRANDFOR\n时间：16:00:00\n原因："
+        ),
+    }
+    assert back_callback.status_code == 200, back_callback.text
+    back_button = back_callback.json()["actions"][1]["replyMarkup"][
+        "inlineKeyboard"
+    ][0][0]
+    assert back_button == {
+        "text": "返岗",
+        "switchInlineQueryCurrentChat": (
+            "\n#返岗报备\n人员：GRANDFOR\n时间：16:25:00\n"
+            "离岗时长：25分钟\n提示：你已超时\n原因："
+        ),
+    }
 
 
 def test_registration_confirmation_binds_the_pre_registered_employee() -> None:
