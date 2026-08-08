@@ -13,6 +13,11 @@ from gateway_provider.webapp_session import (
     GatewayWebAppSessionVerifier,
     InvalidGatewayWebAppSessionError,
 )
+from gateway_provider.webapp_session_store import (
+    AttendanceWebAppSessionStore,
+    InvalidAttendanceWebAppSessionError,
+    ReplayedGatewayWebAppSessionError,
+)
 from infra.shift_web_config import current_year_month, load_shift_web_config
 from repositories import admin_list_repo, employee_shift_config_repo
 from services import shift_import_service
@@ -25,6 +30,9 @@ log = logging.getLogger(__name__)
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "shift_app"
 SHIFT_WEB_SESSION_VERIFIER_KEY: web.AppKey[GatewayWebAppSessionVerifier] = (
     web.AppKey("shift_web_session_verifier", GatewayWebAppSessionVerifier)
+)
+SHIFT_WEB_PROVIDER_SESSION_STORE_KEY: web.AppKey[AttendanceWebAppSessionStore] = (
+    web.AppKey("shift_web_provider_session_store", AttendanceWebAppSessionStore)
 )
 _YM_RE = re.compile(r"^\d{4}-\d{2}$")
 _TELEGRAM_CORS_ORIGINS = frozenset(
@@ -51,8 +59,8 @@ def _download_cors_headers(request: web.Request) -> dict[str, str]:
 
 def _require_admin(request: web.Request) -> tuple[int, web.Response | None]:
     """只接受由 Attendance 自身 admin_list 授权的管理员。"""
-    authorization = (request.headers.get("Authorization") or "").strip()
-    if not authorization.startswith("Bearer "):
+    token = _bearer_token(request)
+    if token is None:
         return 0, web.json_response(
             {
                 "ok": False,
@@ -62,10 +70,8 @@ def _require_admin(request: web.Request) -> tuple[int, web.Response | None]:
             status=401,
         )
     try:
-        principal = request.app[SHIFT_WEB_SESSION_VERIFIER_KEY].verify(
-            authorization.removeprefix("Bearer ")
-        )
-    except InvalidGatewayWebAppSessionError:
+        tg_id = request.app[SHIFT_WEB_PROVIDER_SESSION_STORE_KEY].authenticate(token)
+    except InvalidAttendanceWebAppSessionError:
         return 0, web.json_response(
             {
                 "ok": False,
@@ -74,13 +80,65 @@ def _require_admin(request: web.Request) -> tuple[int, web.Response | None]:
             },
             status=401,
         )
-    tg_id = principal.telegram_user_id
     if not admin_list_repo.is_admin_by_tg_id(tg_id=tg_id):
         return 0, web.json_response(
             {"ok": False, "code": "FORBIDDEN", "message": "无权限操作"},
             status=403,
         )
     return tg_id, None
+
+
+def _bearer_token(request: web.Request) -> str | None:
+    authorization = (request.headers.get("Authorization") or "").strip()
+    if not authorization.startswith("Bearer "):
+        return None
+    token = authorization.removeprefix("Bearer ").strip()
+    return token or None
+
+
+async def _handle_gateway_session_exchange(request: web.Request) -> web.Response:
+    token = _bearer_token(request)
+    if token is None:
+        return web.json_response(
+            {
+                "ok": False,
+                "code": "SESSION_INVALID",
+                "message": "Gateway 会话无效，请重新打开班表。",
+            },
+            status=401,
+        )
+    try:
+        principal = request.app[SHIFT_WEB_SESSION_VERIFIER_KEY].verify(token)
+        issued = request.app[SHIFT_WEB_PROVIDER_SESSION_STORE_KEY].exchange(
+            principal
+        )
+    except InvalidGatewayWebAppSessionError:
+        return web.json_response(
+            {
+                "ok": False,
+                "code": "SESSION_INVALID",
+                "message": "Gateway 会话无效，请重新打开班表。",
+            },
+            status=401,
+        )
+    except ReplayedGatewayWebAppSessionError:
+        return web.json_response(
+            {
+                "ok": False,
+                "code": "SESSION_REPLAYED",
+                "message": "Gateway 会话已使用，请重新打开班表。",
+            },
+            status=409,
+        )
+    return web.json_response(
+        {
+            "ok": True,
+            "tokenType": "Bearer",
+            "sessionToken": issued.session_token,
+            "expiresAt": issued.expires_at.isoformat().replace("+00:00", "Z"),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def _parse_time(value: str) -> time | None:
@@ -384,6 +442,10 @@ def register_shift_web_routes(app: web.Application) -> None:
     app.router.add_get("/shift-app/", _handle_index)
     app.router.add_get("/shift-app/index.html", _handle_index)
     app.router.add_get("/shift-app/icons/{name}", _handle_icon)
+    app.router.add_post(
+        "/api/v1/webapp/session/exchange",
+        _handle_gateway_session_exchange,
+    )
     app.router.add_get("/api/v1/shift-config", _handle_list)
     app.router.add_route("OPTIONS", "/api/v1/shift-config/template", _handle_template_options)
     app.router.add_get("/api/v1/shift-config/template", _handle_template)

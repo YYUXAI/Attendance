@@ -359,7 +359,9 @@
 
         tg.setBackgroundColor('#ffffff');
 
-      } catch (e) { /* ignore */ }
+      } catch {
+        console.warn('Telegram theme setup failed');
+      }
 
     }
 
@@ -508,7 +510,11 @@
 
         if (tg) {
 
-          try { tg.ready(); } catch (e) { /* ignore */ }
+          try {
+            tg.ready();
+          } catch {
+            console.warn('Telegram WebApp readiness retry failed');
+          }
 
         }
 
@@ -528,27 +534,43 @@
 
       try {
 
-        const res = await fetch('/api/v1/webapp/session', {
+        const gatewayResponse = await fetch('/api/v1/webapp/session', {
 
           method: 'POST',
 
           headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' },
 
-          body: JSON.stringify({ initData: telegramInitData, audience: 'ATTENDANCE' }),
+          body: JSON.stringify({
+            protocolVersion: '1.0',
+            initData: telegramInitData,
+            audience: 'ATTENDANCE',
+          }),
 
         });
 
-        const data = await res.json();
+        const gatewayData = await gatewayResponse.json();
 
-        if (res.ok && data.sessionToken) {
+        if (!gatewayResponse.ok || !gatewayData.sessionToken) return false;
 
-          sessionToken = data.sessionToken;
+        const providerResponse = await fetch('/api/v1/webapp/session/exchange', {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer ' + gatewayData.sessionToken,
+            'ngrok-skip-browser-warning': '1',
+          },
+        });
+        const providerData = await providerResponse.json();
 
+        if (providerResponse.ok && providerData.sessionToken) {
+          sessionToken = providerData.sessionToken;
+          telegramInitData = '';
           return true;
 
         }
 
-      } catch (e) { /* ignore */ }
+      } catch {
+        console.warn('WebApp session exchange failed');
+      }
 
       return false;
 
@@ -1447,7 +1469,11 @@
 
       if (tg) {
 
-        try { tg.ready(); } catch (e) { /* ignore */ }
+        try {
+          tg.ready();
+        } catch {
+          console.warn('Telegram WebApp readiness failed');
+        }
 
       }
 

@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import psycopg2
@@ -31,6 +32,11 @@ def _apply_migration() -> None:
         with connection.cursor() as cursor:
             cursor.execute((root / "migrations/0003_gateway_provider.sql").read_text())
             cursor.execute((root / "migrations/0004_registration_provider.sql").read_text())
+            cursor.execute((root / "migrations/0005_webapp_sessions.sql").read_text())
+            cursor.execute(
+                "DELETE FROM attendance_webapp_sessions WHERE telegram_user_id IN (%s, %s)",
+                (82001, 82002),
+            )
             cursor.execute(
                 "DELETE FROM admin_list WHERE admin_employee_id = %s",
                 ("74808",),
@@ -54,7 +60,7 @@ def _gateway_session(
 ) -> str:
     now = int(time.time())
     iat = issued_at if issued_at is not None else now - 1
-    exp = expires_at if expires_at is not None else now + 300
+    exp = expires_at if expires_at is not None else iat + 120
     header = _base64url(
         json.dumps(
             {"alg": "HS256", "typ": "JWT"},
@@ -65,12 +71,17 @@ def _gateway_session(
     payload = _base64url(
         json.dumps(
             {
-                "iss": "uxassistant-gateway",
-                "aud": audience,
-                "sub": f"telegram:{tg_id}",
-                "iat": iat,
-                "exp": exp,
-                "jti": f"session-{tg_id}-{iat}",
+                "issuer": "UXAssistant-Gateway",
+                "purpose": "PROVIDER_SESSION_EXCHANGE",
+                "audience": audience,
+                "subject": f"telegram-user:{tg_id}",
+                "sessionId": f"session-{tg_id}-{iat}",
+                "issuedAt": datetime.fromtimestamp(iat, UTC).isoformat().replace(
+                    "+00:00", "Z"
+                ),
+                "expiresAt": datetime.fromtimestamp(exp, UTC).isoformat().replace(
+                    "+00:00", "Z"
+                ),
             },
             separators=(",", ":"),
             sort_keys=True,
@@ -93,9 +104,18 @@ async def _get_shift_config(*, token: str) -> tuple[int, dict[str, object]]:
         gateway_session_signing_secret=_SESSION_SECRET,
     )
     async with TestClient(TestServer(app)) as client:
+        exchange = await client.post(
+            "/api/v1/webapp/session/exchange",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        exchange_payload = await exchange.json()
+        if exchange.status != 200:
+            return exchange.status, exchange_payload
         response = await client.get(
             "/api/v1/shift-config?year_month=2026-08",
-            headers={"Authorization": f"Bearer {token}"},
+            headers={
+                "Authorization": f"Bearer {exchange_payload['sessionToken']}"
+            },
         )
         return response.status, await response.json()
 
@@ -110,6 +130,7 @@ def test_shift_web_entry_exposes_only_current_business_routes() -> None:
     assert "/healthz" in paths
     assert "/shift-app/" in paths
     assert "/api/v1/shift-config" in paths
+    assert "/api/v1/webapp/session/exchange" in paths
     assert "/api/v1/shift-config/exchange-session" not in paths
     assert "/api/v1/shift-config/send-template" not in paths
     assert "/api/v1/shift-config/send-export" not in paths

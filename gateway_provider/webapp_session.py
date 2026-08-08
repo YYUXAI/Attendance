@@ -5,15 +5,26 @@ import hashlib
 import hmac
 import json
 import re
-import time
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 
 _BASE64URL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-_JTI_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
-_CLAIMS = frozenset({"iss", "aud", "sub", "iat", "exp", "jti"})
-_MAXIMUM_SESSION_SECONDS = 900
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
+_CLAIMS = frozenset(
+    {
+        "issuer",
+        "purpose",
+        "audience",
+        "subject",
+        "sessionId",
+        "issuedAt",
+        "expiresAt",
+    }
+)
+_PURPOSE = "PROVIDER_SESSION_EXCHANGE"
+_MAXIMUM_SESSION_SECONDS = 120
 _MAXIMUM_CLOCK_SKEW_SECONDS = 30
 
 
@@ -25,7 +36,7 @@ class InvalidGatewayWebAppSessionError(ValueError):
 class GatewayWebAppPrincipal:
     telegram_user_id: int
     session_id: str
-    expires_at: int
+    expires_at: datetime
 
 
 class GatewayWebAppSessionVerifier:
@@ -34,7 +45,7 @@ class GatewayWebAppSessionVerifier:
         *,
         signing_secret: str,
         audience: str,
-        issuer: str = "uxassistant-gateway",
+        issuer: str = "UXAssistant-Gateway",
     ) -> None:
         secret = signing_secret.strip()
         if len(secret) < 32:
@@ -51,7 +62,7 @@ class GatewayWebAppSessionVerifier:
         self,
         token: str,
         *,
-        now_epoch: int | None = None,
+        now: datetime | None = None,
     ) -> GatewayWebAppPrincipal:
         raw = token.strip()
         if not raw or len(raw) > 4096:
@@ -79,31 +90,38 @@ class GatewayWebAppSessionVerifier:
         claims = _json_object(_base64url_decode(payload_segment))
         if frozenset(claims) != _CLAIMS:
             raise InvalidGatewayWebAppSessionError("session claims are invalid")
-        if claims["iss"] != self._issuer or claims["aud"] != self._audience:
+        if (
+            claims["issuer"] != self._issuer
+            or claims["purpose"] != _PURPOSE
+            or claims["audience"] != self._audience
+        ):
             raise InvalidGatewayWebAppSessionError("session scope is invalid")
 
-        issued_at = _strict_integer(claims["iat"])
-        expires_at = _strict_integer(claims["exp"])
-        now = int(time.time()) if now_epoch is None else int(now_epoch)
-        if issued_at > now + _MAXIMUM_CLOCK_SKEW_SECONDS:
+        issued_at = _strict_timestamp(claims["issuedAt"])
+        expires_at = _strict_timestamp(claims["expiresAt"])
+        current = (now or datetime.now(UTC)).astimezone(UTC)
+        if issued_at > current + timedelta(seconds=_MAXIMUM_CLOCK_SKEW_SECONDS):
             raise InvalidGatewayWebAppSessionError("session is not active")
-        if expires_at <= now or expires_at <= issued_at:
+        if expires_at <= current or expires_at <= issued_at:
             raise InvalidGatewayWebAppSessionError("session is expired")
-        if expires_at - issued_at > _MAXIMUM_SESSION_SECONDS:
+        if expires_at - issued_at > timedelta(seconds=_MAXIMUM_SESSION_SECONDS):
             raise InvalidGatewayWebAppSessionError("session lifetime is invalid")
 
-        subject = claims["sub"]
-        if not isinstance(subject, str) or not subject.startswith("telegram:"):
+        subject = claims["subject"]
+        if not isinstance(subject, str) or not subject.startswith("telegram-user:"):
             raise InvalidGatewayWebAppSessionError("session subject is invalid")
-        raw_user_id = subject.removeprefix("telegram:")
+        raw_user_id = subject.removeprefix("telegram-user:")
         if not raw_user_id.isdigit() or raw_user_id.startswith("0"):
             raise InvalidGatewayWebAppSessionError("session subject is invalid")
         telegram_user_id = int(raw_user_id)
         if telegram_user_id <= 0:
             raise InvalidGatewayWebAppSessionError("session subject is invalid")
 
-        session_id = claims["jti"]
-        if not isinstance(session_id, str) or _JTI_RE.fullmatch(session_id) is None:
+        session_id = claims["sessionId"]
+        if (
+            not isinstance(session_id, str)
+            or _SESSION_ID_RE.fullmatch(session_id) is None
+        ):
             raise InvalidGatewayWebAppSessionError("session ID is invalid")
         return GatewayWebAppPrincipal(
             telegram_user_id=telegram_user_id,
@@ -155,7 +173,15 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _strict_integer(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
+def _strict_timestamp(value: object) -> datetime:
+    if not isinstance(value, str):
         raise InvalidGatewayWebAppSessionError("session timestamp is invalid")
-    return value
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise InvalidGatewayWebAppSessionError(
+            "session timestamp is invalid"
+        ) from error
+    if parsed.tzinfo is None:
+        raise InvalidGatewayWebAppSessionError("session timestamp is invalid")
+    return parsed.astimezone(UTC)

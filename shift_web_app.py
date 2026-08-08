@@ -8,10 +8,12 @@ from aiohttp import web
 
 from gateway_provider.runtime_security import assert_no_telegram_owner_credentials
 from gateway_provider.webapp_session import GatewayWebAppSessionVerifier
+from gateway_provider.webapp_session_store import AttendanceWebAppSessionStore
 from infra.db import get_cursor
 from infra.db import database_url_scope
 from infra.logger import configure_logging
 from infra.shift_web_http import (
+    SHIFT_WEB_PROVIDER_SESSION_STORE_KEY,
     SHIFT_WEB_SESSION_VERIFIER_KEY,
     register_shift_web_routes,
 )
@@ -26,6 +28,7 @@ def _database_ready() -> bool:
             cursor.execute("SELECT 1")
             cursor.execute("SELECT 1 FROM public.admin_list LIMIT 1")
             cursor.execute("SELECT 1 FROM public.employee_shift_config LIMIT 1")
+            cursor.execute("SELECT 1 FROM public.attendance_webapp_sessions LIMIT 1")
         return True
     except Exception:  # noqa: BLE001
         log.exception("shift web database readiness failed")
@@ -72,6 +75,7 @@ def create_shift_web_app(
         signing_secret=gateway_session_signing_secret,
         audience="ATTENDANCE",
     )
+    app[SHIFT_WEB_PROVIDER_SESSION_STORE_KEY] = AttendanceWebAppSessionStore()
     app.router.add_get("/healthz", _health)
     register_shift_web_routes(app)
     return app

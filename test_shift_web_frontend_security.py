@@ -20,6 +20,8 @@ def test_shift_frontend_exchanges_init_data_only_with_gateway() -> None:
     )
 
     assert "/api/v1/webapp/session" in html
+    assert "/api/v1/webapp/session/exchange" in html
+    assert 'protocolVersion: \'1.0\'' in html
     assert "/api/v1/shift-config/exchange-session" not in html
     assert "X-Telegram-Init-Data" not in html
     assert "X-Web-Session" not in html

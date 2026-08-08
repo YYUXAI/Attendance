@@ -5,7 +5,7 @@ Attendance 只拥有考勤业务真相。Telegram transport、Bot Token、update
 ## Public interfaces
 
 - `POST /integration/gateway/v1/events`：接收 Gateway V1 事件，按 `eventId` 持久化确定性结果。
-- `shift_web_app.py`：班表 WebApp；只接受 audience 为 `ATTENDANCE` 的短期 Gateway session。
+- `shift_web_app.py`：班表 WebApp；先原子消费 audience 为 `ATTENDANCE`、purpose 为 `PROVIDER_SESSION_EXCHANGE` 的短期 Gateway token，再签发一小时的 Attendance 自有 opaque session。Gateway `sessionId` 只允许消费一次；数据库只保存 Provider token hash。
 - `gateway_provider/entrypoint.py`：Provider 生产入口。
 
 Gateway 文件只通过 `GET /internal/v1/telegram-files/{fileRef}` 读取。Attendance 不保存或使用 Telegram `file_id` 作为网络凭据，不调用 Telegram API。
