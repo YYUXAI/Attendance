@@ -5,13 +5,16 @@ import logging
 import os
 
 from aiohttp import web
-from aiogram import Bot
-from dotenv import load_dotenv
 
-from infra.bot_owner import load_attendance_bot_owner
+from gateway_provider.runtime_security import assert_no_telegram_owner_credentials
+from gateway_provider.webapp_session import GatewayWebAppSessionVerifier
 from infra.db import get_cursor
+from infra.db import database_url_scope
 from infra.logger import configure_logging
-from infra.shift_web_http import SHIFT_WEB_BOT_KEY, register_shift_web_routes
+from infra.shift_web_http import (
+    SHIFT_WEB_SESSION_VERIFIER_KEY,
+    register_shift_web_routes,
+)
 
 
 log = logging.getLogger("attendance-shift-web")
@@ -47,43 +50,51 @@ async def _health(_request: web.Request) -> web.Response:
     )
 
 
-def create_shift_web_app(*, bot: Bot) -> web.Application:
-    app = web.Application()
-    app[SHIFT_WEB_BOT_KEY] = bot
+def create_shift_web_app(
+    *,
+    database_url: str,
+    gateway_session_signing_secret: str,
+) -> web.Application:
+    resolved_database_url = database_url.strip()
+    if not resolved_database_url:
+        raise ValueError("database_url is required")
+
+    @web.middleware
+    async def database_scope(
+        request: web.Request,
+        handler: web.RequestHandler,
+    ) -> web.StreamResponse:
+        with database_url_scope(resolved_database_url):
+            return await handler(request)
+
+    app = web.Application(middlewares=[database_scope])
+    app[SHIFT_WEB_SESSION_VERIFIER_KEY] = GatewayWebAppSessionVerifier(
+        signing_secret=gateway_session_signing_secret,
+        audience="ATTENDANCE",
+    )
     app.router.add_get("/healthz", _health)
     register_shift_web_routes(app)
-
-    async def close_bot_session(_app: web.Application) -> None:
-        await bot.session.close()
-
-    app.on_cleanup.append(close_bot_session)
     return app
 
 
-def resolve_shift_web_bot_token() -> str:
-    owner = load_attendance_bot_owner()
-    dedicated = (os.getenv("SHIFT_WEB_TELEGRAM_BOT_TOKEN") or "").strip()
-    if owner == "ux_assistant":
-        if not dedicated:
-            raise RuntimeError(
-                "SHIFT_WEB_TELEGRAM_BOT_TOKEN is required for UX助手 Shift Web"
-            )
-        return dedicated
-    return dedicated or (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+def _required_environment(name: str) -> str:
+    value = (os.environ.get(name) or "").strip()
+    if not value:
+        raise RuntimeError(f"{name} is required")
+    return value
 
 
 def main() -> None:
-    load_dotenv(
-        override=(os.getenv("ATTENDANCE_DOTENV_OVERRIDE") or "1").strip() != "0",
-        encoding="utf-8",
-    )
+    assert_no_telegram_owner_credentials(os.environ)
     configure_logging()
-    token = resolve_shift_web_bot_token()
-    if not token:
-        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN")
     host = (os.getenv("SHIFT_WEB_HOST") or "127.0.0.1").strip()
-    port = int((os.getenv("SHIFT_WEB_PORT") or "18084").strip())
-    app = create_shift_web_app(bot=Bot(token=token))
+    port = int((os.getenv("SHIFT_WEB_PORT") or "19084").strip())
+    app = create_shift_web_app(
+        database_url=_required_environment("ATTENDANCE_DATABASE_URL"),
+        gateway_session_signing_secret=_required_environment(
+            "GATEWAY_WEBAPP_SESSION_SIGNING_SECRET"
+        ),
+    )
     web.run_app(app, host=host, port=port, print=None)
 
 

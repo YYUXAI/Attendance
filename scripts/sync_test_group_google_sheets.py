@@ -40,7 +40,7 @@ async def main() -> None:
 
     from services.test_group_google_sheets_service import sync_test_group_month_to_google_sheets
 
-    result = await sync_test_group_month_to_google_sheets(chat_id=int(args.chat_id), bot=None)
+    result = await sync_test_group_month_to_google_sheets(chat_id=int(args.chat_id))
     print(result.message)
     raise SystemExit(0 if result.ok else 1)
 

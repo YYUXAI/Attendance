@@ -136,7 +136,7 @@ def insert_registration(
         )
 
 
-def upsert_registration_stub(
+def upsert_preregistered_employee(
     *,
     employee_id: str,
     english_name: str,

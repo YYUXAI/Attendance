@@ -8,8 +8,6 @@ from datetime import date, timedelta
 from typing import Dict, Iterable, List, Literal, Optional, Set
 from zoneinfo import ZoneInfo
 
-from aiogram import Bot
-
 from infra.attendance_override_config import load_attendance_override_config
 from infra.bbq_google_sheets_config import bbq_summary_excluded_employee_ids
 from infra.checkin_remote_diff_config import yymg_summary_excluded_employee_ids
@@ -29,7 +27,6 @@ from services.group_attendance_summary_service import (
     build_rows_for_roster_at_chat,
     dedupe_export_rows_by_employee,
     list_attendance_group_ids,
-    resolve_group_display_name,
     fallback_group_display_name_from_db,
 )
 
@@ -124,7 +121,6 @@ async def _apply_export_employee_overrides(
     *,
     rows: List[AttendanceSummaryRow],
     target_date: date,
-    bot: Bot | None,
 ) -> List[AttendanceSummaryRow]:
     cfg = load_attendance_override_config()
     if not cfg.export_employee_chat and not cfg.export_mirror_from:
@@ -141,10 +137,7 @@ async def _apply_export_employee_overrides(
         by_eid.pop(eid, None)
 
     async def _row_from_chat(*, eid: str, chat_id: int) -> AttendanceSummaryRow | None:
-        if bot is not None:
-            gname = await resolve_group_display_name(bot=bot, chat_id=int(chat_id))
-        else:
-            gname = fallback_group_display_name_from_db(chat_id=int(chat_id))
+        gname = fallback_group_display_name_from_db(chat_id=int(chat_id))
         day_rows = build_rows_for_group(
             chat_id=int(chat_id),
             target_date=target_date,
@@ -299,7 +292,6 @@ def normalize_export_status(
 async def collect_rows_for_date(
     *,
     target_date: date,
-    bot: Bot | None,
     export_tg_id: int | None = None,
 ) -> List[AttendanceSummaryRow]:
     ym = target_date.strftime("%Y-%m")
@@ -311,10 +303,7 @@ async def collect_rows_for_date(
         alt_cfg = load_google_sheets_alt_config()
         alt_chat = alt_cfg.attendance_chat_id if alt_cfg else None
         if alt_chat is not None:
-            if bot is not None:
-                gname = await resolve_group_display_name(bot=bot, chat_id=int(alt_chat))
-            else:
-                gname = fallback_group_display_name_from_db(chat_id=int(alt_chat))
+            gname = fallback_group_display_name_from_db(chat_id=int(alt_chat))
             deduped = build_rows_for_roster_at_chat(
                 target_date=target_date,
                 chat_id=int(alt_chat),
@@ -331,7 +320,6 @@ async def collect_rows_for_date(
         deduped = await _apply_export_employee_overrides(
             rows=deduped,
             target_date=target_date,
-            bot=bot,
         )
         excluded = yymg_summary_excluded_employee_ids()
         deduped = [
@@ -349,10 +337,7 @@ async def collect_rows_for_date(
         log.info("attendance_export: scoped groups=%s", sorted(group_ids))
     all_rows: List[AttendanceSummaryRow] = []
     for gid in group_ids:
-        if bot is not None:
-            gname = await resolve_group_display_name(bot=bot, chat_id=int(gid))
-        else:
-            gname = fallback_group_display_name_from_db(chat_id=int(gid))
+        gname = fallback_group_display_name_from_db(chat_id=int(gid))
         all_rows.extend(
             build_rows_for_group(
                 chat_id=int(gid),
@@ -380,7 +365,6 @@ async def collect_rows_for_date(
     deduped = await _apply_export_employee_overrides(
         rows=deduped,
         target_date=target_date,
-        bot=bot,
     )
     if export_tg_id and roster_ids:
         deduped = [
@@ -400,7 +384,6 @@ async def collect_rows_for_date(
             deduped = await _apply_export_employee_overrides(
                 rows=deduped,
                 target_date=target_date,
-                bot=bot,
             )
             deduped = [
                 r for r in deduped if str(r.employee_id).strip() in roster_ids
@@ -414,7 +397,6 @@ async def collect_rows_for_range(
     *,
     start: date,
     end: date,
-    bot: Bot | None,
     export_tg_id: int | None = None,
 ) -> List[AttendanceSummaryRow]:
     out: List[AttendanceSummaryRow] = []
@@ -422,7 +404,6 @@ async def collect_rows_for_range(
         out.extend(
             await collect_rows_for_date(
                 target_date=d,
-                bot=bot,
                 export_tg_id=export_tg_id,
             )
         )
@@ -434,15 +415,11 @@ async def collect_rows_for_single_group(
     chat_id: int,
     start: date,
     end: date,
-    bot: Bot | None,
 ) -> List[AttendanceSummaryRow]:
     """仅收集指定群的考勤行（用于工号打卡群 Google 表同步等）。"""
     out: List[AttendanceSummaryRow] = []
     for d in _date_range_inclusive(start=start, end=end):
-        if bot is not None:
-            gname = await resolve_group_display_name(bot=bot, chat_id=int(chat_id))
-        else:
-            gname = fallback_group_display_name_from_db(chat_id=int(chat_id))
+        gname = fallback_group_display_name_from_db(chat_id=int(chat_id))
         day_rows = build_rows_for_group(
             chat_id=int(chat_id),
             target_date=d,
@@ -458,17 +435,13 @@ async def collect_rows_for_roster_at_chat(
     start: date,
     end: date,
     roster_ids: frozenset[str],
-    bot: Bot | None,
 ) -> List[AttendanceSummaryRow]:
     """按班表 roster 全员统计；打卡/离岗记录仅取自指定群。"""
     if not roster_ids:
         return []
     out: List[AttendanceSummaryRow] = []
     for d in _date_range_inclusive(start=start, end=end):
-        if bot is not None:
-            gname = await resolve_group_display_name(bot=bot, chat_id=int(chat_id))
-        else:
-            gname = fallback_group_display_name_from_db(chat_id=int(chat_id))
+        gname = fallback_group_display_name_from_db(chat_id=int(chat_id))
         day_rows = build_rows_for_roster_at_chat(
             target_date=d,
             chat_id=int(chat_id),

@@ -10,8 +10,6 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from aiogram import Bot
-
 from infra.bbq_google_sheets_config import (
     bbq_summary_excluded_employee_ids,
     is_bbq_attendance_summary_chat,
@@ -116,24 +114,6 @@ def fallback_group_display_name_from_db(*, chat_id: int) -> str:
         if dept:
             return dept
     return f"群{chat_id}"
-
-
-async def resolve_group_display_name(
-    *,
-    bot: Optional[Bot],
-    chat_id: int,
-    skip_telegram: bool = False,
-) -> str:
-    """优先 Telegram 群标题；失败则用数据库兜底。导出等批量场景可 skip_telegram 避免反复 get_chat 超时。"""
-    if not skip_telegram and bot is not None:
-        try:
-            chat = await bot.get_chat(int(chat_id))
-            title = (getattr(chat, "title", None) or "").strip()
-            if title:
-                return title
-        except Exception as e:
-            log.warning("resolve_group_display_name get_chat failed chat_id=%s: %s", chat_id, e)
-    return fallback_group_display_name_from_db(chat_id=int(chat_id))
 
 
 def ensure_tables() -> None:

@@ -67,7 +67,7 @@ def main() -> None:
             stats[{"insert": "inserted", "update": "updated", "skip_bound": "skipped_bound"}[action]] += 1
             continue
 
-        action = registrations_repo.upsert_registration_stub(
+        action = registrations_repo.upsert_preregistered_employee(
             employee_id=emp.employee_id,
             english_name=name,
             registered_chat_id=chat_id,

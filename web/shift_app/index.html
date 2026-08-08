@@ -488,7 +488,7 @@
 
     function hasAuthMaterial() {
 
-      return !!(sessionToken || telegramInitData);
+      return !!sessionToken;
 
     }
 
@@ -522,27 +522,27 @@
 
 
 
-    async function exchangeSessionFromInitData() {
+    async function exchangeGatewaySession() {
 
       if (!telegramInitData) return false;
 
       try {
 
-        const res = await fetch(apiUrl('/api/v1/shift-config/exchange-session'), {
+        const res = await fetch('/api/v1/webapp/session', {
 
           method: 'POST',
 
           headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' },
 
-          body: JSON.stringify({ init_data: telegramInitData }),
+          body: JSON.stringify({ initData: telegramInitData, audience: 'ATTENDANCE' }),
 
         });
 
         const data = await res.json();
 
-        if (res.ok && data.ok && data.web_session) {
+        if (res.ok && data.sessionToken) {
 
-          sessionToken = data.web_session;
+          sessionToken = data.sessionToken;
 
           return true;
 
@@ -562,7 +562,7 @@
 
       if (telegramInitData && !sessionToken) {
 
-        await exchangeSessionFromInitData();
+        await exchangeGatewaySession();
 
       }
 
@@ -588,9 +588,7 @@
 
       const h = { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' };
 
-      if (sessionToken) h['X-Web-Session'] = sessionToken;
-
-      if (telegramInitData) h['X-Telegram-Init-Data'] = telegramInitData;
+      if (sessionToken) h.Authorization = 'Bearer ' + sessionToken;
 
       return h;
 
@@ -1147,113 +1145,7 @@
 
 
 
-    async function postSendTemplate(path) {
-
-      return fetch(apiUrl(path), {
-
-        method: 'POST',
-
-        headers: apiHeaders(),
-
-        body: JSON.stringify({ year_month: yearMonth }),
-
-      });
-
-    }
-
-
-
-    async function sendTemplateToTelegram() {
-
-      setStatus('正在发送模板到私聊…', false);
-
-      const paths = [
-
-        '/api/v1/shift-config/send-template',
-
-        '/api/v1/shift-config/template/send',
-
-      ];
-
-      let res = null;
-
-      for (const path of paths) {
-
-        const r = await postSendTemplate(path);
-
-        if (r.status !== 404) {
-
-          res = r;
-
-          break;
-
-        }
-
-      }
-
-      if (!res) {
-
-        res = await fetch(apiUrl('/api/v1/shift-config'), {
-
-          method: 'POST',
-
-          headers: apiHeaders(),
-
-          body: JSON.stringify({ action: 'send_template', year_month: yearMonth }),
-
-        });
-
-      }
-
-      let data = {};
-
-      try { data = await res.json(); } catch (e) { /* ignore */ }
-
-      if (!res.ok || !data.ok) {
-
-        let msg = data.message || '发送失败';
-
-        if (res.status === 404) {
-
-          msg = '接口未加载(404)：请重启考勤 Bot（python main.py）后重试';
-
-        }
-
-        setStatus(msg, true);
-
-        return false;
-
-      }
-
-      const msg = '模板已发到与机器人的私聊。\n请关闭本页，在私聊里点 CSV 文件保存或转发。';
-
-      setStatus('已发到私聊，请返回机器人对话下载文件', false);
-
-      if (tg?.showAlert) {
-
-        tg.showAlert(msg);
-
-      } else {
-
-        alert(msg);
-
-      }
-
-      return true;
-
-    }
-
-
-
     async function downloadTemplate() {
-
-      if (tg) {
-
-        if (await sendTemplateToTelegram()) return;
-
-      }
-
-
 
       const fileName = templateFileName();
 
@@ -1570,4 +1462,3 @@
 </body>
 
 </html>
-

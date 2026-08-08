@@ -71,11 +71,11 @@ def requires_remote_diff_checkin(
     """是否为远程差异识别群（与 CHECKIN_PC_ONLY 的考勤机器人测试群无关）。"""
     from infra.test_group_google_config import (
         is_test_group_chat,
-        test_group_uses_slack_name_time_date_checkin,
+        configured_test_group_uses_slack_name_time_date_checkin,
     )
 
     if is_test_group_chat(chat_id=chat_id, chat_title=chat_title):
-        if test_group_uses_slack_name_time_date_checkin():
+        if configured_test_group_uses_slack_name_time_date_checkin():
             return False
     if chat_id is not None and int(chat_id) in remote_diff_chat_ids():
         return True

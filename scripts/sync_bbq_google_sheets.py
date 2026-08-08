@@ -25,7 +25,10 @@ async def main() -> None:
     args = parser.parse_args()
 
     cfg = load_bbq_google_sheets_config()
-    result = await sync_bbq_group_month_to_google_sheets(chat_id=int(args.chat_id), bot=None, cfg=cfg)
+    result = await sync_bbq_group_month_to_google_sheets(
+        chat_id=int(args.chat_id),
+        cfg=cfg,
+    )
     print(result.message)
     raise SystemExit(0 if result.ok else 1)
 

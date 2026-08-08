@@ -6,6 +6,7 @@ from gateway_provider.app import (
     AttendanceGatewayProviderConfig,
     create_attendance_gateway_provider_app,
 )
+from gateway_provider.runtime_security import assert_no_telegram_owner_credentials
 
 
 def _required_environment(name: str) -> str:
@@ -13,6 +14,9 @@ def _required_environment(name: str) -> str:
     if not value:
         raise RuntimeError(f"{name} is required")
     return value
+
+
+assert_no_telegram_owner_credentials(os.environ)
 
 
 app = create_attendance_gateway_provider_app(

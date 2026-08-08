@@ -1,81 +1,188 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
+import json
+import os
+import time
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
-from infra import shift_web_http
-from shift_web_app import create_shift_web_app, resolve_shift_web_bot_token
+import psycopg2
+from aiohttp.test_utils import TestClient, TestServer
+
+from shift_web_app import create_shift_web_app
 
 
-def test_shift_web_entry_exposes_only_shift_and_truthful_health_routes() -> None:
-    bot = SimpleNamespace(session=SimpleNamespace(close=AsyncMock()))
-    app = create_shift_web_app(bot=bot)
+_SESSION_SECRET = "attendance-webapp-session-test-secret-0001"
+
+
+def _database_url() -> str:
+    value = (os.getenv("ATTENDANCE_TEST_DATABASE_URL") or "").strip()
+    if not value:
+        raise RuntimeError("ATTENDANCE_TEST_DATABASE_URL is required")
+    return value
+
+
+def _apply_migration() -> None:
+    root = Path(__file__).resolve().parent
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute((root / "migrations/0003_gateway_provider.sql").read_text())
+            cursor.execute((root / "migrations/0004_registration_provider.sql").read_text())
+            cursor.execute(
+                "DELETE FROM admin_list WHERE admin_employee_id = %s",
+                ("74808",),
+            )
+            cursor.execute(
+                "DELETE FROM registrations WHERE employee_id = %s OR tg_id IN (%s, %s)",
+                ("74808", 82001, 82002),
+            )
+
+
+def _base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _gateway_session(
+    *,
+    tg_id: int,
+    audience: str = "ATTENDANCE",
+    issued_at: int | None = None,
+    expires_at: int | None = None,
+) -> str:
+    now = int(time.time())
+    iat = issued_at if issued_at is not None else now - 1
+    exp = expires_at if expires_at is not None else now + 300
+    header = _base64url(
+        json.dumps(
+            {"alg": "HS256", "typ": "JWT"},
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
+    payload = _base64url(
+        json.dumps(
+            {
+                "iss": "uxassistant-gateway",
+                "aud": audience,
+                "sub": f"telegram:{tg_id}",
+                "iat": iat,
+                "exp": exp,
+                "jti": f"session-{tg_id}-{iat}",
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
+    signing_input = f"{header}.{payload}"
+    signature = _base64url(
+        hmac.new(
+            _SESSION_SECRET.encode("utf-8"),
+            signing_input.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+    )
+    return f"{signing_input}.{signature}"
+
+
+async def _get_shift_config(*, token: str) -> tuple[int, dict[str, object]]:
+    app = create_shift_web_app(
+        database_url=_database_url(),
+        gateway_session_signing_secret=_SESSION_SECRET,
+    )
+    async with TestClient(TestServer(app)) as client:
+        response = await client.get(
+            "/api/v1/shift-config?year_month=2026-08",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        return response.status, await response.json()
+
+
+def test_shift_web_entry_exposes_only_current_business_routes() -> None:
+    app = create_shift_web_app(
+        database_url=_database_url(),
+        gateway_session_signing_secret=_SESSION_SECRET,
+    )
     paths = {resource.canonical for resource in app.router.resources()}
 
     assert "/healthz" in paths
     assert "/shift-app/" in paths
     assert "/api/v1/shift-config" in paths
+    assert "/api/v1/shift-config/exchange-session" not in paths
+    assert "/api/v1/shift-config/send-template" not in paths
+    assert "/api/v1/shift-config/send-export" not in paths
     assert not any("checkin-app" in path for path in paths)
     assert not any("daily-attendance-report" in path for path in paths)
 
-    asyncio.run(app.cleanup())
+
+def test_gateway_session_allows_attendance_admin() -> None:
+    _apply_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 82001, 82001),
+            )
+            cursor.execute(
+                "INSERT INTO admin_list (admin_employee_id) VALUES (%s)",
+                ("74808",),
+            )
+
+    status, payload = asyncio.run(
+        _get_shift_config(token=_gateway_session(tg_id=82001))
+    )
+
+    assert status == 200
+    assert payload["ok"] is True
+    assert payload["year_month"] == "2026-08"
 
 
-def test_shift_web_entry_never_starts_polling_or_workers() -> None:
-    source = (Path(__file__).parent / "shift_web_app.py").read_text(encoding="utf-8")
+def test_gateway_session_does_not_grant_non_admin_access() -> None:
+    _apply_migration()
 
-    assert "prepare_runtime" not in source
-    assert "start_polling" not in source
-    assert "run_notification_worker" not in source
-    assert "run_audit_worker" not in source
+    status, payload = asyncio.run(
+        _get_shift_config(token=_gateway_session(tg_id=82002))
+    )
 
-
-def test_shift_web_entry_supports_process_local_bot_token_isolation() -> None:
-    source = Path("shift_web_app.py").read_text(encoding="utf-8")
-
-    assert "SHIFT_WEB_TELEGRAM_BOT_TOKEN" in source
-    assert "ATTENDANCE_DOTENV_OVERRIDE" in source
+    assert status == 403
+    assert payload == {"ok": False, "code": "FORBIDDEN", "message": "无权限操作"}
 
 
-def test_unified_shift_web_requires_its_dedicated_bot_token(monkeypatch) -> None:
-    monkeypatch.setenv("ATTENDANCE_BOT_OWNER", "ux_assistant")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "legacy-token")
-    monkeypatch.delenv("SHIFT_WEB_TELEGRAM_BOT_TOKEN", raising=False)
+def test_expired_or_wrong_audience_gateway_session_is_rejected() -> None:
+    _apply_migration()
+    now = int(time.time())
 
-    try:
-        resolve_shift_web_bot_token()
-    except RuntimeError as exc:
-        assert "SHIFT_WEB_TELEGRAM_BOT_TOKEN" in str(exc)
-    else:
-        raise AssertionError("unified Shift Web accepted the legacy Attendance token")
+    expired_status, expired_payload = asyncio.run(
+        _get_shift_config(
+            token=_gateway_session(
+                tg_id=82001,
+                issued_at=now - 400,
+                expires_at=now - 100,
+            )
+        )
+    )
+    audience_status, audience_payload = asyncio.run(
+        _get_shift_config(
+            token=_gateway_session(tg_id=82001, audience="OMNIAI2")
+        )
+    )
 
-    monkeypatch.setenv("SHIFT_WEB_TELEGRAM_BOT_TOKEN", "unified-token")
-    assert resolve_shift_web_bot_token() == "unified-token"
+    assert expired_status == 401
+    assert expired_payload["code"] == "SESSION_INVALID"
+    assert audience_status == 401
+    assert audience_payload["code"] == "SESSION_INVALID"
 
 
-def test_shift_web_has_one_http_route_owner() -> None:
-    root = Path(__file__).parent
+def test_malformed_gateway_session_is_rejected_without_server_error() -> None:
+    _apply_migration()
 
-    assert not (root / "shift_web_http.py").exists()
-    assert (root / "infra" / "shift_web_http.py").is_file()
+    status, payload = asyncio.run(_get_shift_config(token="☃.invalid.session"))
 
-
-def test_send_template_route_passes_authenticated_admin_id(monkeypatch) -> None:
-    class Request:
-        async def read(self):
-            return b"{}"
-
-    observed = {}
-
-    async def send_template(_request, *, tg_id, body):
-        observed.update(tg_id=tg_id, body=body)
-        return object()
-
-    monkeypatch.setattr(shift_web_http, "_require_admin", lambda _request: (42, None))
-    monkeypatch.setattr(shift_web_http, "_do_send_template", send_template)
-
-    asyncio.run(shift_web_http._handle_send_template(Request()))
-
-    assert observed == {"tg_id": 42, "body": {}}
+    assert status == 401
+    assert payload["code"] == "SESSION_INVALID"

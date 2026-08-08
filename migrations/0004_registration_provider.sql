@@ -1,18 +1,3 @@
-DROP TABLE IF EXISTS public.attendance_telegram_update_inbox;
-
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = 'attendance_registration_sessions'
-          AND column_name = 'bot_owner'
-    ) THEN
-        DROP TABLE public.attendance_registration_sessions;
-    END IF;
-END $$;
-
 CREATE TABLE IF NOT EXISTS public.attendance_registration_sessions (
     tg_id BIGINT PRIMARY KEY,
     private_chat_id BIGINT NOT NULL,
@@ -91,11 +76,7 @@ CREATE TABLE IF NOT EXISTS public.shifts (
     is_overnight BOOLEAN NOT NULL DEFAULT FALSE,
     attendance_group_id BIGINT,
     attendance_flex_interval INTERVAL,
-    max_late_early_tolerance INTERVAL,
-    qc_enabled BOOLEAN,
-    qc_trigger_interval INTERVAL,
-    qc_draw_count INTEGER,
-    qc_example_file_id TEXT
+    max_late_early_tolerance INTERVAL
 );
 
 CREATE TABLE IF NOT EXISTS public.employee_shift_config (

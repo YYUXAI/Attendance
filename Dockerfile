@@ -4,8 +4,6 @@ WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    ATTENDANCE_RUN_MODE=webhook \
-    WEBHOOK_PORT=8001 \
     KMP_DUPLICATE_LIB_OK=TRUE \
     TZ=UTC
 
@@ -21,6 +19,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-EXPOSE 8001
+EXPOSE 19083
 
-CMD ["uvicorn", "webhook_app:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["uvicorn", "gateway_provider.entrypoint:app", "--host", "0.0.0.0", "--port", "19083"]

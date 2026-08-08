@@ -257,6 +257,58 @@ def test_gateway_bearer_is_required() -> None:
     }
 
 
+def test_attendance_summary_reads_only_attendance_business_truth() -> None:
+    _apply_gateway_provider_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO organizations (department_name) VALUES (%s) RETURNING id",
+                ("Gateway Contract Department",),
+            )
+            organization_id = cursor.fetchone()[0]
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id, organization_id
+                ) VALUES (%s, %s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 81001, 81001, organization_id),
+            )
+
+    client = _provider_client()
+    authorized = client.get(
+        "/integration/gateway/v1/attendance-summary",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        params={"telegramUserId": 81001},
+    )
+    unregistered = client.get(
+        "/integration/gateway/v1/attendance-summary",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        params={"telegramUserId": 81999},
+    )
+    unauthorized = client.get(
+        "/integration/gateway/v1/attendance-summary",
+        params={"telegramUserId": 81001},
+    )
+
+    assert authorized.status_code == 200, authorized.text
+    assert authorized.json() == {
+        "protocolVersion": "1.0",
+        "registrationStatus": "APPROVED",
+        "organizationDepartmentName": "Gateway Contract Department",
+        "profileBindingStatus": "BOUND",
+    }
+    assert unregistered.status_code == 200, unregistered.text
+    assert unregistered.json() == {
+        "protocolVersion": "1.0",
+        "registrationStatus": "UNREGISTERED",
+        "organizationDepartmentName": None,
+        "profileBindingStatus": "UNBOUND",
+    }
+    assert unauthorized.status_code == 401
+    assert unauthorized.json()["error"]["code"] == "UNAUTHORIZED"
+
+
 def test_authentication_precedes_request_body_validation() -> None:
     _apply_gateway_provider_migration()
 
@@ -1572,13 +1624,14 @@ def test_expired_registration_confirmation_fails_closed_and_releases() -> None:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                UPDATE attendance_registration_sessions
-                SET created_at = clock_timestamp() - interval '20 minutes',
-                    last_activity_at = clock_timestamp() - interval '16 minutes',
-                    inactivity_expires_at = clock_timestamp() - interval '1 minute',
-                    absolute_expires_at = clock_timestamp() - interval '1 minute',
-                    preview_expires_at = clock_timestamp() - interval '1 minute'
-                WHERE tg_id = %s
+                    UPDATE attendance_registration_sessions
+                    SET created_at = snapshot.now - interval '20 minutes',
+                        last_activity_at = snapshot.now - interval '16 minutes',
+                        inactivity_expires_at = snapshot.now - interval '1 minute',
+                        absolute_expires_at = snapshot.now - interval '1 minute',
+                        preview_expires_at = snapshot.now - interval '1 minute'
+                    FROM (SELECT clock_timestamp() AS now) AS snapshot
+                    WHERE tg_id = %s
                 """,
                 (81002,),
             )

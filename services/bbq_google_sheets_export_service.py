@@ -7,8 +7,6 @@ import time
 from dataclasses import dataclass
 from datetime import date
 
-from aiogram import Bot
-
 from infra.bbq_google_sheets_config import (
     BbqGoogleSheetsConfig,
     is_bbq_chat,
@@ -46,7 +44,6 @@ def _month_range(*, today: date) -> tuple[date, date, str]:
 async def build_bbq_month_export_grid(
     *,
     chat_id: int,
-    bot: Bot | None,
     timezone: str,
 ) -> tuple[list[list[object]], list[tuple[int, int]], date, date]:
     """整月 BBQ 群打卡，导出格式同 XLSX（含状态分布 + 异常标黄坐标）。"""
@@ -56,7 +53,6 @@ async def build_bbq_month_export_grid(
         chat_id=int(chat_id),
         start=start,
         end=end,
-        bot=bot,
     )
     pivot, overview, dates = build_pivot_and_overview(rows=rows, start=start, end=end)
     grid = build_attendance_export_grid(
@@ -77,7 +73,6 @@ async def build_bbq_month_export_grid(
 async def sync_bbq_group_month_to_google_sheets(
     *,
     chat_id: int,
-    bot: Bot | None = None,
     cfg: BbqGoogleSheetsConfig | None = None,
 ) -> BbqSheetsSyncResult:
     cfg = cfg or load_bbq_google_sheets_config()
@@ -90,7 +85,6 @@ async def sync_bbq_group_month_to_google_sheets(
 
     grid, yellow_cells, start, end = await build_bbq_month_export_grid(
         chat_id=int(chat_id),
-        bot=bot,
         timezone=cfg.timezone,
     )
     try:
@@ -119,7 +113,7 @@ async def sync_bbq_group_month_to_google_sheets(
     return BbqSheetsSyncResult(True, msg, row_count=row_count, sheet_title=sheet_title)
 
 
-def schedule_bbq_sheets_sync_after_checkin(*, bot: Bot, chat_id: int) -> None:
+def schedule_bbq_sheets_sync_after_checkin(*, chat_id: int) -> None:
     """BBQ 群打卡成功后异步触发整月同步。"""
     cfg = load_bbq_google_sheets_config()
     if not cfg.enabled:
@@ -135,7 +129,7 @@ def schedule_bbq_sheets_sync_after_checkin(*, bot: Bot, chat_id: int) -> None:
                 return
             _last_sync_at[int(chat_id)] = now
         try:
-            await sync_bbq_group_month_to_google_sheets(chat_id=int(chat_id), bot=bot)
+            await sync_bbq_group_month_to_google_sheets(chat_id=int(chat_id))
         except Exception:
             log.exception("bbq_sheets: background sync failed chat_id=%s", chat_id)
 

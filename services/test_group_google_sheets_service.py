@@ -7,10 +7,8 @@ import time
 from dataclasses import dataclass
 from datetime import date
 
-from aiogram import Bot
-
 from infra.test_group_google_config import (
-    TestGroupGoogleConfig,
+    ConfiguredTestGroupGoogleConfig,
     is_test_group_chat,
     load_test_group_google_config,
     primary_test_group_chat_id,
@@ -44,7 +42,7 @@ _last_sync_at: dict[int, float] = {}
 _sync_lock = asyncio.Lock()
 
 @dataclass(frozen=True)
-class TestGroupSheetsSyncResult:
+class ConfiguredTestGroupSheetsSyncResult:
     ok: bool
     message: str
     row_count: int = 0
@@ -58,9 +56,8 @@ def _month_range(*, today: date) -> tuple[date, date, str]:
 
 async def build_test_group_month_export_grid(
     *,
-    bot: Bot | None,
     timezone: str,
-    cfg: TestGroupGoogleConfig | None = None,
+    cfg: ConfiguredTestGroupGoogleConfig | None = None,
 ) -> tuple[list[list[object]], date, date]:
     """按 Google 班表 roster 全员统计；打卡仅取自测试群（上班卡/下班卡，月休保留）。"""
     cfg = cfg or load_test_group_google_config()
@@ -85,7 +82,6 @@ async def build_test_group_month_export_grid(
         start=start,
         end=end,
         roster_ids=roster_ids,
-        bot=bot,
     )
     pivot, _overview, dates = build_pivot_and_overview(rows=rows, start=start, end=end)
     pivot = pivot_with_punch_status(
@@ -106,22 +102,22 @@ async def build_test_group_month_export_grid(
 
 def sync_test_group_shifts_from_google(
     *,
-    cfg: TestGroupGoogleConfig | None = None,
+    cfg: ConfiguredTestGroupGoogleConfig | None = None,
     year_month: str | None = None,
-) -> TestGroupSheetsSyncResult:
+) -> ConfiguredTestGroupSheetsSyncResult:
     """从班表来源 Google 表读入班次 → 系统数据库。"""
     cfg = cfg or load_test_group_google_config()
     if not cfg.enabled:
-        return TestGroupSheetsSyncResult(False, "TEST_GROUP_GOOGLE_SHEETS_ENABLED=false")
+        return ConfiguredTestGroupSheetsSyncResult(False, "TEST_GROUP_GOOGLE_SHEETS_ENABLED=false")
     if not cfg.shift_spreadsheet_id:
-        return TestGroupSheetsSyncResult(False, "缺少 TEST_GROUP_SHIFT_SPREADSHEET_ID")
+        return ConfiguredTestGroupSheetsSyncResult(False, "缺少 TEST_GROUP_SHIFT_SPREADSHEET_ID")
     ym = (year_month or "").strip()
     if not ym:
         from infra.google_sheets_config import load_google_sheets_config
 
         ym = load_google_sheets_config().year_month
     if not ym:
-        return TestGroupSheetsSyncResult(False, "缺少 year_month")
+        return ConfiguredTestGroupSheetsSyncResult(False, "缺少 year_month")
 
     try:
         sheet_title, rows = fetch_sheet_values(
@@ -132,10 +128,10 @@ def sync_test_group_shifts_from_google(
         _, employees = parse_shift_matrix(rows, year_month=ym)
     except Exception as exc:
         log.exception("test_group_sheets: shift fetch failed")
-        return TestGroupSheetsSyncResult(False, str(exc))
+        return ConfiguredTestGroupSheetsSyncResult(False, str(exc))
 
     if not employees:
-        return TestGroupSheetsSyncResult(False, "测试群班表未解析到员工")
+        return ConfiguredTestGroupSheetsSyncResult(False, "测试群班表未解析到员工")
 
     emp_ids = [e.employee_id for e in employees]
     employee_shift_config_repo.ensure_table()
@@ -161,26 +157,24 @@ def sync_test_group_shifts_from_google(
     count, cells = _upsert_employees(to_upsert, year_month=ym)
     msg = f"测试群班表同步：{count} 人、{cells} 格（{sheet_title}）"
     log.info("test_group_sheets: %s", msg)
-    return TestGroupSheetsSyncResult(True, msg, row_count=count, sheet_title=sheet_title)
+    return ConfiguredTestGroupSheetsSyncResult(True, msg, row_count=count, sheet_title=sheet_title)
 
 
 async def sync_test_group_month_to_google_sheets(
     *,
     chat_id: int,
-    bot: Bot | None = None,
-    cfg: TestGroupGoogleConfig | None = None,
-) -> TestGroupSheetsSyncResult:
+    cfg: ConfiguredTestGroupGoogleConfig | None = None,
+) -> ConfiguredTestGroupSheetsSyncResult:
     """测试群当月考勤 → Google 表（格式同私聊导出 XLSX）。"""
     cfg = cfg or load_test_group_google_config()
     if not cfg.enabled:
-        return TestGroupSheetsSyncResult(False, "TEST_GROUP_GOOGLE_SHEETS_ENABLED=false")
+        return ConfiguredTestGroupSheetsSyncResult(False, "TEST_GROUP_GOOGLE_SHEETS_ENABLED=false")
     if not cfg.attendance_spreadsheet_id:
-        return TestGroupSheetsSyncResult(False, "缺少 TEST_GROUP_ATTENDANCE_SPREADSHEET_ID")
+        return ConfiguredTestGroupSheetsSyncResult(False, "缺少 TEST_GROUP_ATTENDANCE_SPREADSHEET_ID")
     if not is_test_group_chat(chat_id=int(chat_id)):
-        return TestGroupSheetsSyncResult(False, f"chat_id={chat_id} 非测试群，跳过")
+        return ConfiguredTestGroupSheetsSyncResult(False, f"chat_id={chat_id} 非测试群，跳过")
 
     grid, start, end = await build_test_group_month_export_grid(
-        bot=bot,
         timezone=cfg.timezone,
         cfg=cfg,
     )
@@ -205,14 +199,14 @@ async def sync_test_group_month_to_google_sheets(
             chat_id,
             cfg.attendance_spreadsheet_id,
         )
-        return TestGroupSheetsSyncResult(False, f"Google 表写入失败: {exc}")
+        return ConfiguredTestGroupSheetsSyncResult(False, f"Google 表写入失败: {exc}")
 
     msg = f"已同步测试群 {start}~{end} 共 {row_count} 行到 {sheet_title!r}（上班卡/下班卡）"
     log.info("test_group_sheets: %s chat_id=%s", msg, chat_id)
-    return TestGroupSheetsSyncResult(True, msg, row_count=row_count, sheet_title=sheet_title)
+    return ConfiguredTestGroupSheetsSyncResult(True, msg, row_count=row_count, sheet_title=sheet_title)
 
 
-def schedule_test_group_sheets_sync_after_checkin(*, bot: Bot, chat_id: int) -> None:
+def schedule_test_group_sheets_sync_after_checkin(*, chat_id: int) -> None:
     """测试群打卡成功后：按导出格式整表回写 Google。"""
     cfg = load_test_group_google_config()
     if not cfg.enabled:
@@ -228,7 +222,7 @@ def schedule_test_group_sheets_sync_after_checkin(*, bot: Bot, chat_id: int) -> 
                 return
             _last_sync_at[int(chat_id)] = now
         try:
-            await sync_test_group_month_to_google_sheets(chat_id=int(chat_id), bot=bot)
+            await sync_test_group_month_to_google_sheets(chat_id=int(chat_id))
         except Exception:
             log.exception("test_group_sheets: background sync failed chat_id=%s", chat_id)
 

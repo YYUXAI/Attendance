@@ -70,7 +70,6 @@ def process_export_callback(
         attendance_export_service.collect_rows_for_range(
             start=start,
             end=end,
-            bot=None,
             export_tg_id=callback.sender.id,
         )
     )

@@ -15,7 +15,7 @@ _DEFAULT_TEST_GROUP_ATTENDANCE_SHEET_TITLE = "工作表1"
 
 
 @dataclass(frozen=True)
-class TestGroupGoogleConfig:
+class ConfiguredTestGroupGoogleConfig:
     enabled: bool
     chat_ids: frozenset[int]
     group_titles: frozenset[str]
@@ -50,7 +50,7 @@ def _parse_str_set(raw: str) -> frozenset[str]:
     return frozenset(out)
 
 
-def load_test_group_google_config() -> TestGroupGoogleConfig:
+def load_test_group_google_config() -> ConfiguredTestGroupGoogleConfig:
     enabled = os.getenv("TEST_GROUP_GOOGLE_SHEETS_ENABLED", "false").strip().lower() in {
         "1",
         "true",
@@ -92,7 +92,7 @@ def load_test_group_google_config() -> TestGroupGoogleConfig:
         root = Path(__file__).resolve().parents[1]
         creds = str((root / creds).resolve())
     tz = (os.getenv("TEST_GROUP_GOOGLE_SHEETS_TIMEZONE") or "Asia/Shanghai").strip()
-    return TestGroupGoogleConfig(
+    return ConfiguredTestGroupGoogleConfig(
         enabled=enabled,
         chat_ids=chat_ids,
         group_titles=titles,
@@ -122,7 +122,7 @@ def is_test_group_chat(*, chat_id: int | None, chat_title: str | None = None) ->
     return bool(title and title in cfg.group_titles)
 
 
-def test_group_uses_slack_name_time_date_checkin() -> bool:
+def configured_test_group_uses_slack_name_time_date_checkin() -> bool:
     """测试群专规：TIME.IS + Slack 浮窗，校验姓名/时间/日期（非工号远程打卡）。"""
     return os.getenv("TEST_GROUP_SLACK_CHECKIN", "true").strip().lower() in {
         "1",
