@@ -10,6 +10,7 @@ from psycopg2.extras import Json
 from gateway_provider.contracts import (
     AcquireSessionDirective,
     AnswerCallbackAction,
+    AnswerInlineQueryAction,
     GatewayEventRequest,
     GatewayEventResponse,
     InlineKeyboardButton,
@@ -17,12 +18,14 @@ from gateway_provider.contracts import (
     ReleaseSessionDirective,
     SendMessageAction,
     TelegramCallbackUpdate,
+    TelegramInlineQueryUpdate,
     TelegramMessageUpdate,
     UnchangedSessionDirective,
     event_request_canonical_value,
     event_response_value,
 )
 from gateway_provider.profile_module import profile_text_for_tg_id
+from domain.action_drafts import build_checkin_draft
 from repositories import registrations_repo
 from services import register_service
 from services.register_service import RegisterPreview
@@ -100,12 +103,18 @@ def _process_attendance_event(
     cursor: Cursor,
 ) -> GatewayEventResponse:
     update = request.telegramUpdate
+    if isinstance(update, TelegramInlineQueryUpdate):
+        if request.routeReason != "INLINE_QUERY":
+            raise GatewayRouteOwnershipMismatchError()
+        return _answer_inline_query(request, update)
     if isinstance(update, TelegramCallbackUpdate):
         callback_data = update.callback_query.data
         if callback_data == "att:register":
             return _begin_registration(request, cursor, update)
         if callback_data == "att:profile":
             return _show_profile(request, cursor, update)
+        if callback_data in {"att:signin", "att:signout"}:
+            return _show_group_action(request, cursor, update)
         for operation in ("confirm", "cancel"):
             prefix = f"att:register:{operation}:"
             if callback_data.startswith(prefix):
@@ -126,6 +135,22 @@ def _process_attendance_event(
     message = update.message
     if request.routeReason == "CONVERSATION_SESSION":
         return _process_registration_text(request, cursor, update)
+    if (
+        request.routeReason == "GROUP_OWNER"
+        and message.chat.type in {"group", "supergroup"}
+    ):
+        group_action = {
+            "/att_signin": "签到",
+            "/att_signout": "签退",
+        }.get(_command_name(message.text) or "")
+        if group_action is not None:
+            return _show_group_message_action(
+                request,
+                cursor,
+                update,
+                label=group_action,
+            )
+        raise GatewayRouteOwnershipMismatchError()
     if (
         request.routeReason != "COMMAND"
         or message.chat.type != "private"
@@ -396,6 +421,134 @@ def _show_profile(
                 replyToMessageId=message.message_id,
                 text=text,
             ),
+        ],
+    )
+
+
+def _show_group_action(
+    request: GatewayEventRequest,
+    cursor: Cursor,
+    update: TelegramCallbackUpdate,
+) -> GatewayEventResponse:
+    callback = update.callback_query
+    message = callback.message
+    if message.chat.type not in {"group", "supergroup"}:
+        raise GatewayRouteOwnershipMismatchError()
+    label = {
+        "att:signin": "签到",
+        "att:signout": "签退",
+    }.get(callback.data)
+    if label is None:
+        raise GatewayRouteOwnershipMismatchError()
+    text, reply_markup = _group_action_content(
+        cursor,
+        tg_id=callback.sender.id,
+        label=label,
+    )
+    return GatewayEventResponse(
+        protocolVersion="1.0",
+        eventId=request.eventId,
+        result="PROCESSED",
+        session=UnchangedSessionDirective(directive="UNCHANGED"),
+        actions=[
+            AnswerCallbackAction(
+                actionId=f"{request.eventId}.callback",
+                type="ANSWER_CALLBACK",
+                callbackQueryId=callback.id,
+            ),
+            SendMessageAction(
+                actionId=f"{request.eventId}.reply",
+                type="SEND_MESSAGE",
+                chatId=message.chat.id,
+                replyToMessageId=message.message_id,
+                text=text,
+                replyMarkup=reply_markup,
+            ),
+        ],
+    )
+
+
+def _show_group_message_action(
+    request: GatewayEventRequest,
+    cursor: Cursor,
+    update: TelegramMessageUpdate,
+    *,
+    label: str,
+) -> GatewayEventResponse:
+    message = update.message
+    sender = message.sender
+    if sender is None:
+        raise GatewayRouteOwnershipMismatchError()
+    text, reply_markup = _group_action_content(
+        cursor,
+        tg_id=sender.id,
+        label=label,
+    )
+    return GatewayEventResponse(
+        protocolVersion="1.0",
+        eventId=request.eventId,
+        result="PROCESSED",
+        session=UnchangedSessionDirective(directive="UNCHANGED"),
+        actions=[
+            SendMessageAction(
+                actionId=f"{request.eventId}.reply",
+                type="SEND_MESSAGE",
+                chatId=message.chat.id,
+                replyToMessageId=message.message_id,
+                text=text,
+                replyMarkup=reply_markup,
+            )
+        ],
+    )
+
+
+def _group_action_content(
+    cursor: Cursor,
+    *,
+    tg_id: int,
+    label: str,
+) -> tuple[str, InlineKeyboardMarkup | None]:
+    registration = registrations_repo.get_by_tg_id_cur(cursor, tg_id=tg_id)
+    if registration is None:
+        return "请先私聊机器人完成注册（英文名$工号）。", None
+    draft = build_checkin_draft(
+        english_name=registration.english_name or "",
+        employee_id=registration.employee_id,
+        action=label,
+    )
+    return (
+        f"请点击下方按钮填入{label}模板。",
+        InlineKeyboardMarkup(
+            inlineKeyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=label,
+                        switchInlineQueryCurrentChat=draft,
+                    )
+                ]
+            ]
+        ),
+    )
+
+
+def _answer_inline_query(
+    request: GatewayEventRequest,
+    update: TelegramInlineQueryUpdate,
+) -> GatewayEventResponse:
+    return GatewayEventResponse(
+        protocolVersion="1.0",
+        eventId=request.eventId,
+        result="PROCESSED",
+        session=UnchangedSessionDirective(directive="UNCHANGED"),
+        actions=[
+            AnswerInlineQueryAction(
+                actionId=f"{request.eventId}.answer",
+                type="ANSWER_INLINE_QUERY",
+                inlineQueryId=update.inline_query.id,
+                results=[],
+                cacheTimeSeconds=0,
+                isPersonal=True,
+            )
         ],
     )
 

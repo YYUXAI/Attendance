@@ -9,6 +9,7 @@ from pydantic import (
     Field,
     StringConstraints,
     field_validator,
+    model_validator,
 )
 
 
@@ -76,16 +77,40 @@ class TelegramCallbackUpdate(BaseModel):
     callback_query: TelegramCallbackQuery
 
 
+class TelegramInlineQuery(BaseModel):
+    model_config = ConfigDict(extra="allow", strict=True, populate_by_name=True)
+
+    id: str
+    sender: TelegramUser = Field(alias="from")
+    query: str
+    offset: str
+
+
+class TelegramInlineQueryUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    update_id: Annotated[int, Field(ge=0)]
+    inline_query: TelegramInlineQuery
+
+
 class GatewayEventRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     protocolVersion: Literal["1.0"]
     eventId: StableId
     target: Literal["ATTENDANCE"]
-    routeReason: Literal["COMMAND", "CALLBACK_NAMESPACE", "CONVERSATION_SESSION"]
+    routeReason: Literal[
+        "COMMAND",
+        "CALLBACK_NAMESPACE",
+        "CONVERSATION_SESSION",
+        "GROUP_OWNER",
+        "INLINE_QUERY",
+    ]
     conversationId: Annotated[str, StringConstraints(min_length=1, max_length=256)]
     receivedAt: str
-    telegramUpdate: TelegramMessageUpdate | TelegramCallbackUpdate
+    telegramUpdate: (
+        TelegramMessageUpdate | TelegramCallbackUpdate | TelegramInlineQueryUpdate
+    )
 
     @field_validator("receivedAt")
     @classmethod
@@ -103,7 +128,21 @@ class InlineKeyboardButton(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     text: Annotated[str, StringConstraints(min_length=1, max_length=256)]
-    callbackData: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+    callbackData: Annotated[
+        str,
+        StringConstraints(min_length=1, max_length=64),
+    ] | None = None
+    switchInlineQueryCurrentChat: Annotated[
+        str,
+        StringConstraints(max_length=256),
+    ] | None = None
+
+    @model_validator(mode="after")
+    def validate_exactly_one_action(self) -> "InlineKeyboardButton":
+        values = (self.callbackData, self.switchInlineQueryCurrentChat)
+        if sum(value is not None for value in values) != 1:
+            raise ValueError("inline keyboard button requires exactly one action")
+        return self
 
 
 class InlineKeyboardMarkup(BaseModel):
@@ -153,6 +192,17 @@ class AnswerCallbackAction(BaseModel):
     callbackQueryId: Annotated[str, StringConstraints(min_length=1)]
 
 
+class AnswerInlineQueryAction(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    actionId: StableId
+    type: Literal["ANSWER_INLINE_QUERY"]
+    inlineQueryId: Annotated[str, StringConstraints(min_length=1)]
+    results: Annotated[list[dict[str, object]], Field(max_length=50)]
+    cacheTimeSeconds: Annotated[int, Field(ge=0, le=86400)] | None = None
+    isPersonal: bool | None = None
+
+
 class GatewayEventResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -161,7 +211,7 @@ class GatewayEventResponse(BaseModel):
     result: Literal["PROCESSED", "DUPLICATE"]
     session: UnchangedSessionDirective | AcquireSessionDirective | ReleaseSessionDirective
     actions: Annotated[
-        list[SendMessageAction | AnswerCallbackAction],
+        list[SendMessageAction | AnswerCallbackAction | AnswerInlineQueryAction],
         Field(max_length=100),
     ]
 

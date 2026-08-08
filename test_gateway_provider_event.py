@@ -315,6 +315,93 @@ def _profile_callback_event() -> dict[str, object]:
     return event
 
 
+def _group_action_callback_event(data: str) -> dict[str, object]:
+    return {
+        "protocolVersion": "1.0",
+        "eventId": "evt-attendance-group-1201",
+        "target": "ATTENDANCE",
+        "routeReason": "CALLBACK_NAMESPACE",
+        "conversationId": "telegram:chat:-10081002",
+        "receivedAt": "2026-08-08T08:00:00Z",
+        "telegramUpdate": {
+            "update_id": 1201,
+            "callback_query": {
+                "id": "callback-1201",
+                "from": {
+                    "id": 81002,
+                    "is_bot": False,
+                    "first_name": "Group",
+                },
+                "message": {
+                    "message_id": 701,
+                    "date": 1786176000,
+                    "chat": {
+                        "id": -10081002,
+                        "type": "supergroup",
+                        "title": "Mutable title",
+                    },
+                    "text": "考勤操作",
+                },
+                "chat_instance": "instance-1201",
+                "data": data,
+            },
+        },
+    }
+
+
+def _inline_query_event() -> dict[str, object]:
+    return {
+        "protocolVersion": "1.0",
+        "eventId": "evt-attendance-inline-1202",
+        "target": "ATTENDANCE",
+        "routeReason": "INLINE_QUERY",
+        "conversationId": "telegram:inline:81002",
+        "receivedAt": "2026-08-08T08:01:00Z",
+        "telegramUpdate": {
+            "update_id": 1202,
+            "inline_query": {
+                "id": "inline-1202",
+                "from": {
+                    "id": 81002,
+                    "is_bot": False,
+                    "first_name": "Inline",
+                },
+                "query": "#打卡",
+                "offset": "",
+            },
+        },
+    }
+
+
+def _group_action_command_event(text: str) -> dict[str, object]:
+    return {
+        "protocolVersion": "1.0",
+        "eventId": "evt-attendance-group-1203",
+        "target": "ATTENDANCE",
+        "routeReason": "GROUP_OWNER",
+        "conversationId": "telegram:chat:-10081002",
+        "receivedAt": "2026-08-08T08:02:00Z",
+        "telegramUpdate": {
+            "update_id": 1203,
+            "message": {
+                "message_id": 703,
+                "date": 1786176120,
+                "chat": {
+                    "id": -10081002,
+                    "type": "supergroup",
+                    "title": "Mutable title",
+                },
+                "from": {
+                    "id": 81002,
+                    "is_bot": False,
+                    "first_name": "Group",
+                },
+                "text": text,
+            },
+        },
+    }
+
+
 def _registration_text_event() -> dict[str, object]:
     return {
         "protocolVersion": "1.0",
@@ -539,6 +626,141 @@ def test_profile_callback_uses_current_shift_and_month_stat_policy() -> None:
     assert "本月缺卡次数：0次" in text
     assert "本月迟到次数：0次" in text
     assert "本月早退次数：0次" in text
+
+
+def test_registered_group_signin_callback_returns_a_fill_input_action() -> None:
+    _apply_gateway_provider_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 81002, -10081002),
+            )
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=_group_action_callback_event("att:signin"),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["session"] == {"directive": "UNCHANGED"}
+    assert response.json()["actions"] == [
+        {
+            "actionId": "evt-attendance-group-1201.callback",
+            "type": "ANSWER_CALLBACK",
+            "callbackQueryId": "callback-1201",
+        },
+        {
+            "actionId": "evt-attendance-group-1201.reply",
+            "type": "SEND_MESSAGE",
+            "chatId": -10081002,
+            "replyToMessageId": 701,
+            "text": "请点击下方按钮填入签到模板。",
+            "replyMarkup": {
+                "inlineKeyboard": [
+                    [
+                        {
+                            "text": "签到",
+                            "switchInlineQueryCurrentChat": (
+                                "#打卡\n英文名：GRANDFOR\n工号：74808\n事项：签到"
+                            ),
+                        }
+                    ]
+                ]
+            },
+        },
+    ]
+
+
+def test_inline_query_is_answered_by_attendance_without_business_mutation() -> None:
+    _apply_gateway_provider_migration()
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=_inline_query_event(),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "protocolVersion": "1.0",
+        "eventId": "evt-attendance-inline-1202",
+        "result": "PROCESSED",
+        "session": {"directive": "UNCHANGED"},
+        "actions": [
+            {
+                "actionId": "evt-attendance-inline-1202.answer",
+                "type": "ANSWER_INLINE_QUERY",
+                "inlineQueryId": "inline-1202",
+                "results": [],
+                "cacheTimeSeconds": 0,
+                "isPersonal": True,
+            }
+        ],
+    }
+
+
+def test_unregistered_group_action_does_not_offer_a_false_fill_template() -> None:
+    _apply_gateway_provider_migration()
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=_group_action_callback_event("att:signout"),
+    )
+
+    assert response.status_code == 200, response.text
+    reply = response.json()["actions"][1]
+    assert reply["text"] == "请先私聊机器人完成注册（英文名$工号）。"
+    assert "replyMarkup" not in reply
+
+
+def test_group_attendance_command_returns_the_same_registered_fill_action() -> None:
+    _apply_gateway_provider_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 81002, -10081002),
+            )
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=_group_action_command_event("/att_signin"),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["actions"] == [
+        {
+            "actionId": "evt-attendance-group-1203.reply",
+            "type": "SEND_MESSAGE",
+            "chatId": -10081002,
+            "replyToMessageId": 703,
+            "text": "请点击下方按钮填入签到模板。",
+            "replyMarkup": {
+                "inlineKeyboard": [
+                    [
+                        {
+                            "text": "签到",
+                            "switchInlineQueryCurrentChat": (
+                                "#打卡\n英文名：GRANDFOR\n工号：74808\n事项：签到"
+                            ),
+                        }
+                    ]
+                ]
+            },
+        }
+    ]
 
 
 def test_registration_confirmation_binds_the_pre_registered_employee() -> None:

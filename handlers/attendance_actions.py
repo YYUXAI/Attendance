@@ -10,7 +10,6 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    InlineQuery,
     Message,
     WebAppInfo,
 )
@@ -19,7 +18,6 @@ from infra.daily_report_config import load_daily_report_config
 from infra.bot_owner import load_attendance_bot_owner
 from infra.log_redaction import redacted_ref
 from keyboards.actions_menu import build_shift_web_app_url_for_admin
-from keyboards.actions_menu import reply_group_single_fill_menu
 from repositories import (
     admin_list_repo,
     registrations_repo,
@@ -32,13 +30,6 @@ router = Router()
 log = logging.getLogger(__name__)
 
 _GROUP_CHAT = F.chat.type.in_({"group", "supergroup"})
-
-_ACTION_CB = {
-    "act:signin": "signin",
-    "act:signout": "signout",
-    "act:leave": "leave",
-    "act:back": "back",
-}
 
 def _require_user(message: Message):
     return message.from_user
@@ -59,35 +50,6 @@ def _user_context(*, tg_id: int):
         return None, "请先私聊机器人完成注册（英文名$工号）。"
     name = (reg.english_name or "").strip() or "未命名"
     return reg, name
-
-
-@router.inline_query()
-async def inline_query_for_fill_input(inline_query: InlineQuery) -> None:
-    """↗ 填入输入框时 Telegram 会发 inline_query，必须快速 answer 否则客户端一直转圈。"""
-    try:
-        await inline_query.answer([], cache_time=0, is_personal=True)
-    except Exception:
-        log.exception(
-            "inline_query answer failed tg_ref=%s query_len=%s",
-            redacted_ref(inline_query.from_user.id if inline_query.from_user else None),
-            len(inline_query.query or ""),
-        )
-
-
-@router.callback_query(F.data.in_(_ACTION_CB.keys()))
-async def group_action_callback(callback: CallbackQuery) -> None:
-    """消息内 callback 按钮（未注册兜底）。"""
-    await callback.answer()
-    if callback.message is None:
-        return
-    action = _ACTION_CB.get(callback.data or "")
-    if not action:
-        return
-    await reply_group_single_fill_menu(
-        message=callback.message,
-        action=action,
-        tg_id=int(callback.from_user.id),
-    )
 
 
 @router.message(_GROUP_CHAT, F.text.func(lambda t: bool(t and "#离岗报备" in t)))

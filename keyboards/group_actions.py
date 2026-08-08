@@ -5,10 +5,8 @@ from zoneinfo import ZoneInfo
 
 from aiogram.types import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup
 
-from domain.registration.rules import (
-    normalize_employee_id_for_template,
-    normalize_english_name_for_template,
-)
+from domain.action_drafts import build_checkin_draft
+from domain.registration.rules import normalize_english_name_for_template
 
 _SWITCH_QUERY_MAX = 256
 _TZ = ZoneInfo("Asia/Shanghai")
@@ -23,21 +21,6 @@ def _clip_query(text: str) -> str:
 
 def _now_local_str() -> str:
     return datetime.now(_TZ).strftime("%H:%M:%S")
-
-
-def build_checkin_draft(
-    *,
-    english_name: str,
-    employee_id: str,
-    action: str,
-    remote_diff: bool = False,
-) -> str:
-    # 不含 @bot；Telegram ↗ 会自动加 @zpxinbot，# 紧挨 bot 名 → @zpxinbot#打卡
-    # remote_diff 仅用于群侧是否附带「复制」按钮；模板统一含英文名（已清洗脏数据）
-    _ = remote_diff
-    eid = normalize_employee_id_for_template(employee_id)
-    en = normalize_english_name_for_template(english_name) or eid
-    return f"#打卡\n英文名：{en}\n工号：{eid}\n事项：{action}"
 
 
 def build_leave_draft(*, english_name: str, employee_id: str) -> str:
@@ -88,14 +71,12 @@ def build_draft_for_action(
             english_name=english_name,
             employee_id=employee_id,
             action="签到",
-            remote_diff=remote_diff,
         )
     if action == "signout":
         return build_checkin_draft(
             english_name=english_name,
             employee_id=employee_id,
             action="签退",
-            remote_diff=remote_diff,
         )
     if action == "leave":
         return build_leave_draft(english_name=english_name, employee_id=employee_id)
@@ -141,10 +122,10 @@ _ACTION_LABELS = {
 }
 
 _ACTION_CALLBACK = {
-    "signin": "act:signin",
-    "signout": "act:signout",
-    "leave": "act:leave",
-    "back": "act:back",
+    "signin": "att:signin",
+    "signout": "att:signout",
+    "leave": "att:leave",
+    "back": "att:back",
 }
 
 
@@ -229,14 +210,14 @@ def build_group_actions_inline(
                     _action_button_row(
                         label="签到",
                         draft=build_checkin_draft(
-                            english_name=name, employee_id=eid, action="签到", remote_diff=remote_diff
+                            english_name=name, employee_id=eid, action="签到"
                         ),
                         copy_fallback=True,
                     ),
                     _action_button_row(
                         label="签退",
                         draft=build_checkin_draft(
-                            english_name=name, employee_id=eid, action="签退", remote_diff=remote_diff
+                            english_name=name, employee_id=eid, action="签退"
                         ),
                         copy_fallback=True,
                     ),
@@ -258,13 +239,13 @@ def build_group_actions_inline(
                     _fill_button(
                         text="签到",
                         draft=build_checkin_draft(
-                            english_name=name, employee_id=eid, action="签到", remote_diff=remote_diff
+                            english_name=name, employee_id=eid, action="签到"
                         ),
                     ),
                     _fill_button(
                         text="签退",
                         draft=build_checkin_draft(
-                            english_name=name, employee_id=eid, action="签退", remote_diff=remote_diff
+                            english_name=name, employee_id=eid, action="签退"
                         ),
                     ),
                 ],
@@ -283,12 +264,12 @@ def build_group_actions_inline(
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="签到", callback_data="act:signin"),
-                InlineKeyboardButton(text="签退", callback_data="act:signout"),
+                InlineKeyboardButton(text="签到", callback_data="att:signin"),
+                InlineKeyboardButton(text="签退", callback_data="att:signout"),
             ],
             [
-                InlineKeyboardButton(text="离岗", callback_data="act:leave"),
-                InlineKeyboardButton(text="返岗", callback_data="act:back"),
+                InlineKeyboardButton(text="离岗", callback_data="att:leave"),
+                InlineKeyboardButton(text="返岗", callback_data="att:back"),
             ],
         ]
     )

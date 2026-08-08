@@ -13,8 +13,6 @@ from repositories.admin_list_repo import is_admin_by_tg_id
 from services.leave_flow_guard import check_can_back, check_can_leave
 
 _GROUP_BOTTOM_ACTION = {
-    "签到": "signin",
-    "签退": "signout",
     "离岗": "leave",
     "返岗": "back",
 }
@@ -44,8 +42,6 @@ async def attendance_menu_command(message: Message) -> None:
 
 
 _GROUP_CMD_ACTION = {
-    "signin": "signin",
-    "signout": "signout",
     "leave": "leave",
     "back": "back",
 }
