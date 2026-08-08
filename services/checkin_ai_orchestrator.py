@@ -14,7 +14,7 @@ from infra.checkin_ai_config import (
     load_checkin_ai_config,
     resolve_checkin_ai_config_for_chat,
 )
-from repositories.registrations_repo import get_by_tg_id
+from repositories.registrations_repo import RegistrationRow, get_by_tg_id
 from services import checkin_extraction_validate_service, checkin_identity_match_service, checkin_image_ai_service
 from services.checkin_recognition_log import log_checkin_recognition
 from services.checkin_user_message import user_message_for_checkin_error
@@ -40,6 +40,7 @@ async def resolve_clock_time_with_ai_from_bytes(
     caption: str | None = None,
     chat_id: int | None = None,
     chat_title: str | None = None,
+    registration: RegistrationRow | None = None,
 ) -> ServiceResult | CheckinAiResolveResult:
     cfg = resolve_checkin_ai_config_for_chat(
         config or load_checkin_ai_config(),
@@ -59,7 +60,7 @@ async def resolve_clock_time_with_ai_from_bytes(
             extraction=None,
         )
 
-    reg = get_by_tg_id(tg_id)
+    reg = registration or get_by_tg_id(tg_id)
     if not reg:
         return ServiceResult(ok=False, message="打卡失败，您尚未注册", error_code="NOT_REGISTERED")
 

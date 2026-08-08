@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -181,6 +182,35 @@ class SendMessageAction(BaseModel):
     replyMarkup: InlineKeyboardMarkup | None = None
 
 
+class BytesMediaSource(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    source: Literal["BYTES"]
+    contentBase64: Annotated[str, StringConstraints(max_length=67_108_864)]
+    fileName: Annotated[str, StringConstraints(min_length=1, max_length=255)]
+    mimeType: Annotated[str, StringConstraints(min_length=3, max_length=128)]
+
+    @field_validator("contentBase64")
+    @classmethod
+    def validate_base64(cls, value: str) -> str:
+        try:
+            base64.b64decode(value, validate=True)
+        except ValueError as error:
+            raise ValueError("contentBase64 must be canonical base64") from error
+        return value
+
+
+class SendDocumentAction(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    actionId: StableId
+    type: Literal["SEND_DOCUMENT"]
+    chatId: int
+    document: BytesMediaSource
+    caption: Annotated[str, StringConstraints(max_length=1024)] | None = None
+    replyToMessageId: Annotated[int, Field(ge=0)] | None = None
+
+
 class UnchangedSessionDirective(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -227,7 +257,12 @@ class GatewayEventResponse(BaseModel):
     result: Literal["PROCESSED", "DUPLICATE"]
     session: UnchangedSessionDirective | AcquireSessionDirective | ReleaseSessionDirective
     actions: Annotated[
-        list[SendMessageAction | AnswerCallbackAction | AnswerInlineQueryAction],
+        list[
+            SendMessageAction
+            | SendDocumentAction
+            | AnswerCallbackAction
+            | AnswerInlineQueryAction
+        ],
         Field(max_length=100),
     ]
 

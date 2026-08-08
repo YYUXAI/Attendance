@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import os
 import threading
+import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -51,6 +53,10 @@ def _apply_gateway_provider_migration() -> None:
             cursor.execute(
                 "DELETE FROM gateway_processed_events WHERE event_id LIKE %s",
                 ("evt-attendance-%",),
+            )
+            cursor.execute(
+                "DELETE FROM admin_list WHERE admin_employee_id = %s",
+                ("74808",),
             )
             cursor.execute(
                 "DELETE FROM registrations WHERE tg_id IN (%s, %s) OR employee_id = %s",
@@ -117,6 +123,36 @@ def test_attendance_command_returns_namespaced_menu_action() -> None:
                 ]
             },
         }
+    ]
+
+
+def test_admin_attendance_menu_exposes_namespaced_export_action() -> None:
+    _apply_gateway_provider_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 81001, 81001),
+            )
+            cursor.execute(
+                "INSERT INTO admin_list (admin_employee_id) VALUES (%s)",
+                ("74808",),
+            )
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=_attendance_command_event(),
+    )
+
+    assert response.status_code == 200, response.text
+    keyboard = response.json()["actions"][0]["replyMarkup"]["inlineKeyboard"]
+    assert keyboard[1] == [
+        {"text": "导出", "callbackData": "att:export"},
     ]
 
 
@@ -381,6 +417,32 @@ def _profile_callback_event() -> dict[str, object]:
     assert isinstance(callback, dict)
     callback["id"] = "callback-1101"
     callback["data"] = "att:profile"
+    return event
+
+
+def _export_callback_event(
+    data: str,
+    *,
+    event_number: int,
+    tg_id: int = 81002,
+) -> dict[str, object]:
+    event = _registration_callback_event()
+    event["eventId"] = f"evt-attendance-export-{event_number}"
+    event["receivedAt"] = "2026-08-08T08:00:00Z"
+    telegram_update = event["telegramUpdate"]
+    assert isinstance(telegram_update, dict)
+    telegram_update["update_id"] = event_number
+    callback = telegram_update["callback_query"]
+    assert isinstance(callback, dict)
+    callback["id"] = f"callback-{event_number}"
+    callback["data"] = data
+    sender = callback["from"]
+    assert isinstance(sender, dict)
+    sender["id"] = tg_id
+    message = callback["message"]
+    assert isinstance(message, dict)
+    message["message_id"] = event_number
+    message["chat"] = {"id": tg_id, "type": "private"}
     return event
 
 
@@ -788,6 +850,92 @@ def test_profile_callback_uses_current_shift_and_month_stat_policy() -> None:
     assert "本月缺卡次数：0次" in text
     assert "本月迟到次数：0次" in text
     assert "本月早退次数：0次" in text
+
+
+def test_admin_export_callback_returns_deterministic_gateway_document_bytes() -> None:
+    _apply_gateway_provider_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 81002, 81002),
+            )
+            cursor.execute(
+                "INSERT INTO admin_list (admin_employee_id) VALUES (%s)",
+                ("74808",),
+            )
+    client = _provider_client()
+    headers = {"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"}
+
+    first = client.post(
+        "/integration/gateway/v1/events",
+        headers=headers,
+        json=_export_callback_event(
+            "att:export:today",
+            event_number=1501,
+        ),
+    )
+    second = client.post(
+        "/integration/gateway/v1/events",
+        headers=headers,
+        json=_export_callback_event(
+            "att:export:today",
+            event_number=1502,
+        ),
+    )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    first_document = first.json()["actions"][1]
+    second_document = second.json()["actions"][1]
+    assert first.json()["actions"][0] == {
+        "actionId": "evt-attendance-export-1501.callback",
+        "type": "ANSWER_CALLBACK",
+        "callbackQueryId": "callback-1501",
+    }
+    assert first_document["type"] == "SEND_DOCUMENT"
+    assert first_document["chatId"] == 81002
+    assert first_document["replyToMessageId"] == 1501
+    assert first_document["document"]["source"] == "BYTES"
+    assert first_document["document"]["fileName"] == "2026-08-08.xlsx"
+    assert first_document["document"]["mimeType"] == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    assert first_document["document"]["contentBase64"] == (
+        second_document["document"]["contentBase64"]
+    )
+    body = base64.b64decode(first_document["document"]["contentBase64"], validate=True)
+    with zipfile.ZipFile(io.BytesIO(body)) as workbook:
+        assert workbook.testzip() is None
+        assert "xl/workbook.xml" in workbook.namelist()
+
+
+def test_non_admin_export_callback_fails_explicitly() -> None:
+    _apply_gateway_provider_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 81002, 81002),
+            )
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=_export_callback_event("att:export", event_number=1503),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["actions"][1]["text"] == "无权限操作"
+    assert "replyMarkup" not in response.json()["actions"][1]
 
 
 def test_registered_group_signin_callback_returns_a_fill_input_action() -> None:

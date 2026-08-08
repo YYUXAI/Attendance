@@ -28,7 +28,13 @@ from gateway_provider.contracts import (
 )
 from gateway_provider.checkin_module import is_group_checkin, process_group_checkin
 from gateway_provider.gateway_file_client import GatewayFileReader
+from gateway_provider.export_module import (
+    is_admin,
+    is_export_callback,
+    process_export_callback,
+)
 from gateway_provider.profile_module import profile_text_for_tg_id
+from infra.db import database_url_scope
 from domain.action_drafts import (
     build_back_draft,
     build_checkin_draft,
@@ -62,49 +68,50 @@ class AttendanceGatewayEventModule:
 
     def process_event(self, request: GatewayEventRequest) -> GatewayEventResponse:
         request_hash = _request_hash(request)
-        with psycopg2.connect(self._database_url) as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                    (request.eventId,),
-                )
-                cursor.execute(
-                    """
-                    SELECT request_hash, response_json
-                    FROM gateway_processed_events
-                    WHERE event_id = %s
-                    """,
-                    (request.eventId,),
-                )
-                existing = cursor.fetchone()
-                if existing is not None:
-                    stored_hash, stored_response = existing
-                    if stored_hash != request_hash:
-                        raise GatewayEventIdConflictError(request.eventId)
-                    return GatewayEventResponse.model_validate(
-                        {**stored_response, "result": "DUPLICATE"},
-                        strict=True,
+        with database_url_scope(self._database_url):
+            with psycopg2.connect(self._database_url) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (request.eventId,),
                     )
+                    cursor.execute(
+                        """
+                        SELECT request_hash, response_json
+                        FROM gateway_processed_events
+                        WHERE event_id = %s
+                        """,
+                        (request.eventId,),
+                    )
+                    existing = cursor.fetchone()
+                    if existing is not None:
+                        stored_hash, stored_response = existing
+                        if stored_hash != request_hash:
+                            raise GatewayEventIdConflictError(request.eventId)
+                        return GatewayEventResponse.model_validate(
+                            {**stored_response, "result": "DUPLICATE"},
+                            strict=True,
+                        )
 
-                response = _process_attendance_event(
-                    request,
-                    cursor,
-                    self._file_reader,
-                )
-                response_value = event_response_value(response)
-                cursor.execute(
-                    """
-                    INSERT INTO gateway_processed_events (
-                        event_id,
-                        request_hash,
-                        response_json,
-                        processed_at
+                    response = _process_attendance_event(
+                        request,
+                        cursor,
+                        self._file_reader,
                     )
-                    VALUES (%s, %s, %s, clock_timestamp())
-                    """,
-                    (request.eventId, request_hash, Json(response_value)),
-                )
-                return response
+                    response_value = event_response_value(response)
+                    cursor.execute(
+                        """
+                        INSERT INTO gateway_processed_events (
+                            event_id,
+                            request_hash,
+                            response_json,
+                            processed_at
+                        )
+                        VALUES (%s, %s, %s, clock_timestamp())
+                        """,
+                        (request.eventId, request_hash, Json(response_value)),
+                    )
+                    return response
 
 
 def _request_hash(request: GatewayEventRequest) -> str:
@@ -129,6 +136,8 @@ def _process_attendance_event(
         return _answer_inline_query(request, update)
     if isinstance(update, TelegramCallbackUpdate):
         callback_data = update.callback_query.data
+        if is_export_callback(callback_data):
+            return process_export_callback(request, cursor, update)
         if callback_data == "att:register":
             return _begin_registration(request, cursor, update)
         if callback_data == "att:profile":
@@ -205,6 +214,23 @@ def _process_attendance_event(
     ):
         raise GatewayRouteOwnershipMismatchError()
 
+    menu_rows = [
+        [
+            InlineKeyboardButton(
+                text="注册",
+                callbackData="att:register",
+            ),
+            InlineKeyboardButton(
+                text="个人",
+                callbackData="att:profile",
+            ),
+        ]
+    ]
+    if is_admin(cursor, tg_id=message.chat.id):
+        menu_rows.append(
+            [InlineKeyboardButton(text="导出", callbackData="att:export")]
+        )
+
     return GatewayEventResponse(
         protocolVersion="1.0",
         eventId=request.eventId,
@@ -217,20 +243,7 @@ def _process_attendance_event(
                 chatId=message.chat.id,
                 replyToMessageId=message.message_id,
                 text="考勤功能",
-                replyMarkup=InlineKeyboardMarkup(
-                    inlineKeyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text="注册",
-                                callbackData="att:register",
-                            ),
-                            InlineKeyboardButton(
-                                text="个人",
-                                callbackData="att:profile",
-                            ),
-                        ]
-                    ]
-                ),
+                replyMarkup=InlineKeyboardMarkup(inlineKeyboard=menu_rows),
             )
         ],
     )

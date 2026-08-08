@@ -78,6 +78,11 @@ CREATE TABLE IF NOT EXISTS public.organizations (
     highest_responsible_employee_id TEXT
 );
 
+CREATE TABLE IF NOT EXISTS public.admin_list (
+    id BIGSERIAL PRIMARY KEY,
+    admin_employee_id VARCHAR(64) NOT NULL UNIQUE
+);
+
 CREATE TABLE IF NOT EXISTS public.shifts (
     id BIGSERIAL PRIMARY KEY,
     checkin_time TIME,
@@ -162,6 +167,13 @@ CREATE TABLE IF NOT EXISTS public.temporary_leave_records (
     status VARCHAR(16) NOT NULL DEFAULT 'OPEN' CHECK (
         status IN ('OPEN', 'CLOSED')
     )
+);
+
+CREATE TABLE IF NOT EXISTS public.effective_leave_days (
+    id BIGSERIAL PRIMARY KEY,
+    employee_id VARCHAR(64) NOT NULL,
+    leave_date DATE NOT NULL,
+    UNIQUE (employee_id, leave_date)
 );
 
 CREATE INDEX IF NOT EXISTS idx_temporary_leave_records_open

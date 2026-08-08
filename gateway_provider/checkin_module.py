@@ -109,6 +109,7 @@ def process_group_checkin(
         caption=message.caption,
         chat_id=message.chat.id,
         chat_title=message.chat.title,
+        registration=registration,
     )
     if isinstance(resolved, ServiceResult):
         return _reply(request, update, resolved.message)
@@ -217,6 +218,7 @@ def _resolve_checkin(
     caption: str | None,
     chat_id: int,
     chat_title: str | None,
+    registration: registrations_repo.RegistrationRow,
 ) -> ServiceResult | checkin_ai_orchestrator.CheckinAiResolveResult:
     config = load_checkin_ai_config()
     if not config.enabled:
@@ -236,6 +238,7 @@ def _resolve_checkin(
             caption=caption,
             chat_id=chat_id,
             chat_title=chat_title,
+            registration=registration,
         )
     )
 

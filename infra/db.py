@@ -3,11 +3,30 @@ from __future__ import annotations
 import os
 import sys
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Iterator
 
 import psycopg2
 from psycopg2.extensions import connection as Connection
 from psycopg2.extensions import cursor as Cursor
+
+
+_DATABASE_URL_SCOPE: ContextVar[str | None] = ContextVar(
+    "attendance_database_url_scope",
+    default=None,
+)
+
+
+@contextmanager
+def database_url_scope(database_url: str) -> Iterator[None]:
+    resolved = database_url.strip()
+    if not resolved:
+        raise ValueError("database_url scope is required")
+    token = _DATABASE_URL_SCOPE.set(resolved)
+    try:
+        yield
+    finally:
+        _DATABASE_URL_SCOPE.reset(token)
 
 
 def _get_env(name: str) -> str | None:
@@ -42,6 +61,9 @@ def _raise_friendly_connect_error(
 
 
 def get_connection() -> Connection:
+    scoped_database_url = _DATABASE_URL_SCOPE.get()
+    if scoped_database_url is not None:
+        return psycopg2.connect(scoped_database_url, connect_timeout=10)
     host = _get_env("DB_HOST")
     port = _get_env("DB_PORT")
     name = _get_env("DB_NAME")
