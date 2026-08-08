@@ -19,6 +19,10 @@ from gateway_provider.event_module import (
     GatewayRouteOwnershipMismatchError,
 )
 from gateway_provider.gateway_file_client import GatewayFileReader
+from gateway_provider.health import (
+    check_database_liveness,
+    read_provider_readiness,
+)
 from gateway_provider.summary_module import read_attendance_summary
 
 
@@ -56,6 +60,25 @@ def create_attendance_gateway_provider_app(
         ),
     )
     app = FastAPI(title="Attendance Gateway Provider", version="1.0.0")
+
+    @app.get("/healthz")
+    async def health() -> JSONResponse:
+        healthy = await run_in_threadpool(
+            check_database_liveness,
+            config.database_url,
+        )
+        return JSONResponse(
+            {"ok": healthy, "status": "HEALTHY" if healthy else "UNHEALTHY"},
+            status_code=200 if healthy else 503,
+        )
+
+    @app.get("/readyz")
+    async def readiness() -> JSONResponse:
+        result = await run_in_threadpool(
+            read_provider_readiness,
+            config.database_url,
+        )
+        return JSONResponse(result, status_code=200 if result["ok"] else 503)
 
     @app.post("/integration/gateway/v1/events")
     async def process_gateway_event(

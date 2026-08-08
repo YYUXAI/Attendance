@@ -80,6 +80,70 @@ def _apply_gateway_provider_migration() -> None:
             )
 
 
+def _apply_provider_health_migrations() -> None:
+    _apply_gateway_provider_migration()
+    migration = (
+        Path(__file__).parent / "migrations/0005_webapp_sessions.sql"
+    ).read_text(encoding="utf-8")
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(migration)
+
+
+def test_provider_health_and_readiness_verify_owned_database() -> None:
+    _apply_provider_health_migrations()
+    client = _provider_client()
+
+    health = client.get("/healthz")
+    readiness = client.get("/readyz")
+
+    assert health.status_code == 200
+    assert health.json() == {"ok": True, "status": "HEALTHY"}
+    assert readiness.status_code == 200
+    assert readiness.json() == {
+        "ok": True,
+        "status": "READY",
+        "database": True,
+        "requiredTables": {
+            "gatewayProcessedEvents": True,
+            "businessTruth": True,
+            "webappSessions": True,
+        },
+    }
+
+
+def test_provider_health_fails_closed_when_database_is_unavailable() -> None:
+    app = create_attendance_gateway_provider_app(
+        AttendanceGatewayProviderConfig(
+            database_url=(
+                "postgresql://health:health@127.0.0.1:1/unavailable"
+            ),
+            gateway_to_attendance_bearer_token=_TEST_GATEWAY_CREDENTIAL,
+            gateway_internal_base_url=_TEST_UNUSED_GATEWAY_BASE_URL,
+            attendance_to_gateway_bearer_token=(
+                _TEST_ATTENDANCE_TO_GATEWAY_CREDENTIAL
+            ),
+        )
+    )
+
+    health = TestClient(app).get("/healthz")
+    readiness = TestClient(app).get("/readyz")
+
+    assert health.status_code == 503
+    assert health.json() == {"ok": False, "status": "UNHEALTHY"}
+    assert readiness.status_code == 503
+    assert readiness.json() == {
+        "ok": False,
+        "status": "NOT_READY",
+        "database": False,
+        "requiredTables": {
+            "gatewayProcessedEvents": False,
+            "businessTruth": False,
+            "webappSessions": False,
+        },
+    }
+
+
 def test_attendance_command_returns_namespaced_menu_action() -> None:
     _apply_gateway_provider_migration()
     app = create_attendance_gateway_provider_app(
