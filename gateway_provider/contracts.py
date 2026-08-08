@@ -59,16 +59,33 @@ class TelegramMessageUpdate(BaseModel):
     message: TelegramMessage
 
 
+class TelegramCallbackQuery(BaseModel):
+    model_config = ConfigDict(extra="allow", strict=True, populate_by_name=True)
+
+    id: str
+    sender: TelegramUser = Field(alias="from")
+    message: TelegramMessage
+    chat_instance: str
+    data: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+
+
+class TelegramCallbackUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    update_id: Annotated[int, Field(ge=0)]
+    callback_query: TelegramCallbackQuery
+
+
 class GatewayEventRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     protocolVersion: Literal["1.0"]
     eventId: StableId
     target: Literal["ATTENDANCE"]
-    routeReason: Literal["COMMAND"]
+    routeReason: Literal["COMMAND", "CALLBACK_NAMESPACE", "CONVERSATION_SESSION"]
     conversationId: Annotated[str, StringConstraints(min_length=1, max_length=256)]
     receivedAt: str
-    telegramUpdate: TelegramMessageUpdate
+    telegramUpdate: TelegramMessageUpdate | TelegramCallbackUpdate
 
     @field_validator("receivedAt")
     @classmethod
@@ -115,14 +132,38 @@ class UnchangedSessionDirective(BaseModel):
     directive: Literal["UNCHANGED"]
 
 
+class AcquireSessionDirective(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    directive: Literal["ACQUIRE"]
+    ttlSeconds: Annotated[int, Field(ge=1, le=86400)]
+
+
+class ReleaseSessionDirective(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    directive: Literal["RELEASE"]
+
+
+class AnswerCallbackAction(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    actionId: StableId
+    type: Literal["ANSWER_CALLBACK"]
+    callbackQueryId: Annotated[str, StringConstraints(min_length=1)]
+
+
 class GatewayEventResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     protocolVersion: Literal["1.0"]
     eventId: StableId
     result: Literal["PROCESSED", "DUPLICATE"]
-    session: UnchangedSessionDirective
-    actions: Annotated[list[SendMessageAction], Field(max_length=100)]
+    session: UnchangedSessionDirective | AcquireSessionDirective | ReleaseSessionDirective
+    actions: Annotated[
+        list[SendMessageAction | AnswerCallbackAction],
+        Field(max_length=100),
+    ]
 
 
 def event_request_canonical_value(request: GatewayEventRequest) -> dict[str, object]:

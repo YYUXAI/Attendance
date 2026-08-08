@@ -4,6 +4,8 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from psycopg2.extensions import cursor as Cursor
+
 from domain.registration.rules import parse_register_input
 from domain.shared.result import ServiceResult
 from repositories import registration_sessions_repo
@@ -23,15 +25,15 @@ _REGISTER_SESSION_TTL = timedelta(minutes=15)
 
 
 def mark_waiting_register_input(
+    cursor: Cursor,
     *,
-    bot_owner: str,
     tg_id: int,
     private_chat_id: int,
     now: datetime | None = None,
 ) -> None:
     resolved_now = _resolved_now(now)
     registration_sessions_repo.begin_session(
-        bot_owner=bot_owner,
+        cursor,
         tg_id=tg_id,
         private_chat_id=private_chat_id,
         now=resolved_now,
@@ -40,27 +42,27 @@ def mark_waiting_register_input(
 
 
 def is_waiting_register_input(
+    cursor: Cursor,
     *,
-    bot_owner: str,
     tg_id: int,
     private_chat_id: int,
     now: datetime | None = None,
 ) -> bool:
     return registration_sessions_repo.is_active(
-        bot_owner=bot_owner,
+        cursor,
         tg_id=tg_id,
         private_chat_id=private_chat_id,
         now=_resolved_now(now),
     )
 
 
-def clear_waiting_register_input(*, bot_owner: str, tg_id: int) -> None:
-    registration_sessions_repo.clear_session(bot_owner=bot_owner, tg_id=tg_id)
+def clear_waiting_register_input(cursor: Cursor, *, tg_id: int) -> None:
+    registration_sessions_repo.clear_session(cursor, tg_id=tg_id)
 
 
 def preview_register(
+    cursor: Cursor,
     *,
-    bot_owner: str,
     tg_id: int,
     private_chat_id: int,
     text: str,
@@ -70,7 +72,7 @@ def preview_register(
     parsed = parse_register_input(text)
     if not parsed:
         registration_sessions_repo.touch_invalid_input(
-            bot_owner=bot_owner,
+            cursor,
             tg_id=tg_id,
             private_chat_id=private_chat_id,
             now=resolved_now,
@@ -89,7 +91,7 @@ def preview_register(
     english_name, employee_id = parsed
     token = secrets.token_urlsafe(16)
     expires_at = registration_sessions_repo.save_preview(
-        bot_owner=bot_owner,
+        cursor,
         tg_id=tg_id,
         private_chat_id=private_chat_id,
         english_name=english_name,
@@ -115,15 +117,15 @@ def preview_register(
 
 
 def cancel_preview(
+    cursor: Cursor,
     *,
-    bot_owner: str,
     token: str,
     tg_id: int,
     private_chat_id: int,
     now: datetime | None = None,
 ) -> ServiceResult:
     cancelled = registration_sessions_repo.cancel_preview(
-        bot_owner=bot_owner,
+        cursor,
         token=token,
         tg_id=tg_id,
         private_chat_id=private_chat_id,
@@ -139,8 +141,8 @@ def cancel_preview(
 
 
 def confirm_register(
+    cursor: Cursor,
     *,
-    bot_owner: str,
     token: str,
     tg_id: int,
     registered_chat_id: int,
@@ -148,7 +150,7 @@ def confirm_register(
     now: datetime | None = None,
 ) -> ServiceResult:
     result = registration_sessions_repo.confirm_and_bind(
-        bot_owner=bot_owner,
+        cursor,
         token=token,
         tg_id=tg_id,
         private_chat_id=registered_chat_id,
@@ -195,15 +197,15 @@ def confirm_register(
 
 
 def get_preview(
+    cursor: Cursor,
     *,
-    bot_owner: str,
     token: str,
     tg_id: int,
     private_chat_id: int,
     now: datetime | None = None,
 ) -> RegisterPreview | None:
     row = registration_sessions_repo.get_preview(
-        bot_owner=bot_owner,
+        cursor,
         token=token,
         tg_id=tg_id,
         private_chat_id=private_chat_id,

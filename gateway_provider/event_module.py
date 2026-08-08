@@ -4,18 +4,28 @@ import hashlib
 import json
 
 import psycopg2
+from psycopg2.extensions import cursor as Cursor
 from psycopg2.extras import Json
 
 from gateway_provider.contracts import (
+    AcquireSessionDirective,
+    AnswerCallbackAction,
     GatewayEventRequest,
     GatewayEventResponse,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    ReleaseSessionDirective,
     SendMessageAction,
+    TelegramCallbackUpdate,
+    TelegramMessageUpdate,
     UnchangedSessionDirective,
     event_request_canonical_value,
     event_response_value,
 )
+from gateway_provider.profile_module import profile_text_for_tg_id
+from repositories import registrations_repo
+from services import register_service
+from services.register_service import RegisterPreview
 
 
 class GatewayEventIdConflictError(RuntimeError):
@@ -58,7 +68,7 @@ class AttendanceGatewayEventModule:
                         strict=True,
                     )
 
-                response = _process_attendance_command(request)
+                response = _process_attendance_event(request, cursor)
                 response_value = event_response_value(response)
                 cursor.execute(
                     """
@@ -85,9 +95,42 @@ def _request_hash(request: GatewayEventRequest) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
-def _process_attendance_command(request: GatewayEventRequest) -> GatewayEventResponse:
-    message = request.telegramUpdate.message
-    if message.chat.type != "private" or _command_name(message.text) != "/attendance":
+def _process_attendance_event(
+    request: GatewayEventRequest,
+    cursor: Cursor,
+) -> GatewayEventResponse:
+    update = request.telegramUpdate
+    if isinstance(update, TelegramCallbackUpdate):
+        callback_data = update.callback_query.data
+        if callback_data == "att:register":
+            return _begin_registration(request, cursor, update)
+        if callback_data == "att:profile":
+            return _show_profile(request, cursor, update)
+        for operation in ("confirm", "cancel"):
+            prefix = f"att:register:{operation}:"
+            if callback_data.startswith(prefix):
+                token = callback_data.removeprefix(prefix)
+                if not token:
+                    raise GatewayRouteOwnershipMismatchError()
+                return _finish_registration(
+                    request,
+                    cursor,
+                    update,
+                    operation=operation,
+                    token=token,
+                )
+        raise GatewayRouteOwnershipMismatchError()
+
+    if not isinstance(update, TelegramMessageUpdate):
+        raise GatewayRouteOwnershipMismatchError()
+    message = update.message
+    if request.routeReason == "CONVERSATION_SESSION":
+        return _process_registration_text(request, cursor, update)
+    if (
+        request.routeReason != "COMMAND"
+        or message.chat.type != "private"
+        or _command_name(message.text) != "/attendance"
+    ):
         raise GatewayRouteOwnershipMismatchError()
 
     return GatewayEventResponse(
@@ -117,6 +160,242 @@ def _process_attendance_command(request: GatewayEventRequest) -> GatewayEventRes
                     ]
                 ),
             )
+        ],
+    )
+
+
+def _process_registration_text(
+    request: GatewayEventRequest,
+    cursor: Cursor,
+    update: TelegramMessageUpdate,
+) -> GatewayEventResponse:
+    message = update.message
+    sender = message.sender
+    if message.chat.type != "private" or sender is None or message.text is None:
+        raise GatewayRouteOwnershipMismatchError()
+    if not register_service.is_waiting_register_input(
+        cursor,
+        tg_id=sender.id,
+        private_chat_id=message.chat.id,
+    ):
+        return _single_message_response(
+            request,
+            message.chat.id,
+            message.message_id,
+            "注册会话已超时，请重新点击【注册】。",
+            ReleaseSessionDirective(directive="RELEASE"),
+        )
+
+    preview = register_service.preview_register(
+        cursor,
+        tg_id=sender.id,
+        private_chat_id=message.chat.id,
+        text=message.text,
+    )
+    if not isinstance(preview, RegisterPreview):
+        return _single_message_response(
+            request,
+            message.chat.id,
+            message.message_id,
+            preview.message,
+            AcquireSessionDirective(directive="ACQUIRE", ttlSeconds=900),
+        )
+    return GatewayEventResponse(
+        protocolVersion="1.0",
+        eventId=request.eventId,
+        result="PROCESSED",
+        session=AcquireSessionDirective(directive="ACQUIRE", ttlSeconds=900),
+        actions=[
+            SendMessageAction(
+                actionId=f"{request.eventId}.reply",
+                type="SEND_MESSAGE",
+                chatId=message.chat.id,
+                replyToMessageId=message.message_id,
+                text=(
+                    "请确认：\n\n"
+                    f"英文名：{preview.english_name}\n"
+                    f"工号：{preview.employee_id}\n"
+                ),
+                replyMarkup=InlineKeyboardMarkup(
+                    inlineKeyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="确认",
+                                callbackData=(
+                                    f"att:register:confirm:{preview.token}"
+                                ),
+                            ),
+                            InlineKeyboardButton(
+                                text="取消",
+                                callbackData=(
+                                    f"att:register:cancel:{preview.token}"
+                                ),
+                            ),
+                        ]
+                    ]
+                ),
+            )
+        ],
+    )
+
+
+def _single_message_response(
+    request: GatewayEventRequest,
+    chat_id: int,
+    reply_to_message_id: int,
+    text: str,
+    session: AcquireSessionDirective | ReleaseSessionDirective,
+) -> GatewayEventResponse:
+    return GatewayEventResponse(
+        protocolVersion="1.0",
+        eventId=request.eventId,
+        result="PROCESSED",
+        session=session,
+        actions=[
+            SendMessageAction(
+                actionId=f"{request.eventId}.reply",
+                type="SEND_MESSAGE",
+                chatId=chat_id,
+                replyToMessageId=reply_to_message_id,
+                text=text,
+            )
+        ],
+    )
+
+
+def _begin_registration(
+    request: GatewayEventRequest,
+    cursor: Cursor,
+    update: TelegramCallbackUpdate,
+) -> GatewayEventResponse:
+    callback = update.callback_query
+    message = callback.message
+    if message.chat.type != "private":
+        raise GatewayRouteOwnershipMismatchError()
+    tg_id = callback.sender.id
+    if registrations_repo.get_by_tg_id_cur(cursor, tg_id=tg_id) is not None:
+        register_service.clear_waiting_register_input(cursor, tg_id=tg_id)
+        session = ReleaseSessionDirective(directive="RELEASE")
+        text = "您已经注册过了"
+    else:
+        register_service.mark_waiting_register_input(
+            cursor,
+            tg_id=tg_id,
+            private_chat_id=message.chat.id,
+        )
+        session = AcquireSessionDirective(directive="ACQUIRE", ttlSeconds=900)
+        text = (
+            "请私聊发送一行（不要复制「请输入」「示例」等提示）：\n"
+            "英文名$工号\n"
+            "例如：GRANDFOR$74808"
+        )
+    return GatewayEventResponse(
+        protocolVersion="1.0",
+        eventId=request.eventId,
+        result="PROCESSED",
+        session=session,
+        actions=[
+            AnswerCallbackAction(
+                actionId=f"{request.eventId}.callback",
+                type="ANSWER_CALLBACK",
+                callbackQueryId=callback.id,
+            ),
+            SendMessageAction(
+                actionId=f"{request.eventId}.reply",
+                type="SEND_MESSAGE",
+                chatId=message.chat.id,
+                replyToMessageId=message.message_id,
+                text=text,
+            ),
+        ],
+    )
+
+
+def _finish_registration(
+    request: GatewayEventRequest,
+    cursor: Cursor,
+    update: TelegramCallbackUpdate,
+    *,
+    operation: str,
+    token: str,
+) -> GatewayEventResponse:
+    callback = update.callback_query
+    message = callback.message
+    if message.chat.type != "private":
+        raise GatewayRouteOwnershipMismatchError()
+
+    if operation == "confirm":
+        result = register_service.confirm_register(
+            cursor,
+            token=token,
+            tg_id=callback.sender.id,
+            registered_chat_id=message.chat.id,
+            tg_username=callback.sender.username,
+        )
+    elif operation == "cancel":
+        result = register_service.cancel_preview(
+            cursor,
+            token=token,
+            tg_id=callback.sender.id,
+            private_chat_id=message.chat.id,
+        )
+    else:
+        raise GatewayRouteOwnershipMismatchError()
+
+    return GatewayEventResponse(
+        protocolVersion="1.0",
+        eventId=request.eventId,
+        result="PROCESSED",
+        session=ReleaseSessionDirective(directive="RELEASE"),
+        actions=[
+            AnswerCallbackAction(
+                actionId=f"{request.eventId}.callback",
+                type="ANSWER_CALLBACK",
+                callbackQueryId=callback.id,
+            ),
+            SendMessageAction(
+                actionId=f"{request.eventId}.reply",
+                type="SEND_MESSAGE",
+                chatId=message.chat.id,
+                replyToMessageId=message.message_id,
+                text=result.message,
+            ),
+        ],
+    )
+
+
+def _show_profile(
+    request: GatewayEventRequest,
+    cursor: Cursor,
+    update: TelegramCallbackUpdate,
+) -> GatewayEventResponse:
+    callback = update.callback_query
+    message = callback.message
+    if message.chat.type != "private":
+        raise GatewayRouteOwnershipMismatchError()
+    register_service.clear_waiting_register_input(
+        cursor,
+        tg_id=callback.sender.id,
+    )
+    text = profile_text_for_tg_id(cursor, tg_id=callback.sender.id)
+    return GatewayEventResponse(
+        protocolVersion="1.0",
+        eventId=request.eventId,
+        result="PROCESSED",
+        session=ReleaseSessionDirective(directive="RELEASE"),
+        actions=[
+            AnswerCallbackAction(
+                actionId=f"{request.eventId}.callback",
+                type="ANSWER_CALLBACK",
+                callbackQueryId=callback.id,
+            ),
+            SendMessageAction(
+                actionId=f"{request.eventId}.reply",
+                type="SEND_MESSAGE",
+                chatId=message.chat.id,
+                replyToMessageId=message.message_id,
+                text=text,
+            ),
         ],
     )
 

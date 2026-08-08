@@ -6,12 +6,10 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message, User
 
-from infra.bot_owner import load_attendance_bot_owner
 from keyboards.actions_menu import reply_actions_menu, reply_group_single_fill_menu
 from keyboards.main_menu import GROUP_REPLY_MENU_TEXTS
 from repositories import registrations_repo
 from repositories.admin_list_repo import is_admin_by_tg_id
-from services import register_service
 from services.leave_flow_guard import check_can_back, check_can_leave
 
 _GROUP_BOTTOM_ACTION = {
@@ -27,11 +25,6 @@ log = logging.getLogger(__name__)
 
 async def _send_actions_menu(message: Message, *, user: User | None = None) -> None:
     user = user or message.from_user
-    if message.chat.type == "private" and user:
-        register_service.clear_waiting_register_input(
-            bot_owner=load_attendance_bot_owner(),
-            tg_id=int(user.id),
-        )
     is_admin = is_admin_by_tg_id(tg_id=int(user.id)) if user else False
     await reply_actions_menu(
         message=message,

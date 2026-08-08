@@ -19,19 +19,19 @@ def build_private_actions_inline(
     """私聊：注册/个人；管理员另有导出/班表（班表一点即开 Web App）。"""
     rows = [
         [
-            InlineKeyboardButton(text="注册", callback_data="reg:begin"),
-            InlineKeyboardButton(text="个人", callback_data="profile:myinfo"),
+            InlineKeyboardButton(text="注册", callback_data="att:register"),
+            InlineKeyboardButton(text="个人", callback_data="att:profile"),
         ],
     ]
     if is_admin:
         shift_btn = (
             InlineKeyboardButton(text="班表", web_app=WebAppInfo(url=shift_web_app_url))
             if shift_web_app_url
-            else InlineKeyboardButton(text="班表", callback_data="act:shift")
+            else InlineKeyboardButton(text="班表", callback_data="att:shift")
         )
         rows.append(
             [
-                InlineKeyboardButton(text="导出", callback_data="act:export"),
+                InlineKeyboardButton(text="导出", callback_data="att:export"),
                 shift_btn,
             ]
         )

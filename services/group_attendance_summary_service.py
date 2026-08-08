@@ -430,7 +430,6 @@ def compute_month_stats_for_employee(
     - 缺卡：当日应打未打齐（含跨夜班规则）；月休日不计
     只统计 as_of_local 及之前的日期，不统计当月未来日期。
     """
-    tz = ZoneInfo(tz_name)
     last_day = min(month_end, as_of_local)
     if last_day < month_start:
         return EmployeeMonthAttendanceStats(0, 0, 0, 0)
@@ -446,6 +445,45 @@ def compute_month_stats_for_employee(
         start_utc=start_utc,
         end_utc=end_utc,
     )
+    resolved_calendar = calendar_map
+    if resolved_calendar is None:
+        resolved_calendar = load_calendar_map(
+            year_month=str(year_month),
+            employee_ids=[str(employee_id)],
+        )
+    return compute_month_stats_from_punches(
+        employee_id=employee_id,
+        month_start=month_start,
+        month_end=month_end,
+        as_of_local=as_of_local,
+        checkin=checkin,
+        checkout=checkout,
+        rest_days_raw=rest_days_raw,
+        tz_name=tz_name,
+        calendar_map=resolved_calendar,
+        punches=all_punches,
+    )
+
+
+def compute_month_stats_from_punches(
+    *,
+    employee_id: str,
+    month_start: date,
+    month_end: date,
+    as_of_local: date,
+    checkin: time,
+    checkout: time,
+    rest_days_raw: str,
+    tz_name: str,
+    calendar_map: dict[tuple[str, date], DailyShift] | None,
+    punches: Iterable[ClockPunch],
+) -> EmployeeMonthAttendanceStats:
+    """Pure month-stat policy over caller-owned attendance facts."""
+    tz = ZoneInfo(tz_name)
+    last_day = min(month_end, as_of_local)
+    if last_day < month_start:
+        return EmployeeMonthAttendanceStats(0, 0, 0, 0)
+    all_punches = list(punches)
     row = {
         "employee_id": str(employee_id),
         "tz": tz_name,
@@ -455,8 +493,6 @@ def compute_month_stats_for_employee(
         "shift_range": "",
     }
     cal = calendar_map
-    if cal is None:
-        cal = load_calendar_map(year_month=str(year_month), employee_ids=[str(employee_id)])
 
     attendance_days = 0
     missing_count = 0
