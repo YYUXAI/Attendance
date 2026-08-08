@@ -1,6 +1,8 @@
 # Unresolved Stub / Mock / No-op / Placeholder List
 ## Summary
-融合服务重载与验收复跑后，仍有两个旧 Attendance 业务问题被本轮 C 类范围明确禁止修复；它们不是双 Bot 融合引入的问题，不阻塞统一路由边界。
+Gateway clean-break V1 新增 `gateway_provider/`、`gateway_processed_events` migration 和公开 HTTP 行为测试；该新增切片无 Stub、Mock、No-op、Placeholder、Hardcode、默认成功或吞错。
+
+旧 Attendance Telegram ownership 中仍有以下两个已确认问题。它们阻塞最终 clean-break 验收，必须在 Attendance 完整迁移切片删除或以当前业务规则完整实现。
 ## Items
 ### 1. 已下线 leave/tleave/QC 旧 callback 保持 no-op
 - 类型：No-op
@@ -11,7 +13,7 @@
 - 当前影响：统一壳不再声明或转发这些旧 callback；它们只保留在旧 Attendance 自身代码中。
 - 风险等级：Low
 - 建议后续处理：独立业务目标中决定删除旧按钮协议，或按新规则恢复完整 handler。
-- 是否阻塞需求达成：否
+- 是否阻塞需求达成：是
 
 ### 2. 非允许考勤群仍可能返回旧的成功文案
 - 类型：默认成功
@@ -22,4 +24,4 @@
 - 当前影响：不影响双 Bot 来源幂等，但可能让旧 Attendance 场景产生误导提示。
 - 风险等级：Medium
 - 建议后续处理：另立 Attendance 业务目标，确定失败提示及审计策略后修复。
-- 是否阻塞需求达成：否
+- 是否阻塞需求达成：是
