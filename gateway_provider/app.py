@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import logging
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse
@@ -12,6 +13,8 @@ from starlette.concurrency import run_in_threadpool
 from gateway_provider.contracts import (
     GatewayDeliveryReceiptRequest,
     GatewayEventRequest,
+    PrivateRegistrationSessionEndRequest,
+    PrivateRegistrationSessionEndResponse,
     event_response_value,
 )
 from gateway_provider.event_module import (
@@ -29,7 +32,13 @@ from gateway_provider.receipt_module import (
     GatewayReceiptActionNotFoundError,
     GatewayReceiptIdConflictError,
 )
-from gateway_provider.summary_module import read_attendance_summary
+from gateway_provider.registration_session_module import (
+    end_private_registration_session,
+)
+from gateway_provider.summary_module import (
+    read_attendance_summary,
+    unavailable_attendance_summary,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +50,7 @@ class AttendanceGatewayProviderConfig:
     gateway_to_attendance_bearer_token: str
     gateway_internal_base_url: str
     attendance_to_gateway_bearer_token: str
+    shift_web_app_public_url: str
 
     def __post_init__(self) -> None:
         if not self.database_url.strip():
@@ -53,6 +63,20 @@ class AttendanceGatewayProviderConfig:
             self.attendance_to_gateway_bearer_token
         ):
             raise ValueError("Gateway credentials must be direction-specific")
+        public_url = self.shift_web_app_public_url.strip().rstrip("/")
+        parsed_public_url = urlsplit(public_url)
+        if (
+            parsed_public_url.scheme != "https"
+            or not parsed_public_url.netloc
+            or parsed_public_url.username is not None
+            or parsed_public_url.password is not None
+            or parsed_public_url.query
+            or parsed_public_url.fragment
+        ):
+            raise ValueError(
+                "shift_web_app_public_url must be an HTTPS base URL"
+            )
+        object.__setattr__(self, "shift_web_app_public_url", public_url)
 
 
 def create_attendance_gateway_provider_app(
@@ -64,6 +88,7 @@ def create_attendance_gateway_provider_app(
             base_url=config.gateway_internal_base_url,
             bearer_token=config.attendance_to_gateway_bearer_token,
         ),
+        shift_web_app_public_url=config.shift_web_app_public_url,
     )
     receipt_module = AttendanceGatewayReceiptModule(config.database_url)
     app = FastAPI(title="Attendance Gateway Provider", version="1.0.0")
@@ -225,12 +250,51 @@ def create_attendance_gateway_provider_app(
                 "Attendance summary read failed",
                 extra={"error_type": type(error).__name__},
             )
+            summary = unavailable_attendance_summary()
+        return JSONResponse(
+            summary.model_dump(mode="json", exclude_none=True),
+            status_code=200,
+        )
+
+    @app.post("/integration/gateway/v1/private-registration-session/end")
+    async def end_gateway_private_registration_session(
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> JSONResponse:
+        if not _bearer_token_matches(
+            authorization,
+            expected=config.gateway_to_attendance_bearer_token,
+        ):
+            return _error_response(
+                status_code=401,
+                code="UNAUTHORIZED",
+                message="Gateway 凭据无效。",
+            )
+        try:
+            payload = PrivateRegistrationSessionEndRequest.model_validate(
+                await request.json(),
+                strict=True,
+            )
+        except (ValueError, ValidationError) as error:
+            return _validation_error_response(error)
+        try:
+            await run_in_threadpool(
+                end_private_registration_session,
+                database_url=config.database_url,
+                telegram_user_id=int(payload.telegramUserId),
+            )
+        except Exception as error:
+            logger.error(
+                "Attendance registration session end failed",
+                extra={"error_type": type(error).__name__},
+            )
             return _error_response(
                 status_code=500,
                 code="INTERNAL_ERROR",
-                message="Attendance 摘要读取失败。",
+                message="Attendance 注册会话结束失败。",
             )
-        return JSONResponse(summary.model_dump(mode="json"), status_code=200)
+        response = PrivateRegistrationSessionEndResponse()
+        return JSONResponse(response.model_dump(mode="json"), status_code=200)
 
     return app
 

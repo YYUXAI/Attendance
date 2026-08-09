@@ -16,6 +16,8 @@ from gateway_provider.contracts import (
     GatewayEventRequest,
     GatewayEventResponse,
     SendMessageAction,
+    TelegramEditedMessageUpdate,
+    TelegramMessage,
     TelegramMessageUpdate,
     UnchangedSessionDirective,
 )
@@ -35,10 +37,10 @@ from services.checkin_user_message import user_message_for_checkin_error
 def process_group_checkin(
     request: GatewayEventRequest,
     cursor: Cursor,
-    update: TelegramMessageUpdate,
+    update: TelegramMessageUpdate | TelegramEditedMessageUpdate,
     file_reader: GatewayFileReader,
 ) -> GatewayEventResponse:
-    message = update.message
+    message = _checkin_message(update)
     sender = message.sender
     if sender is None:
         return _reply(request, update, "打卡失败：无法识别发送者。")
@@ -47,7 +49,10 @@ def process_group_checkin(
         return _reply(
             request,
             update,
-            "打卡未处理：请使用签到/签退模板，并在图片说明中保留事项。",
+            (
+                "打卡未处理：请用「↗ 签到/签退」模板发送，"
+                "或确保图片说明里包含「签到」或「签退」。"
+            ),
         )
     if len(request.telegramFiles) != 1:
         return _reply(request, update, "打卡失败：附件引用无效，请重新发送截图。")
@@ -158,8 +163,10 @@ def process_group_checkin(
     return _reply(request, update, text)
 
 
-def is_group_checkin(update: TelegramMessageUpdate) -> bool:
-    message = update.message
+def is_group_checkin(
+    update: TelegramMessageUpdate | TelegramEditedMessageUpdate,
+) -> bool:
+    message = _checkin_message(update)
     return (
         message.chat.type in {"group", "supergroup"}
         and (message.photo is not None or message.document is not None)
@@ -245,9 +252,10 @@ def _resolve_checkin(
 
 def _reply(
     request: GatewayEventRequest,
-    update: TelegramMessageUpdate,
+    update: TelegramMessageUpdate | TelegramEditedMessageUpdate,
     text: str,
 ) -> GatewayEventResponse:
+    message = _checkin_message(update)
     return GatewayEventResponse(
         protocolVersion="1.0",
         eventId=request.eventId,
@@ -257,9 +265,17 @@ def _reply(
             SendMessageAction(
                 actionId=f"{request.eventId}.reply",
                 type="SEND_MESSAGE",
-                chatId=update.message.chat.id,
-                replyToMessageId=update.message.message_id,
+                chatId=message.chat.id,
+                replyToMessageId=message.message_id,
                 text=text,
             )
         ],
     )
+
+
+def _checkin_message(
+    update: TelegramMessageUpdate | TelegramEditedMessageUpdate,
+) -> TelegramMessage:
+    if isinstance(update, TelegramMessageUpdate):
+        return update.message
+    return update.edited_message

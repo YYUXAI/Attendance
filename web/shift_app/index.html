@@ -552,7 +552,7 @@
 
         if (!gatewayResponse.ok || !gatewayData.sessionToken) return false;
 
-        const providerResponse = await fetch('/api/v1/webapp/session/exchange', {
+        const providerResponse = await fetch(apiUrl('/api/v1/webapp/session/exchange'), {
           method: 'POST',
           headers: {
             Authorization: 'Bearer ' + gatewayData.sessionToken,
@@ -618,8 +618,12 @@
 
 
 
+    const providerBasePath = window.location.pathname.includes('/shift-app/')
+      ? window.location.pathname.split('/shift-app/')[0]
+      : '';
+
     function apiUrl(path) {
-      return path;
+      return providerBasePath + path;
 
     }
 

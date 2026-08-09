@@ -10,6 +10,7 @@ from gateway_provider.app import (
     AttendanceGatewayProviderConfig,
     create_attendance_gateway_provider_app,
 )
+from gateway_provider.contracts import GatewayDeliveryReceiptRequest
 
 
 _GATEWAY_CREDENTIAL = "gateway-to-attendance-receipt-test-credential"
@@ -31,6 +32,7 @@ def _client() -> TestClient:
                 gateway_to_attendance_bearer_token=_GATEWAY_CREDENTIAL,
                 gateway_internal_base_url="http://127.0.0.1:19081/",
                 attendance_to_gateway_bearer_token=_ATTENDANCE_CREDENTIAL,
+                shift_web_app_public_url="https://attendance.example.test",
             )
         )
     )
@@ -103,6 +105,27 @@ def _receipt(*, status: str = "DELIVERED") -> dict[str, object]:
     else:
         base["failure"] = {"code": "TELEGRAM_ERROR", "terminal": True}
     return base
+
+
+def test_delivery_receipt_accepts_a_superseded_response_successor() -> None:
+    parsed = GatewayDeliveryReceiptRequest.model_validate(
+        {
+            "protocolVersion": "1.0",
+            "receiptId": "rcpt.attendance.predecessor.1001",
+            "provider": "ATTENDANCE",
+            "actionId": "evt-attendance-receipt-1001.menu",
+            "relatedEventId": "evt-attendance-receipt-1001",
+            "status": "SUPERSEDED",
+            "attemptedAt": "2026-08-08T07:00:01Z",
+            "failure": {
+                "code": "PREDECESSOR_FAILED",
+                "terminal": True,
+            },
+        }
+    )
+
+    assert parsed.failure is not None
+    assert parsed.failure.code == "PREDECESSOR_FAILED"
 
 
 def test_delivery_receipt_is_authenticated_idempotent_and_action_scoped() -> None:

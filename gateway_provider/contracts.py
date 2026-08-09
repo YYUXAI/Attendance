@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import (
+    AnyUrl,
     BaseModel,
     ConfigDict,
     Field,
@@ -22,6 +23,36 @@ StableId = Annotated[
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]+$",
     ),
 ]
+
+PositiveTelegramId = Annotated[
+    str,
+    StringConstraints(pattern=r"^[1-9][0-9]{0,18}$"),
+]
+
+
+class PrivateRegistrationSessionEndRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    protocolVersion: Literal["1.0"]
+    telegramUserId: PositiveTelegramId
+    privateChatId: PositiveTelegramId
+
+    @model_validator(mode="after")
+    def validate_private_actor(self) -> "PrivateRegistrationSessionEndRequest":
+        telegram_user_id = int(self.telegramUserId)
+        private_chat_id = int(self.privateChatId)
+        if telegram_user_id > 2**63 - 1 or private_chat_id > 2**63 - 1:
+            raise ValueError("Telegram actor IDs must fit int64")
+        if telegram_user_id != private_chat_id:
+            raise ValueError("privateChatId must identify the Telegram user")
+        return self
+
+
+class PrivateRegistrationSessionEndResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    protocolVersion: Literal["1.0"] = "1.0"
+    status: Literal["ENDED"] = "ENDED"
 
 
 class TelegramUser(BaseModel):
@@ -62,6 +93,13 @@ class TelegramMessageUpdate(BaseModel):
 
     update_id: Annotated[int, Field(ge=0)]
     message: TelegramMessage
+
+
+class TelegramEditedMessageUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    update_id: Annotated[int, Field(ge=0)]
+    edited_message: TelegramMessage
 
 
 class TelegramCallbackQuery(BaseModel):
@@ -123,7 +161,10 @@ class GatewayEventRequest(BaseModel):
     conversationId: Annotated[str, StringConstraints(min_length=1, max_length=256)]
     receivedAt: str
     telegramUpdate: (
-        TelegramMessageUpdate | TelegramCallbackUpdate | TelegramInlineQueryUpdate
+        TelegramMessageUpdate
+        | TelegramEditedMessageUpdate
+        | TelegramCallbackUpdate
+        | TelegramInlineQueryUpdate
     )
     telegramFiles: Annotated[list[TelegramFileReference], Field(max_length=20)] = (
         Field(default_factory=list)
@@ -153,10 +194,20 @@ class InlineKeyboardButton(BaseModel):
         str,
         StringConstraints(max_length=256),
     ] | None = None
+    copyText: Annotated[
+        str,
+        StringConstraints(min_length=1, max_length=256),
+    ] | None = None
+    webAppUrl: AnyUrl | None = None
 
     @model_validator(mode="after")
     def validate_exactly_one_action(self) -> "InlineKeyboardButton":
-        values = (self.callbackData, self.switchInlineQueryCurrentChat)
+        values = (
+            self.callbackData,
+            self.switchInlineQueryCurrentChat,
+            self.copyText,
+            self.webAppUrl,
+        )
         if sum(value is not None for value in values) != 1:
             raise ValueError("inline keyboard button requires exactly one action")
         return self
@@ -171,6 +222,36 @@ class InlineKeyboardMarkup(BaseModel):
     ]
 
 
+class ReplyKeyboardButton(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    text: Annotated[str, StringConstraints(min_length=1, max_length=256)]
+
+
+class ReplyKeyboardMarkup(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    keyboard: Annotated[
+        list[Annotated[list[ReplyKeyboardButton], Field(min_length=1, max_length=8)]],
+        Field(min_length=1, max_length=100),
+    ]
+    isPersistent: bool | None = None
+    resizeKeyboard: bool | None = None
+    oneTimeKeyboard: bool | None = None
+    inputFieldPlaceholder: Annotated[
+        str,
+        StringConstraints(min_length=1, max_length=64),
+    ] | None = None
+    selective: bool | None = None
+
+
+class ReplyKeyboardRemoveMarkup(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    removeKeyboard: Literal[True]
+    selective: bool | None = None
+
+
 class SendMessageAction(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -178,8 +259,11 @@ class SendMessageAction(BaseModel):
     type: Literal["SEND_MESSAGE"]
     chatId: int
     text: Annotated[str, StringConstraints(min_length=1, max_length=4096)]
+    parseMode: Literal["HTML", "Markdown"] | None = None
     replyToMessageId: Annotated[int, Field(ge=0)] | None = None
-    replyMarkup: InlineKeyboardMarkup | None = None
+    replyMarkup: (
+        InlineKeyboardMarkup | ReplyKeyboardMarkup | ReplyKeyboardRemoveMarkup | None
+    ) = None
 
 
 class BytesMediaSource(BaseModel):
@@ -209,6 +293,22 @@ class SendDocumentAction(BaseModel):
     document: BytesMediaSource
     caption: Annotated[str, StringConstraints(max_length=1024)] | None = None
     replyToMessageId: Annotated[int, Field(ge=0)] | None = None
+
+
+class DeleteMessageAction(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    actionId: StableId
+    type: Literal["DELETE_MESSAGE"]
+    chatId: int
+    messageId: Annotated[int, Field(ge=0)] | None = None
+    messageIdSourceActionId: StableId | None = None
+
+    @model_validator(mode="after")
+    def validate_target(self) -> "DeleteMessageAction":
+        if (self.messageId is None) == (self.messageIdSourceActionId is None):
+            raise ValueError("delete message requires exactly one target")
+        return self
 
 
 class UnchangedSessionDirective(BaseModel):
@@ -260,6 +360,7 @@ class GatewayEventResponse(BaseModel):
         list[
             SendMessageAction
             | SendDocumentAction
+            | DeleteMessageAction
             | AnswerCallbackAction
             | AnswerInlineQueryAction
         ],
@@ -290,6 +391,7 @@ class GatewayReceiptFailure(BaseModel):
         "TELEGRAM_ERROR",
         "NETWORK_UNKNOWN",
         "ACTION_EXPIRED",
+        "PREDECESSOR_FAILED",
     ]
     terminal: Literal[True]
 
@@ -345,8 +447,13 @@ class GatewayDeliveryReceiptRequest(BaseModel):
             raise ValueError("failed receipt requires only failure")
         if self.status == "UNCERTAIN" and self.failure.code != "NETWORK_UNKNOWN":
             raise ValueError("UNCERTAIN receipt requires NETWORK_UNKNOWN")
-        if self.status == "SUPERSEDED" and self.failure.code != "ACTION_EXPIRED":
-            raise ValueError("SUPERSEDED receipt requires ACTION_EXPIRED")
+        if self.status == "SUPERSEDED" and self.failure.code not in {
+            "ACTION_EXPIRED",
+            "PREDECESSOR_FAILED",
+        }:
+            raise ValueError(
+                "SUPERSEDED receipt requires ACTION_EXPIRED or PREDECESSOR_FAILED"
+            )
         return self
 
 

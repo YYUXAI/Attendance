@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import logging
 import zipfile
 from datetime import datetime
 from xml.etree import ElementTree
@@ -13,6 +14,7 @@ from psycopg2.extensions import cursor as Cursor
 from gateway_provider.contracts import (
     AnswerCallbackAction,
     BytesMediaSource,
+    DeleteMessageAction,
     GatewayEventRequest,
     GatewayEventResponse,
     InlineKeyboardButton,
@@ -20,10 +22,14 @@ from gateway_provider.contracts import (
     SendDocumentAction,
     SendMessageAction,
     TelegramCallbackUpdate,
+    TelegramMessageUpdate,
+    ReleaseSessionDirective,
     UnchangedSessionDirective,
 )
 from services import attendance_export_service
 
+
+log = logging.getLogger(__name__)
 
 _EXPORT_KINDS: dict[str, attendance_export_service.ExportRangeKind] = {
     "att:export:today": "today",
@@ -66,36 +72,76 @@ def process_export_callback(
         kind=kind,
         today=today,
     )
-    rows = asyncio.run(
-        attendance_export_service.collect_rows_for_range(
+    progress_action_id = f"{request.eventId}.progress"
+    initial_actions = [
+        AnswerCallbackAction(
+            actionId=f"{request.eventId}.callback",
+            type="ANSWER_CALLBACK",
+            callbackQueryId=callback.id,
+        ),
+        SendMessageAction(
+            actionId=progress_action_id,
+            type="SEND_MESSAGE",
+            chatId=message.chat.id,
+            replyToMessageId=message.message_id,
+            text=(
+                f"正在生成{range_label}考勤导出（{start.isoformat()}～"
+                f"{end.isoformat()}），请稍候…"
+            ),
+        ),
+    ]
+    delete_progress = DeleteMessageAction(
+        actionId=f"{request.eventId}.progress-delete",
+        type="DELETE_MESSAGE",
+        chatId=message.chat.id,
+        messageIdSourceActionId=progress_action_id,
+    )
+    try:
+        rows = asyncio.run(
+            attendance_export_service.collect_rows_for_range(
+                start=start,
+                end=end,
+                export_tg_id=callback.sender.id,
+            )
+        )
+        pivot, overview, dates = attendance_export_service.build_pivot_and_overview(
+            rows=rows,
             start=start,
             end=end,
-            export_tg_id=callback.sender.id,
         )
-    )
-    pivot, overview, dates = attendance_export_service.build_pivot_and_overview(
-        rows=rows,
-        start=start,
-        end=end,
-    )
-    body = attendance_export_service.encode_attendance_export_xlsx(
-        pivot=pivot,
-        dates=dates,
-        overview=overview,
-        range_label=range_label,
-    )
-    body = _deterministic_xlsx(body, generated_at=received_at)
+        body = attendance_export_service.encode_attendance_export_xlsx(
+            pivot=pivot,
+            dates=dates,
+            overview=overview,
+            range_label=range_label,
+        )
+        body = _deterministic_xlsx(body, generated_at=received_at)
+    except Exception:
+        log.exception("Attendance export generation failed")
+        return GatewayEventResponse(
+            protocolVersion="1.0",
+            eventId=request.eventId,
+            result="PROCESSED",
+            session=UnchangedSessionDirective(directive="UNCHANGED"),
+            actions=[
+                *initial_actions,
+                SendMessageAction(
+                    actionId=f"{request.eventId}.failure",
+                    type="SEND_MESSAGE",
+                    chatId=message.chat.id,
+                    replyToMessageId=message.message_id,
+                    text="导出失败，请稍后重试或联系管理员查看服务日志。",
+                ),
+                delete_progress,
+            ],
+        )
     return GatewayEventResponse(
         protocolVersion="1.0",
         eventId=request.eventId,
         result="PROCESSED",
         session=UnchangedSessionDirective(directive="UNCHANGED"),
         actions=[
-            AnswerCallbackAction(
-                actionId=f"{request.eventId}.callback",
-                type="ANSWER_CALLBACK",
-                callbackQueryId=callback.id,
-            ),
+            *initial_actions,
             SendDocumentAction(
                 actionId=f"{request.eventId}.document",
                 type="SEND_DOCUMENT",
@@ -112,6 +158,41 @@ def process_export_callback(
                     mimeType=_XLSX_MIME_TYPE,
                 ),
             ),
+            delete_progress,
+        ],
+    )
+
+
+def process_export_message(
+    request: GatewayEventRequest,
+    cursor: Cursor,
+    update: TelegramMessageUpdate,
+) -> GatewayEventResponse:
+    message = update.message
+    sender = message.sender
+    if message.chat.type != "private" or sender is None:
+        text = "导出仅支持私聊中使用。"
+        reply_markup = None
+    elif not is_admin(cursor, tg_id=sender.id):
+        text = "无权限操作"
+        reply_markup = None
+    else:
+        text = "请选择导出范围："
+        reply_markup = _range_keyboard()
+    return GatewayEventResponse(
+        protocolVersion="1.0",
+        eventId=request.eventId,
+        result="PROCESSED",
+        session=ReleaseSessionDirective(directive="RELEASE"),
+        actions=[
+            SendMessageAction(
+                actionId=f"{request.eventId}.reply",
+                type="SEND_MESSAGE",
+                chatId=message.chat.id,
+                replyToMessageId=message.message_id,
+                text=text,
+                replyMarkup=reply_markup,
+            )
         ],
     )
 
