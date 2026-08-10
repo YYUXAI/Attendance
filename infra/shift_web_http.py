@@ -64,8 +64,8 @@ def _require_admin(request: web.Request) -> tuple[int, web.Response | None]:
         return 0, web.json_response(
             {
                 "ok": False,
-                "code": "SESSION_INVALID",
-                "message": "会话无效，请重新打开班表。",
+                "message": "请在 Telegram 私聊机器人里点「班表」打开本页",
+                "code": "auth_required",
             },
             status=401,
         )
@@ -75,8 +75,8 @@ def _require_admin(request: web.Request) -> tuple[int, web.Response | None]:
         return 0, web.json_response(
             {
                 "ok": False,
-                "code": "SESSION_INVALID",
-                "message": "会话无效，请重新打开班表。",
+                "message": "链接已过期，请在 Telegram 私聊里点「班表」重新打开",
+                "code": "session_expired",
             },
             status=401,
         )

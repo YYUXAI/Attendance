@@ -26,6 +26,7 @@ from gateway_provider.contracts import (
     ReleaseSessionDirective,
     UnchangedSessionDirective,
 )
+from repositories import worker_schedule_repo
 from services import attendance_export_service
 
 
@@ -48,6 +49,8 @@ def process_export_callback(
     request: GatewayEventRequest,
     cursor: Cursor,
     update: TelegramCallbackUpdate,
+    *,
+    defer_long_operation: bool = True,
 ) -> GatewayEventResponse:
     callback = update.callback_query
     message = callback.message
@@ -96,6 +99,28 @@ def process_export_callback(
         chatId=message.chat.id,
         messageIdSourceActionId=progress_action_id,
     )
+    if defer_long_operation:
+        worker_schedule_repo.enqueue_run_cur(
+            cursor,
+            run_key=f"deferred-export:{request.eventId}",
+            job_kind="ADMIN_EXPORT_PROCESS",
+            payload={
+                "event": request.model_dump(
+                    mode="json",
+                    by_alias=True,
+                    exclude_none=True,
+                ),
+                "progressActionId": progress_action_id,
+            },
+            now=received_at,
+        )
+        return GatewayEventResponse(
+            protocolVersion="1.0",
+            eventId=request.eventId,
+            result="PROCESSED",
+            session=UnchangedSessionDirective(directive="UNCHANGED"),
+            actions=initial_actions,
+        )
     try:
         rows = asyncio.run(
             attendance_export_service.collect_rows_for_range(

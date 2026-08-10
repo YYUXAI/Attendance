@@ -50,12 +50,3 @@ def build_shift_web_app_url(
         return None
     ym = year_month or current_year_month(tz_name=cfg.timezone_name)
     return f"{cfg.public_base_url}/shift-app/index.html?year_month={ym}"
-
-
-def build_checkin_web_app_url(*, web_session: str) -> str | None:
-    cfg = load_shift_web_config()
-    if not cfg.enabled or not cfg.public_base_url:
-        return None
-    from urllib.parse import urlencode
-
-    return f"{cfg.public_base_url}/checkin-app/index.html?{urlencode({'web_session': web_session})}"

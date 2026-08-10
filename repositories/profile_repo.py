@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
-from typing import Any, Optional, Sequence
+from datetime import date
+from typing import Any, Optional
 
 from infra.db import get_cursor
 
@@ -90,38 +90,6 @@ def get_employee_shift_config_for_month(
     return EmployeeShiftConfigLite(*row)
 
 
-@dataclass(frozen=True)
-class AuditResultLiteRow:
-    audit_date: date
-    audit_stage: str
-    result: str
-
-
-def list_month_audit_results(
-    *,
-    employee_id: str,
-    shift_id: int,
-    month_start_date: date,
-    month_end_date: date,
-) -> list[AuditResultLiteRow]:
-    with get_cursor() as cur:
-        cur.execute(
-            """
-            SELECT audit_date, audit_stage, result
-            FROM public.audit_results
-            WHERE employee_id = %s
-              AND shift_id = %s
-              AND audit_stage IN ('CHECKIN', 'CHECKOUT')
-              AND audit_date >= %s
-              AND audit_date <= %s
-            ORDER BY audit_date ASC, audit_stage ASC
-            """,
-            (employee_id, shift_id, month_start_date, month_end_date),
-        )
-        rows = cur.fetchall() or []
-    return [AuditResultLiteRow(*r) for r in rows]
-
-
 def list_month_effective_leave_days(
     *,
     employee_id: str,
@@ -144,38 +112,3 @@ def list_month_effective_leave_days(
         )
         rows = cur.fetchall() or []
     return [r[0] for r in rows]
-
-
-@dataclass(frozen=True)
-class TemporaryLeaveSpanRow:
-    leave_start_at_utc: datetime
-    leave_end_at_utc: datetime
-
-
-def list_effective_temporary_leaves_in_range(
-    *,
-    employee_id: str,
-    shift_id: int,
-    start_utc: datetime,
-    end_utc: datetime,
-) -> list[TemporaryLeaveSpanRow]:
-    """
-    仅用于“我的信息”的 DAILY_ABSENT 推导辅助。
-    返回与 [start_utc, end_utc) 有重叠的离岗时段。
-    """
-    with get_cursor() as cur:
-        cur.execute(
-            """
-            SELECT leave_start_at, leave_end_at
-            FROM public.effective_temporary_leaves
-            WHERE employee_id = %s
-              AND shift_id = %s
-              AND leave_start_at < %s
-              AND leave_end_at > %s
-            ORDER BY leave_start_at ASC
-            """,
-            (employee_id, shift_id, end_utc, start_utc),
-        )
-        rows = cur.fetchall() or []
-    return [TemporaryLeaveSpanRow(r[0], r[1]) for r in rows]
-

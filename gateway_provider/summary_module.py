@@ -60,14 +60,6 @@ def read_attendance_summary(
     )
 
 
-def unavailable_attendance_summary() -> AttendanceSummaryResponse:
-    return _attendance_summary(
-        organization_label="暂不可用",
-        profile_label="需人工处理",
-        include_registration=True,
-    )
-
-
 def _attendance_summary(
     *,
     organization_label: str,

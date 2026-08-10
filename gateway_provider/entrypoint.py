@@ -31,8 +31,8 @@ app = create_attendance_gateway_provider_app(
         attendance_to_gateway_bearer_token=_required_environment(
             "ATTENDANCE_TO_GATEWAY_BEARER_TOKEN"
         ),
-        shift_web_app_public_url=_required_environment(
-            "SHIFT_WEB_APP_PUBLIC_URL"
-        ),
+        shift_web_app_public_url=(
+            os.environ.get("SHIFT_WEB_APP_PUBLIC_URL") or ""
+        ).strip(),
     )
 )

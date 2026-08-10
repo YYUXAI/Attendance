@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass
 from datetime import date
 
@@ -37,9 +36,6 @@ from services.google_sheets_shift_sync_service import (
 log = logging.getLogger(__name__)
 
 _ROSTER_SOURCE = "test_group"
-_DEBOUNCE_SECONDS = 8.0
-_last_sync_at: dict[int, float] = {}
-_sync_lock = asyncio.Lock()
 
 @dataclass(frozen=True)
 class ConfiguredTestGroupSheetsSyncResult:
@@ -204,26 +200,3 @@ async def sync_test_group_month_to_google_sheets(
     msg = f"已同步测试群 {start}~{end} 共 {row_count} 行到 {sheet_title!r}（上班卡/下班卡）"
     log.info("test_group_sheets: %s chat_id=%s", msg, chat_id)
     return ConfiguredTestGroupSheetsSyncResult(True, msg, row_count=row_count, sheet_title=sheet_title)
-
-
-def schedule_test_group_sheets_sync_after_checkin(*, chat_id: int) -> None:
-    """测试群打卡成功后：按导出格式整表回写 Google。"""
-    cfg = load_test_group_google_config()
-    if not cfg.enabled:
-        return
-    if not is_test_group_chat(chat_id=int(chat_id)):
-        return
-
-    async def _runner() -> None:
-        async with _sync_lock:
-            now = time.monotonic()
-            last = _last_sync_at.get(int(chat_id), 0.0)
-            if now - last < _DEBOUNCE_SECONDS:
-                return
-            _last_sync_at[int(chat_id)] = now
-        try:
-            await sync_test_group_month_to_google_sheets(chat_id=int(chat_id))
-        except Exception:
-            log.exception("test_group_sheets: background sync failed chat_id=%s", chat_id)
-
-    asyncio.create_task(_runner())

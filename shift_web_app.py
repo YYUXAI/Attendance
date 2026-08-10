@@ -17,8 +17,6 @@ from infra.shift_web_http import (
     SHIFT_WEB_SESSION_VERIFIER_KEY,
     register_shift_web_routes,
 )
-
-
 log = logging.getLogger("attendance-shift-web")
 
 

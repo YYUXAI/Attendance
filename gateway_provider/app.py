@@ -19,6 +19,7 @@ from gateway_provider.contracts import (
 )
 from gateway_provider.event_module import (
     AttendanceGatewayEventModule,
+    GatewayEventBusyError,
     GatewayEventIdConflictError,
     GatewayRouteOwnershipMismatchError,
 )
@@ -35,10 +36,7 @@ from gateway_provider.receipt_module import (
 from gateway_provider.registration_session_module import (
     end_private_registration_session,
 )
-from gateway_provider.summary_module import (
-    read_attendance_summary,
-    unavailable_attendance_summary,
-)
+from gateway_provider.summary_module import read_attendance_summary
 
 
 logger = logging.getLogger(__name__)
@@ -64,6 +62,9 @@ class AttendanceGatewayProviderConfig:
         ):
             raise ValueError("Gateway credentials must be direction-specific")
         public_url = self.shift_web_app_public_url.strip().rstrip("/")
+        if not public_url:
+            object.__setattr__(self, "shift_web_app_public_url", "")
+            return
         parsed_public_url = urlsplit(public_url)
         if (
             parsed_public_url.scheme != "https"
@@ -139,6 +140,21 @@ def create_attendance_gateway_provider_app(
                 code="EVENT_ID_CONFLICT",
                 message="eventId 已绑定到不同请求。",
                 details={"provider": "ATTENDANCE", "eventId": error.event_id},
+            )
+        except GatewayEventBusyError as error:
+            return JSONResponse(
+                {
+                    "error": {
+                        "code": "EVENT_BUSY",
+                        "message": "Attendance 事件正在处理中，请重试。",
+                        "details": {
+                            "provider": "ATTENDANCE",
+                            "eventId": error.event_id,
+                        },
+                    }
+                },
+                status_code=503,
+                headers={"Retry-After": "1"},
             )
         except GatewayRouteOwnershipMismatchError:
             return _error_response(
@@ -250,7 +266,11 @@ def create_attendance_gateway_provider_app(
                 "Attendance summary read failed",
                 extra={"error_type": type(error).__name__},
             )
-            summary = unavailable_attendance_summary()
+            return _error_response(
+                status_code=500,
+                code="INTERNAL_ERROR",
+                message="Attendance 汇总读取失败。",
+            )
         return JSONResponse(
             summary.model_dump(mode="json", exclude_none=True),
             status_code=200,

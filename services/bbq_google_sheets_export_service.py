@@ -3,13 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass
 from datetime import date
 
 from infra.bbq_google_sheets_config import (
     BbqGoogleSheetsConfig,
-    is_bbq_chat,
     load_bbq_google_sheets_config,
 )
 from services.attendance_export_service import (
@@ -23,9 +21,6 @@ from services.google_sheets_client import write_attendance_export_to_sheet
 
 log = logging.getLogger(__name__)
 
-_DEBOUNCE_SECONDS = 8.0
-_last_sync_at: dict[int, float] = {}
-_sync_lock = asyncio.Lock()
 
 
 @dataclass(frozen=True)
@@ -111,26 +106,3 @@ async def sync_bbq_group_month_to_google_sheets(
     )
     log.info("bbq_sheets: %s chat_id=%s", msg, chat_id)
     return BbqSheetsSyncResult(True, msg, row_count=row_count, sheet_title=sheet_title)
-
-
-def schedule_bbq_sheets_sync_after_checkin(*, chat_id: int) -> None:
-    """BBQ 群打卡成功后异步触发整月同步。"""
-    cfg = load_bbq_google_sheets_config()
-    if not cfg.enabled:
-        return
-    if not is_bbq_chat(chat_id=int(chat_id)):
-        return
-
-    async def _runner() -> None:
-        async with _sync_lock:
-            now = time.monotonic()
-            last = _last_sync_at.get(int(chat_id), 0.0)
-            if now - last < _DEBOUNCE_SECONDS:
-                return
-            _last_sync_at[int(chat_id)] = now
-        try:
-            await sync_bbq_group_month_to_google_sheets(chat_id=int(chat_id))
-        except Exception:
-            log.exception("bbq_sheets: background sync failed chat_id=%s", chat_id)
-
-    asyncio.create_task(_runner())

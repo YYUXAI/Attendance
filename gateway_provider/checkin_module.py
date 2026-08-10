@@ -28,8 +28,10 @@ from gateway_provider.gateway_file_client import (
 from infra.checkin_ai_config import load_checkin_ai_config
 from infra.checkin_employee_id_only_config import requires_employee_id_only_checkin
 from infra.checkin_remote_diff_config import requires_remote_diff_checkin
+from infra.bbq_google_sheets_config import load_bbq_google_sheets_config
 from infra.test_group_google_config import is_test_group_chat
-from repositories import clock_records_repo, registrations_repo
+from infra.test_group_google_config import load_test_group_google_config
+from repositories import clock_records_repo, registrations_repo, worker_schedule_repo
 from services import checkin_ai_orchestrator, checkin_service
 from services.checkin_user_message import user_message_for_checkin_error
 
@@ -39,6 +41,8 @@ def process_group_checkin(
     cursor: Cursor,
     update: TelegramMessageUpdate | TelegramEditedMessageUpdate,
     file_reader: GatewayFileReader,
+    *,
+    defer_long_operation: bool = True,
 ) -> GatewayEventResponse:
     message = _checkin_message(update)
     sender = message.sender
@@ -100,13 +104,39 @@ def process_group_checkin(
     ):
         return _reply(request, update, "该打卡消息已处理，本次未重复记账。")
 
+    progress_text = f"已收到{matter}截图，正在识别，请稍候…"
+    if defer_long_operation:
+        worker_schedule_repo.enqueue_run_cur(
+            cursor,
+            run_key=f"deferred-checkin:{request.eventId}",
+            job_kind="CHECKIN_PROCESS",
+            payload={
+                "event": request.model_dump(
+                    mode="json",
+                    by_alias=True,
+                    exclude_none=True,
+                ),
+                "progressActionId": f"{request.eventId}.progress",
+            },
+            now=sent_at_utc,
+        )
+        return _progress_response(
+            request,
+            update,
+            progress_text=progress_text,
+        )
     try:
         image_bytes = file_reader.read(
             file_ref=attachment.fileRef,
             declared_size_bytes=attachment.sizeBytes,
         )
     except GatewayFileTooLargeError:
-        return _reply(request, update, "打卡失败：截图超过 20 MiB。")
+        return _reply_after_progress(
+            request,
+            update,
+            progress_text=progress_text,
+            final_text="打卡失败：截图超过 20 MiB。",
+        )
     resolved = _resolve_checkin(
         image_bytes=image_bytes,
         tg_id=sender.id,
@@ -117,12 +147,18 @@ def process_group_checkin(
         registration=registration,
     )
     if isinstance(resolved, ServiceResult):
-        return _reply(request, update, resolved.message)
-    if ai_dry_run:
-        return _reply(
+        return _reply_after_progress(
             request,
             update,
-            checkin_service.format_ai_dry_run_success_message(
+            progress_text=progress_text,
+            final_text=resolved.message,
+        )
+    if ai_dry_run:
+        return _reply_after_progress(
+            request,
+            update,
+            progress_text=progress_text.replace("正在识别，请稍候", "正在 AI 识别（试跑不入库）"),
+            final_text=checkin_service.format_ai_dry_run_success_message(
                 english_name=registration.english_name or "",
                 employee_id=registration.employee_id,
                 clock_time_utc=resolved.clock_time_utc,
@@ -150,7 +186,12 @@ def process_group_checkin(
         clock_action=matter,
     )
     if not inserted:
-        return _reply(request, update, "该打卡消息已处理，本次未重复记账。")
+        return _reply_after_progress(
+            request,
+            update,
+            progress_text=progress_text,
+            final_text="该打卡消息已处理，本次未重复记账。",
+        )
     if is_test_group_chat(chat_id=message.chat.id, chat_title=message.chat.title):
         text = checkin_service.format_test_group_success_message(
             english_name=registration.english_name or "",
@@ -160,7 +201,50 @@ def process_group_checkin(
         )
     else:
         text = f"{matter}成功"
-    return _reply(request, update, text)
+    _enqueue_checkin_sheets_syncs(
+        cursor,
+        chat_id=message.chat.id,
+        chat_title=message.chat.title,
+        source_message_id=message.message_id,
+        created_at=sent_at_utc,
+    )
+    return _reply_after_progress(
+        request,
+        update,
+        progress_text=progress_text,
+        final_text=text,
+    )
+
+
+def _enqueue_checkin_sheets_syncs(
+    cursor: Cursor,
+    *,
+    chat_id: int,
+    chat_title: str | None,
+    source_message_id: int,
+    created_at: datetime,
+) -> None:
+    test_config = load_test_group_google_config()
+    kinds: list[str] = []
+    if test_config.enabled and is_test_group_chat(
+        chat_id=chat_id,
+        chat_title=chat_title,
+    ):
+        kinds.append("TEST_GROUP")
+    bbq_config = load_bbq_google_sheets_config()
+    if bbq_config.enabled and int(bbq_config.chat_id) == int(chat_id):
+        kinds.append("BBQ")
+    for sync_kind in kinds:
+        worker_schedule_repo.enqueue_run_cur(
+            cursor,
+            run_key=(
+                f"checkin-sheets:{sync_kind}:{abs(int(chat_id))}:"
+                f"{int(source_message_id)}"
+            ),
+            job_kind="CHECKIN_SHEETS_SYNC",
+            payload={"chatId": int(chat_id), "syncKind": sync_kind},
+            now=created_at,
+        )
 
 
 def is_group_checkin(
@@ -268,6 +352,62 @@ def _reply(
                 chatId=message.chat.id,
                 replyToMessageId=message.message_id,
                 text=text,
+            )
+        ],
+    )
+
+
+def _reply_after_progress(
+    request: GatewayEventRequest,
+    update: TelegramMessageUpdate | TelegramEditedMessageUpdate,
+    *,
+    progress_text: str,
+    final_text: str,
+) -> GatewayEventResponse:
+    message = _checkin_message(update)
+    return GatewayEventResponse(
+        protocolVersion="1.0",
+        eventId=request.eventId,
+        result="PROCESSED",
+        session=UnchangedSessionDirective(directive="UNCHANGED"),
+        actions=[
+            SendMessageAction(
+                actionId=f"{request.eventId}.progress",
+                type="SEND_MESSAGE",
+                chatId=message.chat.id,
+                replyToMessageId=message.message_id,
+                text=progress_text,
+            ),
+            SendMessageAction(
+                actionId=f"{request.eventId}.reply",
+                type="SEND_MESSAGE",
+                chatId=message.chat.id,
+                replyToMessageId=message.message_id,
+                text=final_text,
+            ),
+        ],
+    )
+
+
+def _progress_response(
+    request: GatewayEventRequest,
+    update: TelegramMessageUpdate | TelegramEditedMessageUpdate,
+    *,
+    progress_text: str,
+) -> GatewayEventResponse:
+    message = _checkin_message(update)
+    return GatewayEventResponse(
+        protocolVersion="1.0",
+        eventId=request.eventId,
+        result="PROCESSED",
+        session=UnchangedSessionDirective(directive="UNCHANGED"),
+        actions=[
+            SendMessageAction(
+                actionId=f"{request.eventId}.progress",
+                type="SEND_MESSAGE",
+                chatId=message.chat.id,
+                replyToMessageId=message.message_id,
+                text=progress_text,
             )
         ],
     )

@@ -26,6 +26,7 @@ from services.employee_shift_day_service import DailyShift, load_calendar_map
 from repositories.clock_records_repo import ensure_clock_action_column
 from repositories.temporary_leave_records_repo import TemporaryLeaveRecordRow, list_by_chat_and_range
 from services.shift_import_service import ATTENDANCE_EXPORT_HEADERS_CN
+from services.csv_security import safe_csv_cell
 
 log = logging.getLogger(__name__)
 
@@ -888,7 +889,7 @@ def encode_csv(*, rows: Iterable[AttendanceSummaryRow]) -> bytes:
     writer.writerow(ATTENDANCE_EXPORT_HEADERS_CN)
     for r in rows:
         writer.writerow(
-            [
+            [safe_csv_cell(value) for value in (
                 r.group_name,
                 r.employee_id,
                 r.english_name,
@@ -897,7 +898,7 @@ def encode_csv(*, rows: Iterable[AttendanceSummaryRow]) -> bytes:
                 r.last_clock_local,
                 r.leave_time_display,
                 r.status,
-            ]
+            )]
         )
     return codecs.BOM_UTF8 + buf.getvalue().encode("utf-8")
 

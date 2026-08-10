@@ -316,3 +316,20 @@ def update_registered_chat_by_tg_id(*, tg_id: int, registered_chat_id: int) -> i
             (int(registered_chat_id), int(tg_id)),
         )
         return int(cur.rowcount or 0)
+
+
+def update_registered_chat_by_tg_id_cur(
+    cur: Cursor,
+    *,
+    tg_id: int,
+    registered_chat_id: int,
+) -> int:
+    cur.execute(
+        """
+        UPDATE public.registrations
+        SET registered_chat_id = %s
+        WHERE tg_id = %s
+        """,
+        (int(registered_chat_id), int(tg_id)),
+    )
+    return int(cur.rowcount or 0)

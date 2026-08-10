@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 
 import psycopg2
 from psycopg2.extras import Json
 
 from gateway_provider.contracts import GatewayDeliveryReceiptRequest
+from repositories import worker_action_repo
 
 
 class GatewayReceiptIdConflictError(RuntimeError):
@@ -58,24 +60,30 @@ class AttendanceGatewayReceiptModule:
                         raise GatewayReceiptIdConflictError()
                     return "DUPLICATE"
 
-                if receipt.relatedEventId is None:
-                    raise GatewayReceiptActionNotFoundError()
-                cursor.execute(
-                    """
-                    SELECT 1
-                    FROM gateway_processed_events AS event
-                    WHERE event.event_id = %s
-                      AND EXISTS (
-                          SELECT 1
-                          FROM jsonb_array_elements(
-                              event.response_json->'actions'
-                          ) AS action
-                          WHERE action->>'actionId' = %s
-                      )
-                    """,
-                    (receipt.relatedEventId, receipt.actionId),
-                )
-                if cursor.fetchone() is None:
+                processed_at = datetime.now(timezone.utc)
+                if receipt.relatedEventId is not None:
+                    cursor.execute(
+                        """
+                        SELECT 1
+                        FROM gateway_processed_events AS event
+                        WHERE event.event_id = %s
+                          AND EXISTS (
+                              SELECT 1
+                              FROM jsonb_array_elements(
+                                  event.response_json->'actions'
+                              ) AS action
+                              WHERE action->>'actionId' = %s
+                          )
+                        """,
+                        (receipt.relatedEventId, receipt.actionId),
+                    )
+                    if cursor.fetchone() is None:
+                        raise GatewayReceiptActionNotFoundError()
+                elif not worker_action_repo.apply_delivery_receipt_cur(
+                    cursor,
+                    receipt=receipt,
+                    processed_at=processed_at,
+                ):
                     raise GatewayReceiptActionNotFoundError()
 
                 cursor.execute(

@@ -31,6 +31,18 @@ from gateway_provider.contracts import (
     event_response_value,
 )
 from gateway_provider.checkin_module import is_group_checkin, process_group_checkin
+from gateway_provider.admin_module import (
+    is_admin_test_message,
+    process_admin_test_message,
+)
+from gateway_provider.admin_export_module import (
+    has_active_admin_export_session,
+    is_admin_export_callback,
+    is_admin_export_test_message,
+    process_admin_export_callback,
+    process_admin_export_entry,
+    process_admin_export_text,
+)
 from gateway_provider.gateway_file_client import GatewayFileReader
 from gateway_provider.export_module import (
     is_admin,
@@ -75,6 +87,12 @@ class GatewayRouteOwnershipMismatchError(RuntimeError):
     pass
 
 
+class GatewayEventBusyError(RuntimeError):
+    def __init__(self, event_id: str) -> None:
+        super().__init__("Gateway event is busy")
+        self.event_id = event_id
+
+
 class AttendanceGatewayEventModule:
     def __init__(
         self,
@@ -93,9 +111,12 @@ class AttendanceGatewayEventModule:
             with psycopg2.connect(self._database_url) as connection:
                 with connection.cursor() as cursor:
                     cursor.execute(
-                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        "SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 0))",
                         (request.eventId,),
                     )
+                    locked = cursor.fetchone()
+                    if locked != (True,):
+                        raise GatewayEventBusyError(request.eventId)
                     cursor.execute(
                         """
                         SELECT request_hash, response_json
@@ -160,6 +181,8 @@ def _process_attendance_event(
         return _answer_inline_query(request, update)
     if isinstance(update, TelegramCallbackUpdate):
         callback_data = update.callback_query.data
+        if is_admin_export_callback(callback_data):
+            return process_admin_export_callback(request, cursor, update)
         if is_export_callback(callback_data):
             return process_export_callback(request, cursor, update)
         if callback_data == "att:menu":
@@ -176,22 +199,13 @@ def _process_attendance_event(
                 ),
             )
         if callback_data == "att:shift":
-            return _callback_message_response(
+            return _show_shift_callback(
                 request,
-                callback_id=update.callback_query.id,
-                chat_id=update.callback_query.message.chat.id,
-                reply_to_message_id=update.callback_query.message.message_id,
-                text="请点下方「打开班表配置」进入编辑页：",
-                reply_markup=InlineKeyboardMarkup(
-                    inlineKeyboard=[[
-                        InlineKeyboardButton(
-                            text="打开班表配置",
-                            webAppUrl=_shift_web_app_url(
-                                request,
-                                shift_web_app_public_url,
-                            ),
-                        )
-                    ]]
+                cursor,
+                update,
+                shift_web_app_url=_shift_web_app_url(
+                    request,
+                    shift_web_app_public_url,
                 ),
             )
         if callback_data == "att:register":
@@ -202,6 +216,8 @@ def _process_attendance_event(
             return _show_group_action(request, cursor, update)
         if callback_data in {"att:leave", "att:back"}:
             return _show_leave_back_action(request, cursor, update)
+        if callback_data == "att:switch_group":
+            return _switch_attendance_group(request, cursor, update)
         for operation in ("confirm", "cancel"):
             prefix = f"att:register:{operation}:"
             if callback_data.startswith(prefix):
@@ -227,7 +243,21 @@ def _process_attendance_event(
     if not isinstance(update, TelegramMessageUpdate):
         raise GatewayRouteOwnershipMismatchError()
     message = update.message
+    if is_admin_test_message(message):
+        return process_admin_test_message(request, cursor, update)
+    if is_admin_export_test_message(message):
+        return process_admin_export_entry(request, cursor, update)
     if request.routeReason == "CONVERSATION_SESSION":
+        if (
+            message.sender is not None
+            and message.chat.type == "private"
+            and has_active_admin_export_session(
+                cursor,
+                tg_id=message.sender.id,
+                private_chat_id=message.chat.id,
+            )
+        ):
+            return process_admin_export_text(request, cursor, update)
         return _process_registration_text(
             request,
             cursor,
@@ -243,14 +273,12 @@ def _process_attendance_event(
         if _command_name(message.text) == "/start":
             return _group_menu_response(request, update)
         message_text = (message.text or "").strip()
+        if message_text == "导出":
+            return process_export_message(request, cursor, update)
         group_action = {
-            "/att_signin": ("signin", "签到"),
             "/signin": ("signin", "签到"),
-            "/att_signout": ("signout", "签退"),
             "/signout": ("signout", "签退"),
-            "/att_leave": ("leave", "离岗"),
             "/leave": ("leave", "离岗"),
-            "/att_back": ("back", "返岗"),
             "/back": ("back", "返岗"),
         }.get(_command_name(message.text) or "") or {
             "签到": ("signin", "签到"),
@@ -316,7 +344,7 @@ def _private_menu_response(
     chat_id: int,
     reply_to_message_id: int,
     actor_id: int,
-    shift_web_app_url: str,
+    shift_web_app_url: str | None,
     callback_id: str | None = None,
 ) -> GatewayEventResponse:
     register_service.clear_waiting_register_input(cursor, tg_id=actor_id)
@@ -333,10 +361,15 @@ def _private_menu_response(
         ]
     ]
     if is_admin(cursor, tg_id=actor_id):
+        shift_button = (
+            InlineKeyboardButton(text="班表", webAppUrl=shift_web_app_url)
+            if shift_web_app_url is not None
+            else InlineKeyboardButton(text="班表", callbackData="att:shift")
+        )
         menu_rows.append(
             [
                 InlineKeyboardButton(text="导出", callbackData="att:export"),
-                InlineKeyboardButton(text="班表", webAppUrl=shift_web_app_url),
+                shift_button,
             ]
         )
     callback_actions = [] if callback_id is None else [
@@ -386,7 +419,9 @@ def _ignored_event_response(request: GatewayEventRequest) -> GatewayEventRespons
 def _shift_web_app_url(
     request: GatewayEventRequest,
     public_base_url: str,
-) -> str:
+) -> str | None:
+    if not public_base_url:
+        return None
     year_month = _received_at_utc(request.receivedAt).astimezone(
         ZoneInfo("Asia/Shanghai")
     ).strftime("%Y-%m")
@@ -558,7 +593,13 @@ def _begin_registration(
     callback = update.callback_query
     message = callback.message
     if message.chat.type != "private":
-        raise GatewayRouteOwnershipMismatchError()
+        return _callback_message_response(
+            request,
+            callback_id=callback.id,
+            chat_id=message.chat.id,
+            reply_to_message_id=message.message_id,
+            text="请先私聊机器人，再点击【注册】完成注册。",
+        )
     session, text = _begin_registration_result(
         cursor,
         tg_id=callback.sender.id,
@@ -762,25 +803,17 @@ def _show_shift_message(
     cursor: Cursor,
     update: TelegramMessageUpdate,
     *,
-    shift_web_app_url: str,
+    shift_web_app_url: str | None,
 ) -> GatewayEventResponse:
     message = update.message
     sender = message.sender
     if message.chat.type != "private" or sender is None:
         raise GatewayRouteOwnershipMismatchError()
-    if not is_admin(cursor, tg_id=sender.id):
-        text = "无权限操作"
-        reply_markup = None
-    else:
-        text = "请点下方「打开班表配置」进入编辑页："
-        reply_markup = InlineKeyboardMarkup(
-            inlineKeyboard=[[
-                InlineKeyboardButton(
-                    text="打开班表配置",
-                    webAppUrl=shift_web_app_url,
-                )
-            ]]
-        )
+    text, reply_markup = _shift_content(
+        cursor,
+        tg_id=sender.id,
+        shift_web_app_url=shift_web_app_url,
+    )
     return GatewayEventResponse(
         protocolVersion="1.0",
         eventId=request.eventId,
@@ -796,6 +829,59 @@ def _show_shift_message(
                 replyMarkup=reply_markup,
             )
         ],
+    )
+
+
+def _show_shift_callback(
+    request: GatewayEventRequest,
+    cursor: Cursor,
+    update: TelegramCallbackUpdate,
+    *,
+    shift_web_app_url: str | None,
+) -> GatewayEventResponse:
+    callback = update.callback_query
+    message = callback.message
+    if message.chat.type != "private":
+        raise GatewayRouteOwnershipMismatchError()
+    text, reply_markup = _shift_content(
+        cursor,
+        tg_id=callback.sender.id,
+        shift_web_app_url=shift_web_app_url,
+    )
+    return _callback_message_response(
+        request,
+        callback_id=callback.id,
+        chat_id=message.chat.id,
+        reply_to_message_id=message.message_id,
+        text=text,
+        reply_markup=reply_markup,
+    )
+
+
+def _shift_content(
+    cursor: Cursor,
+    *,
+    tg_id: int,
+    shift_web_app_url: str | None,
+) -> tuple[str, InlineKeyboardMarkup | None]:
+    if not is_admin(cursor, tg_id=tg_id):
+        return "无权限操作", None
+    if shift_web_app_url is None:
+        return (
+            "班表 Web 未配置：请在 .env 设置 SHIFT_WEB_APP_PUBLIC_URL\n"
+            "（须为 Telegram 可访问的 HTTPS 地址）",
+            None,
+        )
+    return (
+        "请点下方「打开班表配置」进入编辑页：",
+        InlineKeyboardMarkup(
+            inlineKeyboard=[[
+                InlineKeyboardButton(
+                    text="打开班表配置",
+                    webAppUrl=shift_web_app_url,
+                )
+            ]]
+        ),
     )
 
 
@@ -942,6 +1028,39 @@ def _show_leave_back_message_action(
                 replyMarkup=reply_markup,
             )
         ],
+    )
+
+
+def _switch_attendance_group(
+    request: GatewayEventRequest,
+    cursor: Cursor,
+    update: TelegramCallbackUpdate,
+) -> GatewayEventResponse:
+    callback = update.callback_query
+    message = callback.message
+    if message.chat.type not in {"group", "supergroup"}:
+        raise GatewayRouteOwnershipMismatchError()
+    registration = registrations_repo.get_by_tg_id_cur(
+        cursor,
+        tg_id=callback.sender.id,
+    )
+    if registration is None:
+        text = "您尚未注册。"
+    else:
+        updated = registrations_repo.update_registered_chat_by_tg_id_cur(
+            cursor,
+            tg_id=callback.sender.id,
+            registered_chat_id=message.chat.id,
+        )
+        if updated != 1:
+            raise RuntimeError("Attendance registration group update lost its owner row")
+        text = "已记录本群为考勤群，请重新发送打卡截图。"
+    return _callback_message_response(
+        request,
+        callback_id=callback.id,
+        chat_id=message.chat.id,
+        reply_to_message_id=message.message_id,
+        text=text,
     )
 
 

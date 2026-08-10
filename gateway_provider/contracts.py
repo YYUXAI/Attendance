@@ -368,6 +368,57 @@ class GatewayEventResponse(BaseModel):
     ]
 
 
+class GatewayAsyncActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    protocolVersion: Literal["1.0"]
+    provider: Literal["ATTENDANCE"]
+    relatedEventId: StableId | None = None
+    correlationId: Annotated[
+        str,
+        StringConstraints(
+            min_length=1,
+            max_length=256,
+            pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]+$",
+        ),
+    ] | None = None
+    createdAt: str
+    action: (
+        SendMessageAction
+        | SendDocumentAction
+        | DeleteMessageAction
+        | AnswerCallbackAction
+        | AnswerInlineQueryAction
+    )
+
+    @field_validator("createdAt")
+    @classmethod
+    def validate_created_at(cls, value: str) -> str:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError("createdAt must be an ISO-8601 date-time") from error
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("createdAt must include a UTC offset")
+        return value
+
+    @model_validator(mode="after")
+    def validate_reference(self) -> "GatewayAsyncActionRequest":
+        if (self.relatedEventId is None) == (self.correlationId is None):
+            raise ValueError(
+                "async action requires exactly one relatedEventId or correlationId"
+            )
+        return self
+
+
+class GatewayAsyncActionAcceptanceResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    protocolVersion: Literal["1.0"]
+    actionId: StableId
+    result: Literal["ACCEPTED", "DUPLICATE"]
+
+
 class GatewayTelegramResult(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import json
 import os
 import threading
 import zipfile
@@ -19,11 +20,17 @@ from fastapi.testclient import TestClient
 
 import gateway_provider.app as gateway_provider_app_module
 import gateway_provider.export_module as gateway_export_module
+import gateway_provider.admin_export_module as gateway_admin_export_module
 from gateway_provider.app import (
     AttendanceGatewayProviderConfig,
     create_attendance_gateway_provider_app,
 )
 from services import register_service
+from tasks.provider_scheduler import (
+    ProviderSchedulerConfig,
+    run_deferred_interaction_cycle,
+)
+from gateway_provider.gateway_file_client import GatewayFileReader
 
 
 _TEST_GATEWAY_CREDENTIAL = "gateway-to-attendance-test-credential"
@@ -43,20 +50,46 @@ def _apply_gateway_provider_migration() -> None:
     migration_directory = Path(__file__).parent / "migrations"
     migrations = [
         (migration_directory / name).read_text(encoding="utf-8")
-        for name in ("0003_gateway_provider.sql", "0004_registration_provider.sql")
+        for name in (
+            "0003_gateway_provider.sql",
+            "0004_registration_provider.sql",
+            "0007_admin_export_parity.sql",
+            "0009_durable_provider_worker.sql",
+            "0010_scheduler_fencing_and_sheets_outbox.sql",
+            "0011_worker_action_dependencies.sql",
+        )
     ]
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:
             for migration in migrations:
                 cursor.execute(migration)
+            cursor.execute("DELETE FROM attendance_admin_export_sessions")
             cursor.execute("DELETE FROM attendance_registration_sessions")
             cursor.execute(
                 "DELETE FROM temporary_leave_records WHERE tg_id IN (%s, %s)",
                 (81001, 81002),
             )
             cursor.execute(
+                "DELETE FROM effective_leave_days WHERE employee_id = %s",
+                ("74808",),
+            )
+            cursor.execute(
                 "DELETE FROM gateway_processed_events WHERE event_id LIKE %s",
                 ("evt-attendance-%",),
+            )
+            cursor.execute(
+                "DELETE FROM attendance_worker_schedule_runs "
+                "WHERE job_kind IN ("
+                "'CHECKIN_SHEETS_SYNC', 'CHECKIN_PROCESS', "
+                "'ADMIN_EXPORT_PROCESS')"
+            )
+            cursor.execute(
+                "DELETE FROM attendance_worker_actions "
+                "WHERE owner_key LIKE 'deferred-event:%'"
+            )
+            cursor.execute(
+                "DELETE FROM attendance_gateway_delivery_receipts "
+                "WHERE related_event_id LIKE 'evt-attendance-%'"
             )
             cursor.execute(
                 "DELETE FROM admin_list WHERE admin_employee_id = %s",
@@ -84,6 +117,102 @@ def _apply_gateway_provider_migration() -> None:
             )
 
 
+def _deferred_scheduler_config() -> ProviderSchedulerConfig:
+    return ProviderSchedulerConfig(
+        database_url=_database_url(),
+        poll_interval_seconds=1,
+        lease_seconds=30,
+        group_summary_enabled=False,
+        group_summary_hour=23,
+        group_summary_minute=30,
+        group_summary_timezone="Asia/Shanghai",
+        group_summary_skip_dates=frozenset(),
+        daily_report_enabled=False,
+        daily_report_hour=23,
+        daily_report_minute=30,
+        daily_report_timezone="Asia/Shanghai",
+        daily_report_notify_tg_id=None,
+    )
+
+
+def _record_event_action_delivered(
+    *, event_id: str, action_id: str, message_id: int = 9001
+) -> None:
+    payload = {
+        "protocolVersion": "1.0",
+        "receiptId": f"receipt-{action_id}",
+        "provider": "ATTENDANCE",
+        "actionId": action_id,
+        "relatedEventId": event_id,
+        "status": "DELIVERED",
+        "attemptedAt": "2026-08-08T08:00:01.000Z",
+        "telegramResult": {
+            "accepted": True,
+            "chatId": 81002,
+            "messageId": message_id,
+        },
+    }
+    request_hash = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO attendance_gateway_delivery_receipts (
+                    receipt_id, action_id, related_event_id, correlation_id,
+                    request_hash, status, receipt_payload, processed_at
+                ) VALUES (%s, %s, %s, NULL, %s, 'DELIVERED', %s::jsonb,
+                          clock_timestamp())
+                """,
+                (
+                    payload["receiptId"],
+                    action_id,
+                    event_id,
+                    request_hash,
+                    json.dumps(payload),
+                ),
+            )
+
+
+def _record_event_action_terminal(
+    *, event_id: str, action_id: str, status: str
+) -> None:
+    failure_code = "NETWORK_UNKNOWN" if status == "UNCERTAIN" else "INVALID_ACTION"
+    payload = {
+        "protocolVersion": "1.0",
+        "receiptId": f"receipt-{action_id}",
+        "provider": "ATTENDANCE",
+        "actionId": action_id,
+        "relatedEventId": event_id,
+        "status": status,
+        "attemptedAt": "2026-08-08T08:00:01.000Z",
+        "failure": {"code": failure_code, "terminal": True},
+    }
+    request_hash = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO attendance_gateway_delivery_receipts (
+                    receipt_id, action_id, related_event_id, correlation_id,
+                    request_hash, status, receipt_payload, processed_at
+                ) VALUES (%s, %s, %s, NULL, %s, %s, %s::jsonb,
+                          clock_timestamp())
+                """,
+                (
+                    payload["receiptId"],
+                    action_id,
+                    event_id,
+                    request_hash,
+                    status,
+                    json.dumps(payload),
+                ),
+            )
+
+
 def _apply_provider_health_migrations() -> None:
     _apply_gateway_provider_migration()
     migration_directory = Path(__file__).parent / "migrations"
@@ -96,8 +225,13 @@ def _apply_provider_health_migrations() -> None:
             for migration in migrations:
                 cursor.execute(migration)
             cursor.execute(
-                "DELETE FROM attendance_gateway_delivery_receipts "
-                "WHERE receipt_id LIKE 'receipt-health-%'"
+                "DELETE FROM attendance_gateway_delivery_receipts"
+            )
+            cursor.execute(
+                "DELETE FROM attendance_worker_actions"
+            )
+            cursor.execute(
+                "DELETE FROM attendance_worker_schedule_runs"
             )
 
 
@@ -120,10 +254,22 @@ def test_provider_health_and_readiness_verify_owned_database() -> None:
             "deliveryReceipts": True,
             "businessTruth": True,
             "webappSessions": True,
+            "workerActions": True,
+            "workerSchedules": True,
         },
         "operational": {
             "permanentDeliveryFailures": 0,
             "uncertainDeliveries": 0,
+            "workerPermanentFailures": 0,
+            "workerUncertain": 0,
+            "workerPending": 0,
+            "workerAcceptanceRetry": 0,
+            "workerExpiredLeases": 0,
+            "workerStaleBacklog": 0,
+            "schedulerRetrying": 0,
+            "schedulerFailed": 0,
+            "schedulerExpiredLeases": 0,
+            "schedulerStaleBacklog": 0,
         },
     }
 
@@ -136,6 +282,8 @@ def test_provider_readiness_exposes_terminal_delivery_failures() -> None:
                 "DELETE FROM attendance_gateway_delivery_receipts "
                 "WHERE receipt_id = 'receipt-health-terminal-0001'"
             )
+
+
             cursor.execute(
                 """
                 INSERT INTO attendance_gateway_delivery_receipts (
@@ -159,15 +307,126 @@ def test_provider_readiness_exposes_terminal_delivery_failures() -> None:
     readiness = _provider_client().get("/readyz")
 
     assert readiness.status_code == 503
-    assert readiness.json()["operational"] == {
-        "permanentDeliveryFailures": 1,
-        "uncertainDeliveries": 0,
-    }
+    assert readiness.json()["operational"]["permanentDeliveryFailures"] == 1
+    assert readiness.json()["operational"]["uncertainDeliveries"] == 0
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 "DELETE FROM attendance_gateway_delivery_receipts "
                 "WHERE receipt_id = 'receipt-health-terminal-0001'"
+            )
+
+
+def test_provider_readiness_fails_for_worker_terminal_without_gateway_receipt() -> None:
+    _apply_provider_health_migrations()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO attendance_worker_actions (
+                    action_id, correlation_id, action_kind, owner_key,
+                    action_payload, status, attempt_count, last_error_code,
+                    created_at, terminal_at, next_attempt_at, updated_at,
+                    max_attempts
+                ) VALUES (
+                    'action.health.terminal.0001',
+                    'health.worker.terminal.0001',
+                    'SEND_MESSAGE',
+                    'health:terminal:0001',
+                    '{}'::jsonb,
+                    'UNDELIVERABLE',
+                    1,
+                    'GATEWAY_HTTP_400',
+                    clock_timestamp(),
+                    clock_timestamp(),
+                    clock_timestamp(),
+                    clock_timestamp(),
+                    3
+                )
+                """
+            )
+
+    readiness = _provider_client().get("/readyz")
+
+    assert readiness.status_code == 503
+    assert readiness.json()["operational"]["workerPermanentFailures"] == 1
+
+
+def test_provider_readiness_exposes_expired_lease_and_stale_scheduler() -> None:
+    _apply_provider_health_migrations()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO attendance_worker_actions (
+                    action_id, correlation_id, action_kind, owner_key,
+                    action_payload, status, attempt_count, created_at,
+                    next_attempt_at, updated_at, lease_owner,
+                    lease_expires_at, max_attempts
+                ) VALUES (
+                    'action.health.expired.0001',
+                    'health.worker.expired.0001',
+                    'SEND_MESSAGE',
+                    'health:expired:0001',
+                    '{}'::jsonb,
+                    'CLAIMED',
+                    1,
+                    clock_timestamp() - interval '10 minutes',
+                    clock_timestamp() - interval '10 minutes',
+                    clock_timestamp() - interval '10 minutes',
+                    'health-worker',
+                    clock_timestamp() - interval '1 minute',
+                    3
+                )
+                """
+            )
+            cursor.execute(
+                """
+                INSERT INTO attendance_worker_schedule_runs (
+                    run_key, job_kind, status, attempt_count,
+                    next_attempt_at, last_error_code, created_at,
+                    updated_at, payload, lease_version
+                ) VALUES (
+                    'health:retrying:0001',
+                    'HEALTH_TEST',
+                    'RETRYING',
+                    1,
+                    clock_timestamp() - interval '10 minutes',
+                    'TEST_RETRY',
+                    clock_timestamp() - interval '10 minutes',
+                    clock_timestamp() - interval '10 minutes',
+                    '{}'::jsonb,
+                    1
+                )
+                """
+            )
+
+    readiness = _provider_client().get("/readyz")
+
+    assert readiness.status_code == 503
+    assert readiness.json()["operational"] == {
+        "permanentDeliveryFailures": 0,
+        "uncertainDeliveries": 0,
+        "workerPermanentFailures": 0,
+        "workerUncertain": 0,
+        "workerPending": 0,
+        "workerAcceptanceRetry": 0,
+        "workerExpiredLeases": 1,
+        "workerStaleBacklog": 0,
+        "schedulerRetrying": 1,
+        "schedulerFailed": 0,
+        "schedulerExpiredLeases": 0,
+        "schedulerStaleBacklog": 1,
+    }
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM attendance_worker_actions "
+                "WHERE action_id = 'action.health.expired.0001'"
+            )
+            cursor.execute(
+                "DELETE FROM attendance_worker_schedule_runs "
+                "WHERE run_key = 'health:retrying:0001'"
             )
 
 
@@ -201,10 +460,22 @@ def test_provider_health_fails_closed_when_database_is_unavailable() -> None:
             "deliveryReceipts": False,
             "businessTruth": False,
             "webappSessions": False,
+            "workerActions": False,
+            "workerSchedules": False,
         },
         "operational": {
             "permanentDeliveryFailures": None,
             "uncertainDeliveries": None,
+            "workerPermanentFailures": None,
+            "workerUncertain": None,
+            "workerPending": None,
+            "workerAcceptanceRetry": None,
+            "workerExpiredLeases": None,
+            "workerStaleBacklog": None,
+            "schedulerRetrying": None,
+            "schedulerFailed": None,
+            "schedulerExpiredLeases": None,
+            "schedulerStaleBacklog": None,
         },
     }
 
@@ -299,10 +570,117 @@ def test_admin_attendance_menu_exposes_namespaced_export_action() -> None:
             ),
         },
     ]
+    assert len(keyboard) == 2
+
+
+def test_admin_export_schema_and_queries_use_only_current_owner_truth() -> None:
+    _apply_gateway_provider_migration()
+
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT to_regclass('public.qc_results'), "
+                "to_regclass('public.audit_results')"
+            )
+            assert cursor.fetchone() == (None, None)
+            cursor.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'effective_leave_days'
+                  AND column_name IN (
+                      'shift_id', 'leave_reason',
+                      'application_remark', 'application_id'
+                  )
+                """
+            )
+            assert cursor.fetchall() == []
+
+
+def test_admin_export_csvs_encode_exact_current_owner_rows() -> None:
+    _apply_gateway_provider_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id, shift_id
+                ) VALUES (%s, %s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 81002, -10081002, 12),
+            )
+            cursor.execute(
+                """
+                INSERT INTO clock_records (
+                    chat_id, file_id, tg_id, employee_id, shift_id,
+                    clock_time, clock_action
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (-10081002, "clock-file-1", 81002, "74808", 12,
+                 datetime(2026, 8, 2, 1, 0, tzinfo=timezone.utc), "签到"),
+            )
+            cursor.execute(
+                """
+                INSERT INTO temporary_leave_records (
+                    employee_id, english_name, tg_id, chat_id, leave_at,
+                    back_at, duration_minutes, reason, remark_required, status
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 81002, -10081002,
+                 datetime(2026, 8, 3, 2, 0, tzinfo=timezone.utc),
+                 datetime(2026, 8, 3, 2, 15, tzinfo=timezone.utc),
+                 15, "吃饭", False, "CLOSED"),
+            )
+            cursor.execute(
+                """
+                INSERT INTO effective_leave_days (employee_id, leave_date)
+                VALUES (%s, %s)
+                """,
+                ("74808", "2026-08-04"),
+            )
+            files = gateway_admin_export_module.prepare_three_csv_exports(
+                cursor,
+                shift_id=12,
+                start_date=datetime(2026, 8, 1).date(),
+                end_date=datetime(2026, 8, 7).date(),
+            )
+
+    assert [name for name, _body in files] == [
+        "clock_records_shift_12_2026-08-01_to_2026-08-07.csv",
+        "temporary_leave_records_shift_12_2026-08-01_to_2026-08-07.csv",
+        "effective_leave_days_shift_12_2026-08-01_to_2026-08-07.csv",
+    ]
+    decoded = [body.decode("utf-8-sig") for _name, body in files]
+    assert decoded[0].splitlines()[0] == (
+        "id,employee_id,shift_id,clock_time,clock_action,tg_id,chat_id,file_id"
+    )
+    assert ",74808,12," in decoded[0]
+    assert decoded[1].splitlines()[0] == (
+        "id,employee_id,shift_id,english_name,tg_id,chat_id,leave_at,back_at,"
+        "duration_minutes,reason,remark_required,status"
+    )
+    assert ",74808,12,GRANDFOR," in decoded[1]
+    assert decoded[2].splitlines()[0] == "id,employee_id,shift_id,leave_date"
+    assert ",74808,12,2026-08-04" in decoded[2]
 
 
 def test_shift_callback_restores_the_old_web_app_fallback() -> None:
     _apply_gateway_provider_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 81002, 81002),
+            )
+            cursor.execute(
+                "INSERT INTO admin_list (admin_employee_id) VALUES (%s)",
+                ("74808",),
+            )
     event = _registration_callback_event()
     telegram_update = event["telegramUpdate"]
     assert isinstance(telegram_update, dict)
@@ -340,6 +718,165 @@ def test_shift_callback_restores_the_old_web_app_fallback() -> None:
             },
         },
     ]
+
+
+def test_shift_callback_rejects_non_admin() -> None:
+    _apply_gateway_provider_migration()
+    event = _registration_callback_event()
+    telegram_update = event["telegramUpdate"]
+    assert isinstance(telegram_update, dict)
+    callback = telegram_update["callback_query"]
+    assert isinstance(callback, dict)
+    callback["data"] = "att:shift"
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=event,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["actions"] == [
+        {
+            "actionId": "evt-attendance-register-1002.callback",
+            "type": "ANSWER_CALLBACK",
+            "callbackQueryId": "callback-1002",
+        },
+        {
+            "actionId": "evt-attendance-register-1002.reply",
+            "type": "SEND_MESSAGE",
+            "chatId": 81002,
+            "replyToMessageId": 502,
+            "text": "无权限操作",
+        },
+    ]
+
+
+def test_shift_callback_reports_unconfigured_web_app() -> None:
+    _apply_gateway_provider_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 81002, 81002),
+            )
+            cursor.execute(
+                "INSERT INTO admin_list (admin_employee_id) VALUES (%s)",
+                ("74808",),
+            )
+    event = _registration_callback_event()
+    telegram_update = event["telegramUpdate"]
+    assert isinstance(telegram_update, dict)
+    callback = telegram_update["callback_query"]
+    assert isinstance(callback, dict)
+    callback["data"] = "att:shift"
+    app = create_attendance_gateway_provider_app(
+        AttendanceGatewayProviderConfig(
+            database_url=_database_url(),
+            gateway_to_attendance_bearer_token=_TEST_GATEWAY_CREDENTIAL,
+            gateway_internal_base_url=_TEST_UNUSED_GATEWAY_BASE_URL,
+            attendance_to_gateway_bearer_token=(
+                _TEST_ATTENDANCE_TO_GATEWAY_CREDENTIAL
+            ),
+            shift_web_app_public_url="",
+        )
+    )
+
+    response = TestClient(app).post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=event,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["actions"][1] == {
+        "actionId": "evt-attendance-register-1002.reply",
+        "type": "SEND_MESSAGE",
+        "chatId": 81002,
+        "replyToMessageId": 502,
+        "text": (
+            "班表 Web 未配置：请在 .env 设置 SHIFT_WEB_APP_PUBLIC_URL\n"
+            "（须为 Telegram 可访问的 HTTPS 地址）"
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    ("message_fields", "expected_file_line"),
+    [
+        ({"text": "/test"}, ""),
+        (
+            {
+                "caption": "/test",
+                "document": {"file_id": "document-file-701"},
+            },
+            "\nfile_id：document-file-701",
+        ),
+        (
+            {
+                "caption": "/test@ParityBot",
+                "photo": [
+                    {"file_id": "photo-small-701"},
+                    {"file_id": "photo-large-701"},
+                ],
+            },
+            "\nfile_id：photo-large-701",
+        ),
+    ],
+)
+def test_admin_diagnostic_restores_exact_text_caption_and_attachment_behavior(
+    message_fields: dict[str, object],
+    expected_file_line: str,
+) -> None:
+    _apply_gateway_provider_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 87099, -10087001),
+            )
+            cursor.execute(
+                "INSERT INTO admin_list (admin_employee_id) VALUES (%s)",
+                ("74808",),
+            )
+    event = _group_action_command_event("ignored")
+    event["eventId"] = "evt-attendance-admin-test-701"
+    event["receivedAt"] = "2026-08-08T09:00:00Z"
+    telegram_update = event["telegramUpdate"]
+    assert isinstance(telegram_update, dict)
+    message = telegram_update["message"]
+    assert isinstance(message, dict)
+    message["from"] = {
+        "id": 87099,
+        "is_bot": False,
+        "first_name": "Parity",
+        "username": "parity_admin",
+    }
+    message.pop("text", None)
+    message.update(message_fields)
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=event,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["actions"][0]["text"] == (
+        "telegram_id：87099\n\n"
+        "用户名：@parity_admin\n"
+        "chat_id：-10081002\n"
+        "utc_now：2026-08-08 09:00:00"
+        f"{expected_file_line}"
+    )
 
 
 def test_group_start_restores_the_exact_reply_keyboard_menu() -> None:
@@ -737,7 +1274,7 @@ def test_attendance_summary_owns_its_shell_copy_and_actions() -> None:
     assert unauthorized.json()["error"]["code"] == "UNAUTHORIZED"
 
 
-def test_attendance_summary_failure_returns_provider_owned_old_fallback(
+def test_attendance_summary_failure_is_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fail_summary_read(**_kwargs: object) -> object:
@@ -755,27 +1292,12 @@ def test_attendance_summary_failure_returns_provider_owned_old_fallback(
         params={"telegramUserId": 81001},
     )
 
-    assert response.status_code == 200, response.text
+    assert response.status_code == 500, response.text
     assert response.json() == {
-        "protocolVersion": "1.0",
-        "shellPresentation": {
-            "lines": [
-                {"order": 200, "text": "组织归属：暂不可用"},
-                {"order": 300, "text": "考勤资料：需人工处理"},
-            ],
-            "actionRows": [
-                {
-                    "order": 100,
-                    "buttons": [{"text": "考勤菜单", "callbackData": "att:menu"}],
-                },
-                {
-                    "order": 300,
-                    "buttons": [
-                        {"text": "绑定考勤资料", "callbackData": "att:register"}
-                    ],
-                },
-            ],
-        },
+        "error": {
+            "code": "INTERNAL_ERROR",
+            "message": "Attendance 汇总读取失败。",
+        }
     }
 
 
@@ -1441,6 +1963,105 @@ def test_gateway_can_idempotently_end_the_owned_private_registration_session() -
             assert cursor.fetchone() == (0,)
 
 
+def test_provider_does_not_expose_noncanonical_registration_session_status() -> None:
+    client = _provider_client()
+    headers = {"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"}
+    response = client.post(
+        "/integration/gateway/v1/private-registration-session/status",
+        headers=headers,
+        json={
+            "protocolVersion": "1.0",
+            "telegramUserId": "81002",
+            "privateChatId": "81002",
+        },
+    )
+    assert response.status_code == 404
+
+
+def test_provider_rejects_a_concurrently_locked_event_without_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gateway_provider import event_module
+    from gateway_provider.contracts import GatewayEventRequest
+
+    class Cursor:
+        def execute(self, _query: str, _params: object) -> None:
+            return None
+
+        def fetchone(self) -> tuple[bool]:
+            return (False,)
+
+        def __enter__(self) -> "Cursor":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    class Connection:
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+        def __enter__(self) -> "Connection":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(event_module.psycopg2, "connect", lambda _url: Connection())
+    module = event_module.AttendanceGatewayEventModule(
+        "postgresql://parity.invalid/attendance",
+        object(),
+        shift_web_app_public_url="https://attendance.example.test",
+    )
+    request = GatewayEventRequest.model_validate(
+        _registration_callback_event(),
+        strict=True,
+    )
+
+    with pytest.raises(RuntimeError, match="busy"):
+        module.process_event(request)
+
+
+def test_provider_exposes_event_lock_contention_as_retryable_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gateway_provider import event_module
+
+    _apply_gateway_provider_migration()
+
+    def raise_busy(
+        _module: event_module.AttendanceGatewayEventModule,
+        request: object,
+    ) -> object:
+        event_id = getattr(request, "eventId")
+        raise event_module.GatewayEventBusyError(str(event_id))
+
+    monkeypatch.setattr(
+        event_module.AttendanceGatewayEventModule,
+        "process_event",
+        raise_busy,
+    )
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=_registration_callback_event(),
+    )
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "1"
+    assert response.json() == {
+        "error": {
+            "code": "EVENT_BUSY",
+            "message": "Attendance 事件正在处理中，请重试。",
+            "details": {
+                "provider": "ATTENDANCE",
+                "eventId": "evt-attendance-register-1002",
+            },
+        }
+    }
+
+
 def test_profile_callback_reads_the_bound_attendance_identity() -> None:
     _apply_gateway_provider_migration()
     with psycopg2.connect(_database_url()) as connection:
@@ -1589,13 +2210,44 @@ def test_admin_export_callback_returns_deterministic_gateway_document_bytes() ->
 
     assert first.status_code == 200, first.text
     assert second.status_code == 200, second.text
-    first_document = first.json()["actions"][2]
-    second_document = second.json()["actions"][2]
     assert first.json()["actions"][0] == {
         "actionId": "evt-attendance-export-1501.callback",
         "type": "ANSWER_CALLBACK",
         "callbackQueryId": "callback-1501",
     }
+    assert [action["type"] for action in first.json()["actions"]] == [
+        "ANSWER_CALLBACK",
+        "SEND_MESSAGE",
+    ]
+    assert [action["type"] for action in second.json()["actions"]] == [
+        "ANSWER_CALLBACK",
+        "SEND_MESSAGE",
+    ]
+    for event_number in (1501, 1502):
+        _record_event_action_delivered(
+            event_id=f"evt-attendance-export-{event_number}",
+            action_id=f"evt-attendance-export-{event_number}.progress",
+        )
+    assert run_deferred_interaction_cycle(
+        _deferred_scheduler_config(),
+        worker_id="export-deterministic-after-progress-receipts",
+        now=datetime(2026, 8, 8, 8, 0, 2, tzinfo=timezone.utc),
+    ) == (2, 4)
+    documents: list[dict[str, object]] = []
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            for event_number in (1501, 1502):
+                cursor.execute(
+                    """
+                    SELECT action_payload->'action'
+                    FROM attendance_worker_actions
+                    WHERE owner_key LIKE %s
+                      AND action_payload->'action'->>'type' = 'SEND_DOCUMENT'
+                    """,
+                    (f"deferred-event:evt-attendance-export-{event_number}:%",),
+                )
+                documents.append(cursor.fetchone()[0])
+    first_document, second_document = documents
     assert first_document["type"] == "SEND_DOCUMENT"
     assert first_document["chatId"] == 81002
     assert first_document["replyToMessageId"] == 1501
@@ -1641,8 +2293,6 @@ def test_admin_export_preserves_old_progress_document_delete_trace() -> None:
     assert [action["type"] for action in actions] == [
         "ANSWER_CALLBACK",
         "SEND_MESSAGE",
-        "SEND_DOCUMENT",
-        "DELETE_MESSAGE",
     ]
     assert actions[1] == {
         "actionId": "evt-attendance-export-1504.progress",
@@ -1651,12 +2301,133 @@ def test_admin_export_preserves_old_progress_document_delete_trace() -> None:
         "replyToMessageId": 1504,
         "text": "正在生成今日考勤导出（2026-08-08～2026-08-08），请稍候…",
     }
-    assert actions[3] == {
+    assert run_deferred_interaction_cycle(
+        _deferred_scheduler_config(),
+        worker_id="export-before-progress-receipt",
+        now=datetime(2026, 8, 8, 8, 0, 1, tzinfo=timezone.utc),
+    ) == (0, 0)
+    _record_event_action_delivered(
+        event_id="evt-attendance-export-1504",
+        action_id="evt-attendance-export-1504.progress",
+        message_id=9504,
+    )
+    assert run_deferred_interaction_cycle(
+        _deferred_scheduler_config(),
+        worker_id="export-after-progress-receipt",
+        now=datetime(2026, 8, 8, 8, 0, 2, tzinfo=timezone.utc),
+    ) == (1, 2)
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT action_payload->'action', predecessor_action_id
+                FROM attendance_worker_actions
+                WHERE owner_key LIKE %s
+                ORDER BY owner_key
+                """,
+                ("deferred-event:evt-attendance-export-1504:%",),
+            )
+            terminal_rows = cursor.fetchall()
+            terminal_actions = [row[0] for row in terminal_rows]
+    assert [action["type"] for action in terminal_actions] == [
+        "SEND_DOCUMENT",
+        "DELETE_MESSAGE",
+    ]
+    assert terminal_actions[1] == {
         "actionId": "evt-attendance-export-1504.progress-delete",
         "type": "DELETE_MESSAGE",
         "chatId": 81002,
-        "messageIdSourceActionId": "evt-attendance-export-1504.progress",
+        "messageId": 9504,
     }
+    assert terminal_rows[0][1] is None
+    assert terminal_rows[1][1] == terminal_actions[0]["actionId"]
+
+
+@pytest.mark.parametrize(
+    "terminal_status",
+    ("PERMANENTLY_FAILED", "UNCERTAIN", "SUPERSEDED"),
+)
+def test_terminal_progress_receipt_fails_deferred_run_without_business_work(
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_status: str,
+) -> None:
+    _apply_gateway_provider_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 81002, 81002),
+            )
+            cursor.execute(
+                "INSERT INTO admin_list (admin_employee_id) VALUES (%s)",
+                ("74808",),
+            )
+    event_number = {
+        "PERMANENTLY_FAILED": 1510,
+        "UNCERTAIN": 1511,
+        "SUPERSEDED": 1512,
+    }[terminal_status]
+    event_id = f"evt-attendance-export-{event_number}"
+    progress_action_id = f"{event_id}.progress"
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=_export_callback_event("att:export:today", event_number=event_number),
+    )
+    assert response.status_code == 200, response.text
+
+    async def must_not_collect(**_kwargs: object) -> list[object]:
+        raise AssertionError("terminal progress feedback must stop business work")
+
+    monkeypatch.setattr(
+        gateway_export_module.attendance_export_service,
+        "collect_rows_for_range",
+        must_not_collect,
+    )
+    _record_event_action_terminal(
+        event_id=event_id,
+        action_id=progress_action_id,
+        status=terminal_status,
+    )
+
+    assert run_deferred_interaction_cycle(
+        _deferred_scheduler_config(),
+        worker_id=f"terminal-progress-{terminal_status.lower()}",
+        now=datetime(2026, 8, 8, 8, 0, 2, tzinfo=timezone.utc),
+    ) == (1, 0)
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT status, last_error_code, completed_at IS NOT NULL
+                FROM attendance_worker_schedule_runs
+                WHERE run_key = %s
+                """,
+                (f"deferred-export:{event_id}",),
+            )
+            assert cursor.fetchone() == (
+                "FAILED",
+                f"PROGRESS_ACTION_{terminal_status}",
+                True,
+            )
+    readiness = _provider_client().get("/readyz")
+    assert readiness.status_code == 503
+    assert readiness.json()["operational"]["schedulerFailed"] == 1
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM attendance_worker_schedule_runs WHERE run_key = %s",
+                (f"deferred-export:{event_id}",),
+            )
+            cursor.execute(
+                "DELETE FROM attendance_gateway_delivery_receipts "
+                "WHERE receipt_id = %s",
+                (f"receipt-{progress_action_id}",),
+            )
 
 
 def test_admin_export_failure_preserves_old_error_and_progress_cleanup(
@@ -1697,11 +2468,34 @@ def test_admin_export_failure_preserves_old_error_and_progress_cleanup(
     assert [action["type"] for action in actions] == [
         "ANSWER_CALLBACK",
         "SEND_MESSAGE",
-        "SEND_MESSAGE",
-        "DELETE_MESSAGE",
     ]
-    assert actions[2]["text"] == "导出失败，请稍后重试或联系管理员查看服务日志。"
-    assert actions[3]["messageIdSourceActionId"] == actions[1]["actionId"]
+    _record_event_action_delivered(
+        event_id="evt-attendance-export-1505",
+        action_id="evt-attendance-export-1505.progress",
+        message_id=9505,
+    )
+    assert run_deferred_interaction_cycle(
+        _deferred_scheduler_config(),
+        worker_id="export-failure-after-progress-receipt",
+        now=datetime(2026, 8, 8, 8, 0, 2, tzinfo=timezone.utc),
+    ) == (1, 2)
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT action_payload->'action'
+                FROM attendance_worker_actions
+                WHERE owner_key LIKE %s
+                ORDER BY owner_key
+                """,
+                ("deferred-event:evt-attendance-export-1505:%",),
+            )
+            terminal_actions = [row[0] for row in cursor.fetchall()]
+    assert terminal_actions[0]["text"] == (
+        "导出失败，请稍后重试或联系管理员查看服务日志。"
+    )
+    assert terminal_actions[1]["messageId"] == 9505
+    assert "messageIdSourceActionId" not in terminal_actions[1]
 
 
 def test_non_admin_export_callback_fails_explicitly() -> None:
@@ -1917,7 +2711,7 @@ def test_unregistered_group_leave_keeps_the_old_registration_callback() -> None:
     }
 
 
-@pytest.mark.parametrize("command", ["/att_signin", "/signin", "签到"])
+@pytest.mark.parametrize("command", ["/signin", "签到"])
 def test_group_attendance_command_returns_the_same_registered_fill_action(
     command: str,
 ) -> None:
@@ -1979,7 +2773,7 @@ def test_group_leave_command_returns_the_registered_leave_fill_action() -> None:
     response = _provider_client().post(
         "/integration/gateway/v1/events",
         headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
-        json=_group_action_command_event("/att_leave"),
+        json=_group_action_command_event("/leave"),
     )
 
     assert response.status_code == 200, response.text
@@ -2004,6 +2798,134 @@ def test_group_leave_command_returns_the_registered_leave_fill_action() -> None:
             },
         }
     ]
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["/att_signin", "/att_signout", "/att_leave", "/att_back"],
+)
+def test_group_attendance_ignores_non_v1_command_aliases(command: str) -> None:
+    _apply_gateway_provider_migration()
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=_group_action_command_event(command),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "protocolVersion": "1.0",
+        "eventId": "evt-attendance-group-1203",
+        "result": "PROCESSED",
+        "session": {"directive": "UNCHANGED"},
+        "actions": [],
+    }
+
+
+def test_group_export_text_restores_private_only_guidance() -> None:
+    _apply_gateway_provider_migration()
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=_group_action_command_event("导出"),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["actions"] == [{
+        "actionId": "evt-attendance-group-1203.reply",
+        "type": "SEND_MESSAGE",
+        "chatId": -10081002,
+        "replyToMessageId": 703,
+        "text": "导出仅支持私聊中使用。",
+    }]
+
+
+def test_group_registration_callback_restores_private_chat_guidance() -> None:
+    _apply_gateway_provider_migration()
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=_group_action_callback_event("att:register", event_number=1212),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["actions"] == [
+        {
+            "actionId": "evt-attendance-group-1212.callback",
+            "type": "ANSWER_CALLBACK",
+            "callbackQueryId": "callback-1212",
+        },
+        {
+            "actionId": "evt-attendance-group-1212.reply",
+            "type": "SEND_MESSAGE",
+            "chatId": -10081002,
+            "replyToMessageId": 701,
+            "text": "请先私聊机器人，再点击【注册】完成注册。",
+        },
+    ]
+
+
+def test_switch_attendance_group_updates_registered_chat() -> None:
+    _apply_gateway_provider_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                ("74808", "GRANDFOR", 81002, -10081000),
+            )
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=_group_action_callback_event("att:switch_group", event_number=1210),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["actions"] == [
+        {
+            "actionId": "evt-attendance-group-1210.callback",
+            "type": "ANSWER_CALLBACK",
+            "callbackQueryId": "callback-1210",
+        },
+        {
+            "actionId": "evt-attendance-group-1210.reply",
+            "type": "SEND_MESSAGE",
+            "chatId": -10081002,
+            "replyToMessageId": 701,
+            "text": "已记录本群为考勤群，请重新发送打卡截图。",
+        },
+    ]
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT registered_chat_id FROM registrations WHERE tg_id = %s",
+                (81002,),
+            )
+            assert cursor.fetchone() == (-10081002,)
+
+
+def test_switch_attendance_group_does_not_create_registration() -> None:
+    _apply_gateway_provider_migration()
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=_group_action_callback_event("att:switch_group", event_number=1211),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["actions"][1]["text"] == "您尚未注册。"
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT count(*) FROM registrations WHERE tg_id = %s", (81002,))
+            assert cursor.fetchone() == (0,)
 
 
 def test_group_leave_and_back_reports_mutate_one_record_idempotently() -> None:
@@ -2175,6 +3097,10 @@ def test_group_photo_checkin_reads_gateway_file_and_persists_once(
     _apply_gateway_provider_migration()
     monkeypatch.setenv("FORMAL_GROUP_ROSTER_SOURCE_MAP", "-10081002:main")
     monkeypatch.setenv("CHECKIN_AI_ENABLED", "false")
+    monkeypatch.setenv("TEST_GROUP_GOOGLE_SHEETS_ENABLED", "false")
+    monkeypatch.setenv("BBQ_GOOGLE_SHEETS_ENABLED", "true")
+    monkeypatch.setenv("BBQ_GOOGLE_SHEETS_CHAT_ID", "-10081002")
+    monkeypatch.setenv("BBQ_GOOGLE_SHEETS_SPREADSHEET_ID", "sheet-bbq-1401")
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -2216,15 +3142,63 @@ def test_group_photo_checkin_reads_gateway_file_and_persists_once(
             headers=headers,
             json=event,
         )
+        assert authorizations == []
+        assert run_deferred_interaction_cycle(
+            _deferred_scheduler_config(),
+            worker_id="checkin-before-progress-receipt",
+            now=datetime(2026, 8, 8, 8, 0, 1, tzinfo=timezone.utc),
+            file_reader=GatewayFileReader(
+                base_url=gateway_base_url,
+                bearer_token=_TEST_ATTENDANCE_TO_GATEWAY_CREDENTIAL,
+            ),
+        ) == (0, 0)
+        _record_event_action_delivered(
+            event_id="evt-attendance-checkin-1401",
+            action_id="evt-attendance-checkin-1401.progress",
+        )
+        assert run_deferred_interaction_cycle(
+            _deferred_scheduler_config(),
+            worker_id="checkin-after-progress-receipt",
+            now=datetime(2026, 8, 8, 8, 0, 2, tzinfo=timezone.utc),
+            file_reader=GatewayFileReader(
+                base_url=gateway_base_url,
+                bearer_token=_TEST_ATTENDANCE_TO_GATEWAY_CREDENTIAL,
+            ),
+        ) == (1, 1)
+        with psycopg2.connect(_database_url()) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE attendance_worker_schedule_runs
+                    SET status = 'RETRYING', lease_owner = NULL,
+                        lease_expires_at = NULL, next_attempt_at = %s,
+                        updated_at = %s
+                    WHERE run_key = %s
+                    """,
+                    (
+                        datetime(2026, 8, 8, 8, 0, 2, tzinfo=timezone.utc),
+                        datetime(2026, 8, 8, 8, 0, 2, tzinfo=timezone.utc),
+                        "deferred-checkin:evt-attendance-checkin-1401",
+                    ),
+                )
+        assert run_deferred_interaction_cycle(
+            _deferred_scheduler_config(),
+            worker_id="checkin-restart-after-outbox-commit",
+            now=datetime(2026, 8, 8, 8, 0, 3, tzinfo=timezone.utc),
+            file_reader=GatewayFileReader(
+                base_url=gateway_base_url,
+                bearer_token=_TEST_ATTENDANCE_TO_GATEWAY_CREDENTIAL,
+            ),
+        ) == (1, 0)
 
     assert response.status_code == 200, response.text
     assert response.json()["actions"] == [
         {
-            "actionId": "evt-attendance-checkin-1401.reply",
+            "actionId": "evt-attendance-checkin-1401.progress",
             "type": "SEND_MESSAGE",
             "chatId": -10081002,
             "replyToMessageId": 1401,
-            "text": "签到成功",
+            "text": "已收到签到截图，正在识别，请稍候…",
         }
     ]
     assert duplicate.json() == {**response.json(), "result": "DUPLICATE"}
@@ -2243,6 +3217,25 @@ def test_group_photo_checkin_reads_gateway_file_and_persists_once(
                 ("74808",),
             )
             rows = cursor.fetchall()
+            cursor.execute(
+                """
+                SELECT run_key, job_kind, status, payload
+                FROM attendance_worker_schedule_runs
+                WHERE job_kind = 'CHECKIN_SHEETS_SYNC'
+                ORDER BY run_key
+                """
+            )
+            sheets_jobs = cursor.fetchall()
+            cursor.execute(
+                """
+                SELECT action_payload->'action'
+                FROM attendance_worker_actions
+                WHERE owner_key LIKE %s
+                ORDER BY owner_key
+                """,
+                ("deferred-event:evt-attendance-checkin-1401:%",),
+            )
+            terminal_actions = [row[0] for row in cursor.fetchall()]
     assert rows == [
         (
             file_ref,
@@ -2253,6 +3246,21 @@ def test_group_photo_checkin_reads_gateway_file_and_persists_once(
             1401,
         )
     ]
+    assert sheets_jobs == [
+        (
+            "checkin-sheets:BBQ:10081002:1401",
+            "CHECKIN_SHEETS_SYNC",
+            "PENDING",
+            {"chatId": -10081002, "syncKind": "BBQ"},
+        )
+    ]
+    assert terminal_actions == [{
+        "actionId": "evt-attendance-checkin-1401.reply",
+        "type": "SEND_MESSAGE",
+        "chatId": -10081002,
+        "replyToMessageId": 1401,
+        "text": "签到成功",
+    }]
 
 
 def test_group_photo_checkin_outside_roster_fails_without_false_success(
