@@ -7,7 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from scripts.parity.run_attendance_differential import normalize_markup
+from scripts.parity.run_attendance_differential import (
+    load_attendance_matrix,
+    normalize_markup,
+)
 
 
 def test_markup_normalization_preserves_exact_button_payloads() -> None:
@@ -127,27 +130,11 @@ def test_attendance_differential_executes_every_matrix_scenario() -> None:
 
 
 def _attendance_matrix(matrix_path: Path) -> list[dict[str, object]]:
-    source_url = matrix_path.as_uri()
-    expression = (
-        f"const m=await import({json.dumps(source_url)});"
-        "const rows=m.OLD_CURRENT_BEHAVIOR_DIFFERENTIAL_MATRIX"
-        ".filter((row)=>row.owner==='ATTENDANCE')"
-        ".map(({scenarioId,classification,exactInput})=>"
-        "({scenarioId,classification,exactInput}));"
-        "process.stdout.write(JSON.stringify(rows));"
-    )
-    completed = subprocess.run(
-        [
-            "node",
-            "--experimental-strip-types",
-            "--input-type=module",
-            "-e",
-            expression,
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    value = json.loads(completed.stdout)
-    assert isinstance(value, list)
-    return value
+    return [
+        {
+            "scenarioId": item["scenarioId"],
+            "classification": item["classification"],
+            "exactInput": item["exactInput"],
+        }
+        for item in load_attendance_matrix(matrix_path)
+    ]
