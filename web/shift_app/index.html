@@ -905,7 +905,7 @@
 
           telegramInitData = await waitInitData(800);
 
-          if (telegramInitData) await exchangeSessionFromInitData();
+          if (telegramInitData) await exchangeGatewaySession();
 
           if (hasAuthMaterial()) return load(true);
 

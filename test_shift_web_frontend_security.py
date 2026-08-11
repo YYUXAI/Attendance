@@ -28,3 +28,12 @@ def test_shift_frontend_exchanges_init_data_only_with_gateway() -> None:
     assert "Authorization" in html
     assert "/api/v1/shift-config/send-template" not in html
     assert "/api/v1/shift-config/send-export" not in html
+
+
+def test_shift_frontend_auth_retry_reuses_the_gateway_session_exchange() -> None:
+    html = (Path(__file__).parent / "web" / "shift_app" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "async function exchangeGatewaySession()" in html
+    assert "exchangeSessionFromInitData" not in html
