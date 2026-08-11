@@ -24,6 +24,7 @@ Gateway 文件只通过 `GET /internal/v1/telegram-files/{fileRef}` 读取。Att
 - WebApp session 使用独立签名 secret，固定 issuer、audience、subject、expiry 和 session ID。
 - Attendance 进程发现任何 Telegram owner credential 时拒绝启动。
 - canonical protocol 只存在于 UXAssistant-Gateway `contracts/v1`；本仓库仅保留本地严格验证实现。
+- Provider 启动和 readiness 暴露的协议指纹必须等于 Gateway 对 `contracts/v1` 排序内容计算出的 canonical SHA-256；手写日期或版本字符串不能替代内容摘要。
 - `/readyz` 只检查 Attendance 自有数据库、必需表和 terminal receipt operational state；`PERMANENTLY_FAILED` 或 `UNCERTAIN` receipt 会使 readiness fail closed，不读取 Gateway transport truth。
 
 ## Durable Provider worker
