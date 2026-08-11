@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from gateway_provider.contracts import (
+    GATEWAY_PROTOCOL_FINGERPRINT,
     GatewayDeliveryReceiptRequest,
     GatewayEventRequest,
     PrivateRegistrationSessionEndRequest,
@@ -111,7 +112,13 @@ def create_attendance_gateway_provider_app(
             read_provider_readiness,
             config.database_url,
         )
-        return JSONResponse(result, status_code=200 if result["ok"] else 503)
+        return JSONResponse(
+            {
+                **result,
+                "gatewayProtocolFingerprint": GATEWAY_PROTOCOL_FINGERPRINT,
+            },
+            status_code=200 if result["ok"] else 503,
+        )
 
     @app.post("/integration/gateway/v1/events")
     async def process_gateway_event(

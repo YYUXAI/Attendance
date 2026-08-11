@@ -3,7 +3,60 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from gateway_provider.contracts import SendMessageAction
+from gateway_provider.contracts import GatewayAsyncActionRequest, SendMessageAction
+
+
+def test_async_contract_requires_gateway_resolved_correlation_target() -> None:
+    with pytest.raises(ValidationError):
+        GatewayAsyncActionRequest.model_validate(
+            {
+                "protocolVersion": "1.0",
+                "provider": "ATTENDANCE",
+                "correlationId": "raw-target-bypass",
+                "createdAt": "2026-08-11T10:00:00Z",
+                "action": {
+                    "actionId": "act.raw-target-bypass",
+                    "type": "SEND_MESSAGE",
+                    "chatId": 81001,
+                    "text": "不得指定任意私聊目标",
+                },
+            },
+            strict=True,
+        )
+    request = GatewayAsyncActionRequest.model_validate(
+        {
+            "protocolVersion": "1.0",
+            "provider": "ATTENDANCE",
+            "correlationId": "group-route-target",
+            "createdAt": "2026-08-11T10:00:00Z",
+            "action": {
+                "actionId": "act.group-route-target",
+                "type": "SEND_GROUP_MESSAGE",
+                "routeKey": "group-route.attendance.0123456789abcdef0123456789abcdef01234567",
+                "text": "群通知",
+            },
+        },
+        strict=True,
+    )
+    assert request.action.type == "SEND_GROUP_MESSAGE"
+
+    targeted = GatewayAsyncActionRequest.model_validate(
+        {
+            "protocolVersion": "1.0",
+            "provider": "ATTENDANCE",
+            "correlationId": "source-bound-target",
+            "targetEventId": "telegram-update:installation:123",
+            "createdAt": "2026-08-11T10:00:00Z",
+            "action": {
+                "actionId": "act.source-bound-target",
+                "type": "SEND_MESSAGE",
+                "chatId": -87001,
+                "text": "source-bound",
+            },
+        },
+        strict=True,
+    )
+    assert targeted.targetEventId == "telegram-update:installation:123"
 
 
 @pytest.mark.parametrize(

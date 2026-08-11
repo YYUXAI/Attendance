@@ -51,10 +51,13 @@ def _apply_gateway_provider_migration() -> None:
     migrations = [
         (migration_directory / name).read_text(encoding="utf-8")
         for name in (
-            "0003_gateway_provider.sql",
-            "0004_registration_provider.sql",
-            "0007_admin_export_parity.sql",
-            "0009_durable_provider_worker.sql",
+                "0003_gateway_provider.sql",
+                "0004_registration_provider.sql",
+                "0005_webapp_sessions.sql",
+                "0006_delivery_receipts.sql",
+                "0007_admin_export_parity.sql",
+                "0008_worker_checkin_recovery.sql",
+                "0009_durable_provider_worker.sql",
             "0010_scheduler_fencing_and_sheets_outbox.sql",
             "0011_worker_action_dependencies.sql",
         )
@@ -131,7 +134,7 @@ def _deferred_scheduler_config() -> ProviderSchedulerConfig:
         daily_report_hour=23,
         daily_report_minute=30,
         daily_report_timezone="Asia/Shanghai",
-        daily_report_notify_tg_id=None,
+        daily_report_route_key=None,
     )
 
 
@@ -148,7 +151,6 @@ def _record_event_action_delivered(
         "attemptedAt": "2026-08-08T08:00:01.000Z",
         "telegramResult": {
             "accepted": True,
-            "chatId": 81002,
             "messageId": message_id,
         },
     }
@@ -247,6 +249,9 @@ def test_provider_health_and_readiness_verify_owned_database() -> None:
     assert readiness.status_code == 200
     assert readiness.json() == {
         "ok": True,
+        "gatewayProtocolFingerprint": (
+            "sha256:3d528d502b0b530e5a210e3680bad27a5ccfe78216aaa9f345b69c36bb94b5f9"
+        ),
         "status": "READY",
         "database": True,
         "requiredTables": {
@@ -453,6 +458,9 @@ def test_provider_health_fails_closed_when_database_is_unavailable() -> None:
     assert readiness.status_code == 503
     assert readiness.json() == {
         "ok": False,
+        "gatewayProtocolFingerprint": (
+            "sha256:3d528d502b0b530e5a210e3680bad27a5ccfe78216aaa9f345b69c36bb94b5f9"
+        ),
         "status": "NOT_READY",
         "database": False,
         "requiredTables": {
@@ -533,6 +541,56 @@ def test_attendance_command_restores_the_exact_private_menu_sequence() -> None:
             },
         }
     ]
+
+
+def test_gateway_private_reachability_ref_is_accepted_as_opaque_event_context() -> None:
+    _apply_gateway_provider_migration()
+    event = _attendance_command_event()
+    event["privateReachabilityRef"] = "private-reachability.active-81001"
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=event,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["result"] == "PROCESSED"
+    assert all(
+        action.get("chatId") == 81001
+        for action in response.json()["actions"]
+    )
+    assert all(
+        "reachabilityRef" not in action
+        for action in response.json()["actions"]
+    )
+
+
+def test_gateway_private_reachability_binding_rejects_provider_installation() -> None:
+    event = _attendance_command_event()
+    event["installationRef"] = "telegram-installation.attendance-active"
+    client = TestClient(
+        create_attendance_gateway_provider_app(
+            AttendanceGatewayProviderConfig(
+                database_url="postgresql://invalid:invalid@127.0.0.1:1/invalid",
+                gateway_to_attendance_bearer_token=_TEST_GATEWAY_CREDENTIAL,
+                gateway_internal_base_url=_TEST_UNUSED_GATEWAY_BASE_URL,
+                attendance_to_gateway_bearer_token=(
+                    _TEST_ATTENDANCE_TO_GATEWAY_CREDENTIAL
+                ),
+                shift_web_app_public_url=_TEST_SHIFT_WEB_PUBLIC_URL,
+            )
+        )
+    )
+
+    response = client.post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=event,
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "INVALID_REQUEST"
 
 
 def test_admin_attendance_menu_exposes_namespaced_export_action() -> None:
@@ -1196,6 +1254,54 @@ def test_gateway_bearer_is_required() -> None:
             "message": "Gateway 凭据无效。",
         }
     }
+
+
+@pytest.mark.parametrize(
+    ("callback_data", "event_number"),
+    [
+        ("rest:apply", 1221),
+        ("temporary_leave:approve:legacy", 1222),
+        ("qc:confirm:legacy", 1223),
+        ("notification:retry:legacy", 1224),
+    ],
+    ids=[
+        "leave-application",
+        "temporary-leave-approval",
+        "qc",
+        "legacy-notification",
+    ],
+)
+def test_retired_private_callbacks_fail_closed_without_persisting_event(
+    callback_data: str,
+    event_number: int,
+) -> None:
+    _apply_gateway_provider_migration()
+    event = _export_callback_event(callback_data, event_number=event_number)
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=event,
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json() == {
+        "error": {
+            "code": "ROUTE_OWNERSHIP_MISMATCH",
+            "message": "事件不属于 Attendance 路由。",
+            "details": {
+                "provider": "ATTENDANCE",
+                "eventId": f"evt-attendance-export-{event_number}",
+            },
+        }
+    }
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM gateway_processed_events WHERE event_id = %s",
+                (f"evt-attendance-export-{event_number}",),
+            )
+            assert cursor.fetchone() == (0,)
 
 
 def test_attendance_summary_owns_its_shell_copy_and_actions() -> None:

@@ -64,7 +64,7 @@ def _config() -> ProviderSchedulerConfig:
         daily_report_hour=23,
         daily_report_minute=30,
         daily_report_timezone="Asia/Shanghai",
-        daily_report_notify_tg_id=None,
+        daily_report_route_key=None,
     )
 
 

@@ -14,6 +14,10 @@ from pydantic import (
     model_validator,
 )
 
+GATEWAY_PROTOCOL_FINGERPRINT = (
+    "sha256:3d528d502b0b530e5a210e3680bad27a5ccfe78216aaa9f345b69c36bb94b5f9"
+)
+
 
 StableId = Annotated[
     str,
@@ -160,6 +164,7 @@ class GatewayEventRequest(BaseModel):
     ]
     conversationId: Annotated[str, StringConstraints(min_length=1, max_length=256)]
     receivedAt: str
+    privateReachabilityRef: StableId | None = None
     telegramUpdate: (
         TelegramMessageUpdate
         | TelegramEditedMessageUpdate
@@ -180,7 +185,6 @@ class GatewayEventRequest(BaseModel):
         if parsed.tzinfo is None or parsed.utcoffset() is None:
             raise ValueError("receivedAt must include a UTC offset")
         return value
-
 
 class InlineKeyboardButton(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -266,6 +270,26 @@ class SendMessageAction(BaseModel):
     ) = None
 
 
+class SendGroupMessageAction(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    actionId: StableId
+    type: Literal["SEND_GROUP_MESSAGE"]
+    routeKey: Annotated[
+        str,
+        StringConstraints(
+            min_length=3,
+            max_length=128,
+            pattern=r"^[a-z0-9][a-z0-9._:-]+$",
+        ),
+    ]
+    text: Annotated[str, StringConstraints(min_length=1, max_length=4096)]
+    parseMode: Literal["HTML", "Markdown"] | None = None
+    replyMarkup: (
+        InlineKeyboardMarkup | ReplyKeyboardMarkup | ReplyKeyboardRemoveMarkup | None
+    ) = None
+
+
 class BytesMediaSource(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -293,6 +317,23 @@ class SendDocumentAction(BaseModel):
     document: BytesMediaSource
     caption: Annotated[str, StringConstraints(max_length=1024)] | None = None
     replyToMessageId: Annotated[int, Field(ge=0)] | None = None
+
+
+class SendGroupDocumentAction(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    actionId: StableId
+    type: Literal["SEND_GROUP_DOCUMENT"]
+    routeKey: Annotated[
+        str,
+        StringConstraints(
+            min_length=3,
+            max_length=128,
+            pattern=r"^[a-z0-9][a-z0-9._:-]+$",
+        ),
+    ]
+    document: BytesMediaSource
+    caption: Annotated[str, StringConstraints(max_length=1024)] | None = None
 
 
 class DeleteMessageAction(BaseModel):
@@ -374,6 +415,7 @@ class GatewayAsyncActionRequest(BaseModel):
     protocolVersion: Literal["1.0"]
     provider: Literal["ATTENDANCE"]
     relatedEventId: StableId | None = None
+    targetEventId: StableId | None = None
     correlationId: Annotated[
         str,
         StringConstraints(
@@ -385,7 +427,9 @@ class GatewayAsyncActionRequest(BaseModel):
     createdAt: str
     action: (
         SendMessageAction
+        | SendGroupMessageAction
         | SendDocumentAction
+        | SendGroupDocumentAction
         | DeleteMessageAction
         | AnswerCallbackAction
         | AnswerInlineQueryAction
@@ -408,6 +452,20 @@ class GatewayAsyncActionRequest(BaseModel):
             raise ValueError(
                 "async action requires exactly one relatedEventId or correlationId"
             )
+        if self.targetEventId is not None and self.correlationId is None:
+            raise ValueError("targetEventId requires correlationId")
+        if (
+            self.correlationId is not None
+            and self.targetEventId is None
+            and not isinstance(
+                self.action, (SendGroupMessageAction, SendGroupDocumentAction)
+            )
+        ):
+            raise ValueError("correlation action target must be resolved by Gateway")
+        if self.relatedEventId is not None and isinstance(
+            self.action, (SendGroupMessageAction, SendGroupDocumentAction)
+        ):
+            raise ValueError("source-event action must use its event target")
         return self
 
 
@@ -423,7 +481,6 @@ class GatewayTelegramResult(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     accepted: Literal[True]
-    chatId: int | None = None
     messageId: Annotated[int, Field(ge=0)] | None = None
     fileId: Annotated[
         str,

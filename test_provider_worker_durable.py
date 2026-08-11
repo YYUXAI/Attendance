@@ -26,8 +26,6 @@ from tasks import provider_worker
 _ROOT_ACTION_ID = "attendance.worker.integration.1001"
 _GATEWAY_CREDENTIAL = "gateway-to-attendance-worker-test-token"
 _ATTENDANCE_CREDENTIAL = "attendance-to-gateway-worker-test-token"
-
-
 def _database_url() -> str:
     value = (os.environ.get("ATTENDANCE_TEST_DATABASE_URL") or "").strip()
     if not value:
@@ -196,8 +194,8 @@ def _worker_request(action_id: str, *, text: str) -> dict[str, object]:
         "createdAt": "2026-08-09T10:00:00Z",
         "action": {
             "actionId": action_id,
-            "type": "SEND_MESSAGE",
-            "chatId": 87001,
+            "type": "SEND_GROUP_MESSAGE",
+            "routeKey": "group-route.attendance.worker-test",
             "text": text,
         },
     }
@@ -250,8 +248,8 @@ def test_worker_delivers_a_durable_action_and_receipt_finishes_it_once() -> None
         "createdAt": "2026-08-09T10:00:00Z",
         "action": {
             "actionId": _ROOT_ACTION_ID,
-            "type": "SEND_MESSAGE",
-            "chatId": 87001,
+            "type": "SEND_GROUP_MESSAGE",
+            "routeKey": "group-route.attendance.worker-test",
             "text": "考勤提醒：请及时打卡。",
         },
     }
@@ -280,7 +278,6 @@ def test_worker_delivers_a_durable_action_and_receipt_finishes_it_once() -> None
                 "attemptedAt": "2026-08-09T10:00:01Z",
                 "telegramResult": {
                     "accepted": True,
-                    "chatId": 87001,
                     "messageId": 91001,
                 },
             },
@@ -492,7 +489,6 @@ def test_retryable_receipt_creates_one_successor_attempt() -> None:
             "attemptedAt": "2026-08-09T10:00:03Z",
             "telegramResult": {
                 "accepted": True,
-                "chatId": 87001,
                 "messageId": 91004,
             },
         },
@@ -610,8 +606,8 @@ def test_http_202_with_unverifiable_acceptance_is_uncertain_and_retryable(
             "createdAt": "2099-08-08T00:00:00Z",
             "action": {
                 "actionId": _ROOT_ACTION_ID,
-                "type": "SEND_MESSAGE",
-                "chatId": 87001,
+                "type": "SEND_GROUP_MESSAGE",
+                "routeKey": "group-route.attendance.worker-test",
                 "text": "durable acceptance",
             },
         },
@@ -667,7 +663,6 @@ def test_dependent_actions_wait_for_predecessor_delivery() -> None:
                 "attemptedAt": "2026-08-09T10:00:01Z",
                 "telegramResult": {
                     "accepted": True,
-                    "chatId": 87001,
                     "messageId": 91010,
                 },
             },

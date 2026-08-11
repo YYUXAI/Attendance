@@ -15,8 +15,6 @@ from gateway_provider.contracts import GatewayDeliveryReceiptRequest
 
 _GATEWAY_CREDENTIAL = "gateway-to-attendance-receipt-test-credential"
 _ATTENDANCE_CREDENTIAL = "attendance-to-gateway-receipt-test-credential"
-
-
 def _database_url() -> str:
     value = (os.environ.get("ATTENDANCE_TEST_DATABASE_URL") or "").strip()
     if not value:
@@ -99,12 +97,42 @@ def _receipt(*, status: str = "DELIVERED") -> dict[str, object]:
     if status == "DELIVERED":
         base["telegramResult"] = {
             "accepted": True,
-            "chatId": 81001,
             "messageId": 91001,
         }
     else:
         base["failure"] = {"code": "TELEGRAM_ERROR", "terminal": True}
     return base
+
+
+def test_delivery_receipt_contract_exposes_no_transport_ownership() -> None:
+    parsed = GatewayDeliveryReceiptRequest.model_validate(_receipt())
+
+    assert parsed.actionId == "evt-attendance-receipt-1001.menu"
+
+
+def test_delivery_receipt_endpoint_rejects_provider_visible_installation_before_store() -> None:
+    receipt = _receipt()
+    receipt["installationRef"] = "telegram-installation.attendance-active"
+    client = TestClient(
+        create_attendance_gateway_provider_app(
+            AttendanceGatewayProviderConfig(
+                database_url="postgresql://invalid:invalid@127.0.0.1:1/invalid",
+                gateway_to_attendance_bearer_token=_GATEWAY_CREDENTIAL,
+                gateway_internal_base_url="http://127.0.0.1:19081/",
+                attendance_to_gateway_bearer_token=_ATTENDANCE_CREDENTIAL,
+                shift_web_app_public_url="https://attendance.example.test",
+            )
+        )
+    )
+
+    response = client.post(
+        "/integration/gateway/v1/delivery-receipts",
+        headers={"Authorization": f"Bearer {_GATEWAY_CREDENTIAL}"},
+        json=receipt,
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "INVALID_REQUEST"
 
 
 def test_delivery_receipt_accepts_a_superseded_response_successor() -> None:

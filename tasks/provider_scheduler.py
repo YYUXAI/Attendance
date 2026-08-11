@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import logging
 import os
 import socket
@@ -58,7 +59,7 @@ class ProviderSchedulerConfig:
     daily_report_hour: int
     daily_report_minute: int
     daily_report_timezone: str
-    daily_report_notify_tg_id: int | None
+    daily_report_route_key: str | None
     gateway_base_url: str | None = None
     gateway_bearer_token: str | None = None
 
@@ -71,9 +72,9 @@ class ProviderSchedulerConfig:
             raise ValueError("lease_seconds must be between 1 and 3600")
         ZoneInfo(self.group_summary_timezone)
         ZoneInfo(self.daily_report_timezone)
-        if self.daily_report_enabled and self.daily_report_notify_tg_id is None:
+        if self.daily_report_enabled and self.daily_report_route_key is None:
             raise ValueError(
-                "DAILY_ATTENDANCE_REPORT_NOTIFY_TG_ID is required when the daily report is enabled"
+                "DAILY_ATTENDANCE_REPORT_ROUTE_KEY is required when the daily report is enabled"
             )
         if (self.gateway_base_url is None) != (self.gateway_bearer_token is None):
             raise ValueError(
@@ -378,7 +379,8 @@ def _complete_deferred_interaction(
                     request={
                         "protocolVersion": "1.0",
                         "provider": "ATTENDANCE",
-                        "correlationId": f"deferred.{event.eventId}.{index}",
+                        "correlationId": f"{event.eventId}.deferred.{index}",
+                        "targetEventId": event.eventId,
                         "createdAt": _timestamp(created_at),
                         "action": action.model_dump(
                             mode="json",
@@ -587,7 +589,7 @@ def _enqueue_group_summaries(
                 request=_message_request(
                     action_id=action_id,
                     created_at=created_at,
-                    chat_id=chat_id,
+                    route_key=group_route_key(chat_id),
                     text=text,
                 ),
             )
@@ -601,9 +603,9 @@ def _enqueue_daily_report(
     report_date: date,
     created_at: datetime,
 ) -> int:
-    notify_tg_id = config.daily_report_notify_tg_id
-    if notify_tg_id is None:
-        raise RuntimeError("daily report notify Telegram ID is not configured")
+    route_key = config.daily_report_route_key
+    if route_key is None:
+        raise RuntimeError("daily report Gateway route key is not configured")
     with database_url_scope(config.database_url):
         rows = asyncio.run(
             attendance_export_service.collect_rows_for_date(
@@ -619,8 +621,8 @@ def _enqueue_daily_report(
         "createdAt": _timestamp(created_at),
         "action": {
             "actionId": action_id,
-            "type": "SEND_DOCUMENT",
-            "chatId": notify_tg_id,
+            "type": "SEND_GROUP_DOCUMENT",
+            "routeKey": route_key,
             "document": {
                 "source": "BYTES",
                 "contentBase64": base64.b64encode(csv_bytes).decode("ascii"),
@@ -640,7 +642,7 @@ def _enqueue_daily_report(
 
 
 def _message_request(
-    *, action_id: str, created_at: datetime, chat_id: int, text: str
+    *, action_id: str, created_at: datetime, route_key: str, text: str
 ) -> dict[str, object]:
     return {
         "protocolVersion": "1.0",
@@ -649,8 +651,8 @@ def _message_request(
         "createdAt": _timestamp(created_at),
         "action": {
             "actionId": action_id,
-            "type": "SEND_MESSAGE",
-            "chatId": chat_id,
+            "type": "SEND_GROUP_MESSAGE",
+            "routeKey": route_key,
             "text": text,
         },
     }
@@ -681,8 +683,9 @@ def load_scheduler_config(environment: dict[str, str]) -> ProviderSchedulerConfi
     daily_minute = _bounded_int(
         environment.get("DAILY_ATTENDANCE_REPORT_MINUTE") or "0", 0, 59
     )
-    notify_raw = (environment.get("DAILY_ATTENDANCE_REPORT_NOTIFY_TG_ID") or "").strip()
-    notify_tg_id = int(notify_raw) if notify_raw else None
+    daily_report_route_key = (
+        environment.get("DAILY_ATTENDANCE_REPORT_ROUTE_KEY") or ""
+    ).strip() or None
     skip_raw = (environment.get("GROUP_DAILY_SUMMARY_SKIP_DATE") or "").replace("，", ",")
     skip_dates = frozenset(
         date.fromisoformat(value.strip())
@@ -714,13 +717,20 @@ def load_scheduler_config(environment: dict[str, str]) -> ProviderSchedulerConfi
         daily_report_timezone=(
             environment.get("DAILY_ATTENDANCE_REPORT_TIMEZONE") or "Asia/Shanghai"
         ).strip(),
-        daily_report_notify_tg_id=notify_tg_id,
+        daily_report_route_key=daily_report_route_key,
         gateway_base_url=_required(environment, "GATEWAY_INTERNAL_BASE_URL"),
         gateway_bearer_token=_required(
             environment,
             "ATTENDANCE_TO_GATEWAY_BEARER_TOKEN",
         ),
     )
+
+
+def group_route_key(chat_id: int) -> str:
+    if not isinstance(chat_id, int) or isinstance(chat_id, bool) or chat_id >= 0:
+        raise ValueError("Gateway group route requires a negative integer chat ID")
+    digest = hashlib.sha256(f"ATTENDANCE:{chat_id}".encode("utf-8")).hexdigest()[:40]
+    return f"group-route.attendance.{digest}"
 
 
 def main(arguments: Sequence[str] | None = None) -> int:

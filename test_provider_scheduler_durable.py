@@ -24,7 +24,7 @@ from tasks.provider_scheduler import ProviderSchedulerConfig, run_scheduler_cycl
 _TARGET_DATE = date(2099, 8, 8)
 _NOW = datetime(2099, 8, 8, 15, 40, tzinfo=timezone.utc)
 _CHAT_ID = -10087091
-_NOTIFY_TG_ID = 87099
+_NOTIFY_ROUTE_KEY = "group-route.attendance.daily-report"
 _EMPLOYEE_ID = "74891"
 
 
@@ -148,7 +148,7 @@ def _config() -> ProviderSchedulerConfig:
         daily_report_hour=23,
         daily_report_minute=30,
         daily_report_timezone="Asia/Shanghai",
-        daily_report_notify_tg_id=_NOTIFY_TG_ID,
+        daily_report_route_key=_NOTIFY_ROUTE_KEY,
     )
 
 
@@ -218,8 +218,8 @@ def test_scheduler_durably_enqueues_current_summary_daily_csv_and_sheets_once(
     ]
     daily = actions[0][2]
     summary = actions[1][2]
-    assert daily["action"]["type"] == "SEND_DOCUMENT"
-    assert daily["action"]["chatId"] == _NOTIFY_TG_ID
+    assert daily["action"]["type"] == "SEND_GROUP_DOCUMENT"
+    assert daily["action"]["routeKey"] == _NOTIFY_ROUTE_KEY
     assert daily["action"]["document"]["fileName"] == "attendance_2099-08-08.csv"
     csv_text = base64.b64decode(
         daily["action"]["document"]["contentBase64"]
@@ -230,8 +230,8 @@ def test_scheduler_durably_enqueues_current_summary_daily_csv_and_sheets_once(
     )
     assert summary["action"] == {
         "actionId": "attendance.group-summary.2099-08-08.10087091",
-        "type": "SEND_MESSAGE",
-        "chatId": _CHAT_ID,
+        "type": "SEND_GROUP_MESSAGE",
+        "routeKey": provider_scheduler.group_route_key(_CHAT_ID),
         "text": (
             "今日考勤概览-2099/08/08\n\n"
             "1.迟到：0人\n\n"
@@ -307,7 +307,7 @@ def test_scheduler_catches_up_every_missed_local_date_in_order(
         daily_report_hour=23,
         daily_report_minute=30,
         daily_report_timezone="Asia/Shanghai",
-        daily_report_notify_tg_id=_NOTIFY_TG_ID,
+        daily_report_route_key=_NOTIFY_ROUTE_KEY,
     )
 
     first = run_scheduler_cycle(config, worker_id="scheduler-before-outage", now=_NOW)
@@ -378,7 +378,7 @@ def test_scheduler_recovers_yesterday_immediately_after_midnight_before_today_du
         daily_report_hour=23,
         daily_report_minute=30,
         daily_report_timezone="Asia/Shanghai",
-        daily_report_notify_tg_id=None,
+        daily_report_route_key=None,
     )
 
     result = run_scheduler_cycle(
@@ -469,7 +469,7 @@ def test_long_scheduler_operation_renews_lease_before_a_second_instance_can_clai
         daily_report_hour=23,
         daily_report_minute=30,
         daily_report_timezone="Asia/Shanghai",
-        daily_report_notify_tg_id=None,
+        daily_report_route_key=None,
     )
     worker = threading.Thread(
         target=lambda: result.append(
@@ -506,7 +506,7 @@ def test_scheduler_config_is_fail_closed_without_schema_or_notify_target() -> No
 
     with pytest.raises(RuntimeError, match="ATTENDANCE_PROVIDER_SCHEDULER_ENABLED"):
         load_scheduler_config({"ATTENDANCE_DATABASE_URL": _database_url()})
-    with pytest.raises(ValueError, match="DAILY_ATTENDANCE_REPORT_NOTIFY_TG_ID"):
+    with pytest.raises(ValueError, match="DAILY_ATTENDANCE_REPORT_ROUTE_KEY"):
         load_scheduler_config(
             {
                 "ATTENDANCE_PROVIDER_SCHEDULER_ENABLED": "true",
@@ -537,7 +537,7 @@ def test_failed_scheduler_run_honors_durable_retry_time(
         daily_report_hour=23,
         daily_report_minute=30,
         daily_report_timezone="Asia/Shanghai",
-        daily_report_notify_tg_id=None,
+        daily_report_route_key=None,
     )
     calls: list[str] = []
 
