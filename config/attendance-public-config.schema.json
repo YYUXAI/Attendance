@@ -1,0 +1,275 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ux-assistant:attendance-public-config:v1",
+  "title": "UX Assistant Attendance public runtime configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["database", "provider", "webapp", "ai", "sheets", "groups", "scheduler", "worker", "observability", "credentials"],
+  "properties": {
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logicalName", "applicationRole", "connectionSecretRef"],
+      "properties": {
+        "logicalName": { "const": "attendance_v1" },
+        "applicationRole": { "const": "ux_attendance_app" },
+        "connectionSecretRef": { "const": "attendance_database_url" }
+      },
+      "x-ownerComponent": "attendance",
+      "x-restartComponents": ["attendance"]
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "port", "internalServiceAlias"],
+      "properties": {
+        "host": { "type": "string", "enum": ["0.0.0.0", "127.0.0.1"] },
+        "port": { "type": "integer", "minimum": 1024, "maximum": 65535, "default": 19083 },
+        "internalServiceAlias": { "const": "attendance-provider" }
+      },
+      "x-ownerComponent": "attendance",
+      "x-restartComponents": ["attendance"]
+    },
+    "webapp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "publicBaseUrl", "host", "port", "timezone", "browserDev", "signingSecretRef"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "publicBaseUrl": { "$ref": "#/$defs/testHttpsUrl" },
+        "host": { "type": "string", "enum": ["0.0.0.0", "127.0.0.1"] },
+        "port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "timezone": { "$ref": "#/$defs/timezone" },
+        "browserDev": { "const": false },
+        "signingSecretRef": { "const": "attendance_webapp_session_signing" }
+      },
+      "x-ownerComponent": "attendance",
+      "x-restartComponents": ["attendance", "webapp"]
+    },
+    "ai": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "extractBackend", "apiBaseUrl", "model", "textModel", "mode", "maxClockSkewMinutes", "timeoutSeconds", "trustSenderWhenNameUnreadable", "nameVerify", "clockFallbackSendTime", "ocr", "premium", "apiKeySecretRef"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "extractBackend": { "type": "string", "enum": ["ollama", "ocr_only", "ocr_text_llm", "zhipu"] },
+        "apiBaseUrl": { "$ref": "#/$defs/httpUrl" },
+        "model": { "$ref": "#/$defs/publicName" },
+        "textModel": { "$ref": "#/$defs/publicName" },
+        "mode": { "type": "string", "enum": ["assist", "required"] },
+        "maxClockSkewMinutes": { "type": "integer", "minimum": 1, "maximum": 1440 },
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 300 },
+        "trustSenderWhenNameUnreadable": { "type": "boolean" },
+        "nameVerify": { "type": "string", "enum": ["vision", "ocr", "both"] },
+        "clockFallbackSendTime": { "type": "boolean" },
+        "ocr": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["engine", "easyOcrGpu", "maxConcurrent"],
+          "properties": {
+            "engine": { "type": "string", "enum": ["tesseract", "easyocr"] },
+            "easyOcrGpu": { "type": "boolean" },
+            "maxConcurrent": { "type": "integer", "minimum": 1, "maximum": 32 }
+          }
+        },
+        "apiKeySecretRef": { "const": "attendance_ai_api_key" },
+        "premium": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "apiBaseUrl", "model", "groupRefs", "apiKeySecretRef"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "apiBaseUrl": { "$ref": "#/$defs/httpUrl" },
+            "model": { "$ref": "#/$defs/publicName" },
+            "groupRefs": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/logicalRef" } },
+            "apiKeySecretRef": { "const": "attendance_premium_ai_api_key" }
+          }
+        }
+      },
+      "x-ownerComponent": "attendance",
+      "x-restartComponents": ["attendance"]
+    },
+    "sheets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "syncIntervalSeconds", "timezone", "yearMonth", "profiles", "credentialsSecretRef", "objectBindingsIdentifierRef"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "syncIntervalSeconds": { "type": "integer", "minimum": 60, "maximum": 604800 },
+        "timezone": { "$ref": "#/$defs/timezone" },
+        "yearMonth": { "type": "string", "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])$" },
+        "profiles": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["remoteDiff", "testGroup", "bbq"],
+          "properties": {
+            "remoteDiff": {
+              "allOf": [{ "$ref": "#/$defs/sheetProfile" }],
+              "unevaluatedProperties": false
+            },
+            "testGroup": {
+              "allOf": [
+                { "$ref": "#/$defs/sheetProfile" },
+                {
+                  "type": "object",
+                  "required": ["attendanceSheetTitle", "slackCheckin"],
+                  "properties": {
+                    "attendanceSheetTitle": { "type": "string", "minLength": 1, "maxLength": 128 },
+                    "slackCheckin": { "type": "boolean" }
+                  }
+                }
+              ],
+              "unevaluatedProperties": false
+            },
+            "bbq": {
+              "allOf": [
+                { "$ref": "#/$defs/sheetProfile" },
+                {
+                  "type": "object",
+                  "required": ["sheetTitle"],
+                  "properties": {
+                    "sheetTitle": { "type": "string", "minLength": 1, "maxLength": 128 }
+                  }
+                }
+              ],
+              "unevaluatedProperties": false
+            }
+          }
+        },
+        "credentialsSecretRef": { "const": "attendance_google_service_account" },
+        "objectBindingsIdentifierRef": { "const": "attendance_google_sheet_objects" }
+      },
+      "x-ownerComponent": "attendance",
+      "x-restartComponents": ["attendance"]
+    },
+    "groups": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ownedGroupRefs", "dailySummaryRouteKeys", "aiDryRunGroupRefs", "pcOnlyGroupRefs", "employeeIdOnlyGroupRefs", "remoteDiffGroupRefs", "testGroupRefs", "bbqGroupRefs", "visibleTexts"],
+      "properties": {
+        "ownedGroupRefs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/logicalRef" }
+        },
+        "dailySummaryRouteKeys": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/routeKey" }
+        },
+        "aiDryRunGroupRefs": { "$ref": "#/$defs/groupRefs" },
+        "pcOnlyGroupRefs": { "$ref": "#/$defs/groupRefs" },
+        "employeeIdOnlyGroupRefs": { "$ref": "#/$defs/groupRefs" },
+        "remoteDiffGroupRefs": { "$ref": "#/$defs/groupRefs" },
+        "testGroupRefs": { "$ref": "#/$defs/groupRefs" },
+        "bbqGroupRefs": { "$ref": "#/$defs/groupRefs" },
+        "visibleTexts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "groupRefs"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "groupRefs": { "$ref": "#/$defs/groupRefs" }
+          }
+        }
+      },
+      "x-ownerComponent": "attendance",
+      "x-restartComponents": ["attendance", "gateway"]
+    },
+    "scheduler": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "pollSeconds", "leaseSeconds", "timezone", "dailySummaryTime", "dailySummarySkipDate", "dailyReportEnabled", "dailyReportTime", "dailyReportRouteKey", "sheetSyncIntervalSeconds"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "pollSeconds": { "type": "number", "minimum": 0.1, "maximum": 3600 },
+        "leaseSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+        "timezone": { "$ref": "#/$defs/timezone" },
+        "dailySummaryTime": { "type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$" },
+        "dailySummarySkipDate": { "type": "string", "pattern": "^(?:|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:,[0-9]{4}-[0-9]{2}-[0-9]{2})*)$" },
+        "dailyReportEnabled": { "type": "boolean" },
+        "dailyReportTime": { "type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$" },
+        "dailyReportRouteKey": { "$ref": "#/$defs/routeKey" },
+        "sheetSyncIntervalSeconds": { "type": "integer", "minimum": 60, "maximum": 604800 }
+      },
+      "x-ownerComponent": "attendance",
+      "x-restartComponents": ["attendance"]
+    },
+    "observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logLevel"],
+      "properties": {
+        "logLevel": { "type": "string", "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] }
+      },
+      "x-ownerComponent": "attendance",
+      "x-restartComponents": ["attendance"]
+    },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "pollSeconds", "leaseSeconds", "batchSize", "timeoutSeconds", "maximumAcceptanceAttempts"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "pollSeconds": { "type": "number", "minimum": 0.1, "maximum": 3600 },
+        "leaseSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+        "batchSize": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "timeoutSeconds": { "type": "number", "minimum": 0.1, "maximum": 3600 },
+        "maximumAcceptanceAttempts": { "type": "integer", "minimum": 1, "maximum": 100 }
+      },
+      "x-ownerComponent": "attendance",
+      "x-restartComponents": ["attendance"]
+    },
+    "credentials": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gatewayToAttendanceBearerRef", "attendanceToGatewayBearerRef", "groupBindingsIdentifierRef"],
+      "properties": {
+        "gatewayToAttendanceBearerRef": { "const": "gateway_to_attendance_bearer" },
+        "attendanceToGatewayBearerRef": { "const": "attendance_to_gateway_bearer" },
+        "groupBindingsIdentifierRef": { "const": "attendance_group_bindings" }
+      },
+      "x-ownerComponent": "attendance",
+      "x-restartComponents": ["attendance", "gateway"]
+    }
+  },
+  "$defs": {
+    "logicalRef": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "routeKey": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._:-]{2,127}$"
+    },
+    "publicName": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{1,127}$" },
+    "groupRefs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/logicalRef" }
+    },
+    "sheetProfile": {
+      "type": "object",
+      "required": ["enabled", "timezone"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "timezone": { "$ref": "#/$defs/timezone" }
+      }
+    },
+    "httpUrl": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https?://(?![^/]*(?:prod|production))[A-Za-z0-9.-]+(?::[0-9]+)?(?:/.*)?$"
+    },
+    "timezone": { "type": "string", "pattern": "^[A-Za-z_]+(?:/[A-Za-z_+-]+)+$" },
+    "testHttpsUrl": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://(?![^/]*(?:prod|production))[A-Za-z0-9.-]+(?:/.*)?$"
+    }
+  }
+}
