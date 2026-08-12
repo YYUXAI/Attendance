@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
+import json
 import logging
 import os
+import re
 import socket
 import sys
 import time
 import uuid
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time as wall_time, timedelta, timezone
 from threading import Event, Thread
+from types import MappingProxyType
 from typing import Callable, Sequence
 from zoneinfo import ZoneInfo
 
@@ -44,6 +46,8 @@ from services.test_group_google_sheets_service import (
 
 log = logging.getLogger(__name__)
 
+_GATEWAY_ROUTE_KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._:-]{2,127}$")
+
 
 @dataclass(frozen=True)
 class ProviderSchedulerConfig:
@@ -55,6 +59,7 @@ class ProviderSchedulerConfig:
     group_summary_minute: int
     group_summary_timezone: str
     group_summary_skip_dates: frozenset[date]
+    group_summary_route_keys: Mapping[int, str]
     daily_report_enabled: bool
     daily_report_hour: int
     daily_report_minute: int
@@ -72,6 +77,31 @@ class ProviderSchedulerConfig:
             raise ValueError("lease_seconds must be between 1 and 3600")
         ZoneInfo(self.group_summary_timezone)
         ZoneInfo(self.daily_report_timezone)
+        route_keys = dict(self.group_summary_route_keys)
+        for chat_id, route_key in route_keys.items():
+            if (
+                not isinstance(chat_id, int)
+                or isinstance(chat_id, bool)
+                or chat_id >= 0
+            ):
+                raise ValueError(
+                    "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON keys must be negative Telegram chat IDs"
+                )
+            if not isinstance(route_key, str) or not _GATEWAY_ROUTE_KEY_PATTERN.fullmatch(
+                route_key
+            ):
+                raise ValueError(
+                    "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON values must be valid Gateway route keys"
+                )
+        if self.group_summary_enabled and not route_keys:
+            raise ValueError(
+                "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON is required when group summaries are enabled"
+            )
+        object.__setattr__(
+            self,
+            "group_summary_route_keys",
+            MappingProxyType(route_keys),
+        )
         if self.daily_report_enabled and self.daily_report_route_key is None:
             raise ValueError(
                 "DAILY_ATTENDANCE_REPORT_ROUTE_KEY is required when the daily report is enabled"
@@ -567,6 +597,11 @@ def _enqueue_group_summaries(
     enqueued = 0
     with database_url_scope(config.database_url):
         for chat_id in group_attendance_summary_service.list_attendance_group_ids():
+            route_key = config.group_summary_route_keys.get(chat_id)
+            if route_key is None:
+                raise RuntimeError(
+                    f"Gateway group summary route is not configured for chat {chat_id}"
+                )
             rows = group_attendance_summary_service.build_rows_for_group(
                 chat_id=chat_id,
                 target_date=target_date,
@@ -589,7 +624,7 @@ def _enqueue_group_summaries(
                 request=_message_request(
                     action_id=action_id,
                     created_at=created_at,
-                    route_key=group_route_key(chat_id),
+                    route_key=route_key,
                     text=text,
                 ),
             )
@@ -709,6 +744,9 @@ def load_scheduler_config(environment: dict[str, str]) -> ProviderSchedulerConfi
             environment.get("GROUP_DAILY_SUMMARY_TZ") or "Asia/Shanghai"
         ).strip(),
         group_summary_skip_dates=skip_dates,
+        group_summary_route_keys=_group_summary_route_keys(
+            environment.get("GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON")
+        ),
         daily_report_enabled=_enabled(
             environment, "DAILY_ATTENDANCE_REPORT_ENABLED", True
         ),
@@ -724,13 +762,6 @@ def load_scheduler_config(environment: dict[str, str]) -> ProviderSchedulerConfi
             "ATTENDANCE_TO_GATEWAY_BEARER_TOKEN",
         ),
     )
-
-
-def group_route_key(chat_id: int) -> str:
-    if not isinstance(chat_id, int) or isinstance(chat_id, bool) or chat_id >= 0:
-        raise ValueError("Gateway group route requires a negative integer chat ID")
-    digest = hashlib.sha256(f"ATTENDANCE:{chat_id}".encode("utf-8")).hexdigest()[:40]
-    return f"group-route.attendance.{digest}"
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
@@ -772,6 +803,41 @@ def _hour_minute(value: str) -> tuple[int, int]:
     if len(parts) != 2:
         raise ValueError("GROUP_DAILY_SUMMARY_TIME must be HH:MM")
     return _bounded_int(parts[0], 0, 23), _bounded_int(parts[1], 0, 59)
+
+
+def _group_summary_route_keys(raw: str | None) -> dict[int, str]:
+    if raw is None or not raw.strip():
+        return {}
+    try:
+        document = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ValueError(
+            "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON must be a JSON object"
+        ) from error
+    if not isinstance(document, dict):
+        raise ValueError("GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON must be a JSON object")
+    result: dict[int, str] = {}
+    for raw_chat_id, route_key in document.items():
+        if not isinstance(raw_chat_id, str):
+            raise ValueError(
+                "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON keys must be negative Telegram chat IDs"
+            )
+        try:
+            chat_id = int(raw_chat_id)
+        except ValueError as error:
+            raise ValueError(
+                "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON keys must be negative Telegram chat IDs"
+            ) from error
+        if str(chat_id) != raw_chat_id or chat_id >= 0:
+            raise ValueError(
+                "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON keys must be negative Telegram chat IDs"
+            )
+        if not isinstance(route_key, str):
+            raise ValueError(
+                "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON values must be valid Gateway route keys"
+            )
+        result[chat_id] = route_key
+    return result
 
 
 def _bounded_int(value: str, minimum: int, maximum: int) -> int:

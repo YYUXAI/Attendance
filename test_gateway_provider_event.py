@@ -130,6 +130,7 @@ def _deferred_scheduler_config() -> ProviderSchedulerConfig:
         group_summary_minute=30,
         group_summary_timezone="Asia/Shanghai",
         group_summary_skip_dates=frozenset(),
+        group_summary_route_keys={},
         daily_report_enabled=False,
         daily_report_hour=23,
         daily_report_minute=30,

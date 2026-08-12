@@ -25,6 +25,7 @@ _TARGET_DATE = date(2099, 8, 8)
 _NOW = datetime(2099, 8, 8, 15, 40, tzinfo=timezone.utc)
 _CHAT_ID = -10087091
 _NOTIFY_ROUTE_KEY = "group-route.attendance.daily-report"
+_SUMMARY_ROUTE_KEY = "attendance.summary.main"
 _EMPLOYEE_ID = "74891"
 
 
@@ -144,12 +145,34 @@ def _config() -> ProviderSchedulerConfig:
         group_summary_minute=30,
         group_summary_timezone="Asia/Shanghai",
         group_summary_skip_dates=frozenset(),
+        group_summary_route_keys={_CHAT_ID: _SUMMARY_ROUTE_KEY},
         daily_report_enabled=True,
         daily_report_hour=23,
         daily_report_minute=30,
         daily_report_timezone="Asia/Shanghai",
         daily_report_route_key=_NOTIFY_ROUTE_KEY,
     )
+
+
+def test_scheduler_configuration_uses_an_explicit_group_route_binding() -> None:
+    config = ProviderSchedulerConfig(
+        database_url="postgresql://scheduler-config-test",
+        poll_interval_seconds=1,
+        lease_seconds=30,
+        group_summary_enabled=True,
+        group_summary_hour=23,
+        group_summary_minute=30,
+        group_summary_timezone="Asia/Shanghai",
+        group_summary_skip_dates=frozenset(),
+        group_summary_route_keys={_CHAT_ID: _SUMMARY_ROUTE_KEY},
+        daily_report_enabled=False,
+        daily_report_hour=23,
+        daily_report_minute=30,
+        daily_report_timezone="Asia/Shanghai",
+        daily_report_route_key=None,
+    )
+
+    assert config.group_summary_route_keys == {_CHAT_ID: _SUMMARY_ROUTE_KEY}
 
 
 def test_scheduler_durably_enqueues_current_summary_daily_csv_and_sheets_once(
@@ -231,7 +254,7 @@ def test_scheduler_durably_enqueues_current_summary_daily_csv_and_sheets_once(
     assert summary["action"] == {
         "actionId": "attendance.group-summary.2099-08-08.10087091",
         "type": "SEND_GROUP_MESSAGE",
-        "routeKey": provider_scheduler.group_route_key(_CHAT_ID),
+        "routeKey": _SUMMARY_ROUTE_KEY,
         "text": (
             "今日考勤概览-2099/08/08\n\n"
             "1.迟到：0人\n\n"
@@ -303,6 +326,7 @@ def test_scheduler_catches_up_every_missed_local_date_in_order(
         group_summary_minute=30,
         group_summary_timezone="Asia/Shanghai",
         group_summary_skip_dates=frozenset(),
+        group_summary_route_keys={_CHAT_ID: _SUMMARY_ROUTE_KEY},
         daily_report_enabled=True,
         daily_report_hour=23,
         daily_report_minute=30,
@@ -374,6 +398,7 @@ def test_scheduler_recovers_yesterday_immediately_after_midnight_before_today_du
         group_summary_minute=30,
         group_summary_timezone="Asia/Shanghai",
         group_summary_skip_dates=frozenset(),
+        group_summary_route_keys={_CHAT_ID: _SUMMARY_ROUTE_KEY},
         daily_report_enabled=False,
         daily_report_hour=23,
         daily_report_minute=30,
@@ -465,6 +490,7 @@ def test_long_scheduler_operation_renews_lease_before_a_second_instance_can_clai
         group_summary_minute=30,
         group_summary_timezone="Asia/Shanghai",
         group_summary_skip_dates=frozenset(),
+        group_summary_route_keys={},
         daily_report_enabled=False,
         daily_report_hour=23,
         daily_report_minute=30,
@@ -505,17 +531,52 @@ def test_scheduler_config_is_fail_closed_without_schema_or_notify_target() -> No
     from tasks.provider_scheduler import load_scheduler_config
 
     with pytest.raises(RuntimeError, match="ATTENDANCE_PROVIDER_SCHEDULER_ENABLED"):
-        load_scheduler_config({"ATTENDANCE_DATABASE_URL": _database_url()})
+        load_scheduler_config(
+            {"ATTENDANCE_DATABASE_URL": "postgresql://scheduler-config-test"}
+        )
     with pytest.raises(ValueError, match="DAILY_ATTENDANCE_REPORT_ROUTE_KEY"):
         load_scheduler_config(
             {
                 "ATTENDANCE_PROVIDER_SCHEDULER_ENABLED": "true",
-                "ATTENDANCE_DATABASE_URL": _database_url(),
+                "ATTENDANCE_DATABASE_URL": "postgresql://scheduler-config-test",
+                "GROUP_DAILY_SUMMARY_ENABLED": "false",
                 "DAILY_ATTENDANCE_REPORT_ENABLED": "true",
                 "GATEWAY_INTERNAL_BASE_URL": "http://gateway.test",
                 "ATTENDANCE_TO_GATEWAY_BEARER_TOKEN": "scheduler-test-token",
             }
         )
+
+    with pytest.raises(ValueError, match="GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON"):
+        load_scheduler_config(
+            {
+                "ATTENDANCE_PROVIDER_SCHEDULER_ENABLED": "true",
+                "ATTENDANCE_DATABASE_URL": "postgresql://scheduler-config-test",
+                "GROUP_DAILY_SUMMARY_ENABLED": "true",
+                "DAILY_ATTENDANCE_REPORT_ENABLED": "false",
+                "GATEWAY_INTERNAL_BASE_URL": "http://gateway.test",
+                "ATTENDANCE_TO_GATEWAY_BEARER_TOKEN": "scheduler-test-token",
+            }
+        )
+
+
+def test_scheduler_config_loads_explicit_group_route_bindings() -> None:
+    from tasks.provider_scheduler import load_scheduler_config
+
+    config = load_scheduler_config(
+        {
+            "ATTENDANCE_PROVIDER_SCHEDULER_ENABLED": "true",
+            "ATTENDANCE_DATABASE_URL": "postgresql://scheduler-config-test",
+            "GROUP_DAILY_SUMMARY_ENABLED": "true",
+            "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON": json.dumps(
+                {str(_CHAT_ID): _SUMMARY_ROUTE_KEY}
+            ),
+            "DAILY_ATTENDANCE_REPORT_ENABLED": "false",
+            "GATEWAY_INTERNAL_BASE_URL": "http://gateway.test",
+            "ATTENDANCE_TO_GATEWAY_BEARER_TOKEN": "scheduler-test-token",
+        }
+    )
+
+    assert config.group_summary_route_keys == {_CHAT_ID: _SUMMARY_ROUTE_KEY}
 
 
 def test_failed_scheduler_run_honors_durable_retry_time(
@@ -533,6 +594,7 @@ def test_failed_scheduler_run_honors_durable_retry_time(
         group_summary_minute=30,
         group_summary_timezone="Asia/Shanghai",
         group_summary_skip_dates=frozenset(),
+        group_summary_route_keys={},
         daily_report_enabled=False,
         daily_report_hour=23,
         daily_report_minute=30,
