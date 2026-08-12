@@ -2401,12 +2401,18 @@ async def current_bugfix_recoveries() -> dict[str, Any]:
         "BG-AT-GROUP-SUMMARY": recovery(
             first_cycle.claimed_runs == 3
             and first_cycle.enqueued_actions == 2
-            and group_action["action"]["chatId"] == scheduler_fixture._CHAT_ID
+            and group_action["action"]["routeKey"]
+            == scheduler_fixture._SUMMARY_ROUTE_KEY
+            and "chatId" not in group_action["action"]
             and group_action["action"]["text"] == expected_summary,
             action=group_action,
         ),
         "BG-AT-DAILY-CSV-CATCHUP": recovery(
-            daily_action["action"]["document"]["fileName"]
+            daily_action["action"]["type"] == "SEND_GROUP_DOCUMENT"
+            and daily_action["action"]["routeKey"]
+            == scheduler_fixture._NOTIFY_ROUTE_KEY
+            and "chatId" not in daily_action["action"]
+            and daily_action["action"]["document"]["fileName"]
             == "attendance_2099-08-08.csv"
             and daily_action["action"]["document"]["contentBase64"]
             == expected_csv_base64,
@@ -2414,7 +2420,10 @@ async def current_bugfix_recoveries() -> dict[str, Any]:
         ),
         "BG-AT-DAILY-CSV-SCHEDULED": recovery(
             first_cycle.enqueued_actions == 2
-            and daily_action["action"]["type"] == "SEND_DOCUMENT",
+            and daily_action["action"]["type"] == "SEND_GROUP_DOCUMENT"
+            and daily_action["action"]["routeKey"]
+            == scheduler_fixture._NOTIFY_ROUTE_KEY
+            and "chatId" not in daily_action["action"],
             action=daily_action,
         ),
         "BG-AT-DAILY-CSV-IDEMPOTENT": recovery(
