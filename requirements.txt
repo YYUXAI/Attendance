@@ -9,7 +9,6 @@ google-auth==2.40.0
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
 jsonschema==4.26.0
-PyYAML==6.0.1
 # 可选 OCR（本地/体积较大）；默认打卡走智谱视觉，Docker 可不装
 # pytesseract==0.3.13
 # easyocr==1.7.2
