@@ -6,11 +6,13 @@ from typing import Optional
 
 from zoneinfo import ZoneInfo
 
+from domain.employee_region import SCREENSHOT_TIMEZONE, resolve_employee_shift_timezone
 from domain.shared.result import ServiceResult
 from repositories import clock_records_repo, profile_repo
 from services.group_attendance_summary_service import (
     _as_time,
     _day_schedule_from_calendar,
+    _timezone_for_attendance_group,
     compute_month_stats_for_employee,
 )
 from services.employee_shift_day_service import load_calendar_map
@@ -54,9 +56,11 @@ def get_my_profile_by_tg_id(*, tg_id: int, now_utc: Optional[datetime] = None) -
 
     english_name = _display_name_or_fallback(prof.english_name)
     employee_id = str(prof.employee_id)
-    tz_name = "Asia/Shanghai"
-    month_start, month_end, tz = _month_range_local(tz_name=tz_name, now_utc=now)
-    as_of_local = now.astimezone(tz).date()
+    # 日历「今天」按截图时区（北京）；迟到/早退判定时区与群概览一致。
+    month_start, month_end, screen_tz = _month_range_local(
+        tz_name=SCREENSHOT_TIMEZONE, now_utc=now
+    )
+    as_of_local = now.astimezone(screen_tz).date()
     year_month = month_start.strftime("%Y-%m")
 
     shift_cfg = profile_repo.get_employee_shift_config_for_month(
@@ -70,6 +74,18 @@ def get_my_profile_by_tg_id(*, tg_id: int, now_utc: Optional[datetime] = None) -
             "班次：未配置"
         )
         return ServiceResult(ok=True, message=msg)
+
+    chat_id = clock_records_repo.get_latest_chat_id_for_employee(employee_id=employee_id)
+    group_fallback = (
+        _timezone_for_attendance_group(chat_id=int(chat_id))
+        if chat_id is not None
+        else SCREENSHOT_TIMEZONE
+    )
+    tz_name = resolve_employee_shift_timezone(
+        region_code=str(getattr(shift_cfg, "region_code", "") or ""),
+        shift_timezone=str(getattr(shift_cfg, "shift_timezone", "") or ""),
+        fallback=group_fallback,
+    )
 
     shift_time_display, cin, cout, rest_raw = _shift_display_from_config(
         shift_cfg=shift_cfg,
@@ -90,7 +106,6 @@ def get_my_profile_by_tg_id(*, tg_id: int, now_utc: Optional[datetime] = None) -
     )
     if today_shift_label:
         shift_time_display = today_shift_label.replace("~", " - ")
-    chat_id = clock_records_repo.get_latest_chat_id_for_employee(employee_id=employee_id)
     stats = compute_month_stats_for_employee(
         employee_id=employee_id,
         shift_id=None,

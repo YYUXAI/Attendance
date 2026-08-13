@@ -70,6 +70,8 @@ class EmployeeShiftConfigLite:
     shift_checkout_time: object
     shift_time_range: str
     monthly_rest_days: str
+    region_code: str = ""
+    shift_timezone: str = ""
 
 
 def get_employee_shift_config_for_month(
@@ -78,7 +80,8 @@ def get_employee_shift_config_for_month(
     with get_cursor() as cur:
         cur.execute(
             """
-            SELECT shift_checkin_time, shift_checkout_time, shift_time_range, monthly_rest_days
+            SELECT shift_checkin_time, shift_checkout_time, shift_time_range, monthly_rest_days,
+                   COALESCE(region_code, ''), COALESCE(shift_timezone, '')
             FROM public.employee_shift_config
             WHERE employee_id = %s AND year_month = %s
             """,
