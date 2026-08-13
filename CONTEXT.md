@@ -16,7 +16,17 @@ Gateway 文件只通过 `GET /internal/v1/telegram-files/{fileRef}` 读取。Att
 
 ## Database ownership
 
-`migrations/0003_gateway_provider.sql` 到 `migrations/0011_worker_action_dependencies.sql` 定义空库可重复执行的 Provider schema、注册状态、WebApp session、terminal delivery receipt、Provider action worker、durable scheduler 和打卡后 Sheets outbox。迁移使用 immutable checksum 与 advisory lock；重复执行为 no-op，已应用 SQL 变化时 fail closed。Attendance 只连接 `ATTENDANCE_DATABASE_URL`；Provider 请求、WebApp 请求与后台 worker 均在该数据库作用域内执行。禁止跨库读取和运行时 fallback。
+`migrations/0003_gateway_provider.sql` 到 `migrations/0012_attendance_group_policy_and_business_facts.sql` 定义空库可重复执行的 Provider schema、注册状态、WebApp session、terminal delivery receipt、Provider action worker、durable scheduler、打卡后 Sheets outbox、动态群绑定、业务事实和运行组件配置指纹。迁移使用 immutable checksum 与 advisory lock；重复执行为 no-op，已应用 SQL 变化时 fail closed。Attendance 只连接 `ATTENDANCE_DATABASE_URL`；Provider 请求、WebApp 请求与后台 worker 均在该数据库作用域内执行。禁止跨库读取和运行时 fallback。
+
+## Configuration domain
+
+- **Attendance Group Policy**：public manifest 中按唯一 Telegram title 声明的群策略；不含 chat ID、routeKey 或凭据。
+- **Roster source**：群使用的 `main` 或 `alt` 数据库 roster。
+- **Group capability**：群级行为开关；缺省为空时规范化为 `standard-checkin`，未知、重复或冲突组合 fail closed。
+- **Observed group binding**：Gateway 事件携带的 chat ID、routeRef 与 title；Provider 仅在 title 命中 active policy 后按配置指纹写入 `attendance_runtime_group_policies`。
+- **Business fact**：员工例外、镜像与统计排除等 Attendance 数据库事实，不属于环境变量。
+- **Private binding**：数据库、service credential、AI key、Google Service Account 与 Sheet 对象标识；仅由 root-only 文件向需要的组件投影。
+- **Public config fingerprint**：整个 Attendance public 配置的确定性 SHA-256。Provider、WebApp、scheduler、worker 各自写 heartbeat；任一缺失或不匹配使 runtime drift fail closed。
 
 ## Security boundaries
 

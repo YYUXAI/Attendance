@@ -23,7 +23,9 @@
 
 Gateway 与 Attendance 使用方向不同的 service credential。Gateway `202 ACCEPTED` 不是发送成功；只有 `DELIVERED` 终态回执才能把对应业务动作标记为 delivered。
 
-群摘要等异步群动作只接受 Gateway 动态 group-route directory 返回的 Attendance routes。公开 manifest 只维护 `attendanceTitles` 名称集合；Gateway 发现并分类 0..N 个群，Attendance 不人工配置 chat ID 或 routeKey，也不得从 `chatId` 计算路由或回退旧目标。0 个 Attendance 群时 Provider、scheduler 和 worker 仍可 readiness，群摘要 fan-out 为空。
+群摘要等异步群动作只接受 Gateway 动态 group-route directory 返回的 Attendance routes。唯一人工群配置位于统一 public manifest 的 `components.attendance.groups`；Gateway 按 title 发现并分类 0..N 个群，Attendance 将观察到的 chat ID/route 写入动态 registry。维护者不填写 chat ID 或 routeKey，也不得从 `chatId` 计算路由或回退旧目标。0 个 Attendance 群时 Provider、scheduler 和 worker 仍可 readiness，群摘要 fan-out 为空。
+
+公开配置、roster/capability 清单、root-only binding 和 restart 规则见 [Attendance 统一配置维护指南](docs/attendance-public-config.md)。
 
 ## 测试主线与环境
 
@@ -52,7 +54,7 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-从 `.env.example` 复制本地配置时，只填写测试或开发凭据。不得提交数据库密码、Gateway token、可复用 Telegram session/auth key 或其他凭据。测试 Telegram numeric ID 是公开诊断信息，但动态群 ID/route 不作为人工运行配置提交。
+`.env.example` 只用于本地单元测试；共享 `uxassistant-test` 不读取 checkout `.env`。共享测试的公开值来自统一 manifest，私密值来自 root-only file binding。不得提交数据库密码、Gateway token、AI key、Google Service Account、Sheet 对象标识、可复用 Telegram session/auth key 或其他凭据。Telegram numeric ID 是公开诊断信息，但动态群 ID/route 不作为人工运行配置提交。
 
 ## 检查
 
