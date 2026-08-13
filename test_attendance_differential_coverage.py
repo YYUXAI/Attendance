@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -93,10 +94,12 @@ def test_attendance_differential_executes_every_matrix_scenario() -> None:
     matrix_path = Path(matrix_value).resolve()
     completed = subprocess.run(
         [
-            str(root / ".venv/bin/python"),
+            sys.executable,
             str(root / "scripts/parity/run_attendance_differential.py"),
             "--old-root",
             str(old_root),
+            "--python",
+            sys.executable,
             "--matrix",
             str(matrix_path),
         ],
