@@ -4,8 +4,30 @@
   "title": "UX Assistant Attendance public runtime configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["database", "provider", "webapp", "ai", "sheets", "scheduler", "worker", "observability", "credentials"],
+  "required": ["groups", "database", "provider", "webapp", "ai", "sheets", "scheduler", "worker", "observability", "credentials"],
   "properties": {
+    "groups": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "roster"],
+        "properties": {
+          "title": { "$ref": "#/$defs/groupTitle" },
+          "roster": { "type": "string", "enum": ["main", "alt"] },
+          "capabilities": {
+            "type": "array",
+            "uniqueItems": true,
+            "maxItems": 12,
+            "items": { "$ref": "#/$defs/groupCapability" },
+            "default": ["standard-checkin"]
+          }
+        }
+      },
+      "x-ownerComponent": "attendance",
+      "x-restartComponents": ["gateway", "attendance"]
+    },
     "database": {
       "type": "object",
       "additionalProperties": false,
@@ -36,7 +58,7 @@
       "required": ["enabled", "publicBaseUrl", "host", "port", "timezone", "browserDev", "signingSecretRef"],
       "properties": {
         "enabled": { "type": "boolean" },
-        "publicBaseUrl": { "$ref": "#/$defs/testHttpsUrl" },
+        "publicBaseUrl": { "$ref": "#/$defs/attendancePublicBaseUrl" },
         "host": { "type": "string", "enum": ["0.0.0.0", "127.0.0.1"] },
         "port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
         "timezone": { "$ref": "#/$defs/timezone" },
@@ -85,6 +107,21 @@
           }
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "mode": { "const": "required" } },
+            "required": ["mode"]
+          },
+          "then": {
+            "properties": {
+              "enabled": { "const": true },
+              "clockFallbackSendTime": { "const": false },
+              "trustSenderWhenNameUnreadable": { "const": false }
+            }
+          }
+        }
+      ],
       "x-ownerComponent": "attendance",
       "x-restartComponents": ["attendance"]
     },
@@ -111,9 +148,8 @@
                 { "$ref": "#/$defs/sheetProfile" },
                 {
                   "type": "object",
-                  "required": ["attendanceSheetTitle", "slackCheckin"],
+                  "required": ["slackCheckin"],
                   "properties": {
-                    "attendanceSheetTitle": { "type": "string", "minLength": 1, "maxLength": 128 },
                     "slackCheckin": { "type": "boolean" }
                   }
                 }
@@ -121,16 +157,7 @@
               "unevaluatedProperties": false
             },
             "bbq": {
-              "allOf": [
-                { "$ref": "#/$defs/sheetProfile" },
-                {
-                  "type": "object",
-                  "required": ["sheetTitle"],
-                  "properties": {
-                    "sheetTitle": { "type": "string", "minLength": 1, "maxLength": 128 }
-                  }
-                }
-              ],
+              "$ref": "#/$defs/sheetProfile",
               "unevaluatedProperties": false
             }
           }
@@ -144,17 +171,17 @@
     "scheduler": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "pollSeconds", "leaseSeconds", "timezone", "dailySummaryTime", "dailySummarySkipDate", "dailyReportEnabled", "dailyReportTime", "sheetSyncIntervalSeconds"],
+      "required": ["enabled", "pollSeconds", "leaseSeconds", "timezone", "dailySummaryEnabled", "dailySummaryTime", "dailySummarySkipDate", "dailyReportEnabled", "dailyReportTime"],
       "properties": {
         "enabled": { "type": "boolean" },
         "pollSeconds": { "type": "number", "minimum": 0.1, "maximum": 3600 },
         "leaseSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
         "timezone": { "$ref": "#/$defs/timezone" },
+        "dailySummaryEnabled": { "type": "boolean" },
         "dailySummaryTime": { "type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$" },
         "dailySummarySkipDate": { "type": "string", "pattern": "^(?:|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:,[0-9]{4}-[0-9]{2}-[0-9]{2})*)$" },
         "dailyReportEnabled": { "type": "boolean" },
-        "dailyReportTime": { "type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$" },
-        "sheetSyncIntervalSeconds": { "type": "integer", "minimum": 60, "maximum": 604800 }
+        "dailyReportTime": { "type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$" }
       },
       "x-ownerComponent": "attendance",
       "x-restartComponents": ["attendance"]
@@ -203,15 +230,29 @@
       "minLength": 3,
       "maxLength": 128
     },
-    "routeKey": {
-      "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9._:-]{2,127}$"
-    },
     "publicName": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{1,127}$" },
-    "groupRefs": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": { "$ref": "#/$defs/logicalRef" }
+    "groupTitle": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^(?!\\s)(?!.*\\s$)(?!.*[\\u0000-\\u001f\\u007f]).+$"
+    },
+    "groupCapability": {
+      "type": "string",
+      "enum": [
+        "standard-checkin",
+        "premium-ai",
+        "remote-diff-checkin",
+        "employee-id-only-checkin",
+        "pc-only-screenshot",
+        "visible-texts-identity-correction",
+        "ai-dry-run-no-persist",
+        "test-group-google-sheets",
+        "bbq-google-sheets",
+        "leave-mutual-exclusion",
+        "leave-back-copy-fallback",
+        "export-scope"
+      ]
     },
     "sheetProfile": {
       "type": "object",
@@ -227,10 +268,10 @@
       "pattern": "^https?://(?![^/]*(?:prod|production))[A-Za-z0-9.-]+(?::[0-9]+)?(?:/.*)?$"
     },
     "timezone": { "type": "string", "pattern": "^[A-Za-z_]+(?:/[A-Za-z_+-]+)+$" },
-    "testHttpsUrl": {
+    "attendancePublicBaseUrl": {
       "type": "string",
       "format": "uri",
-      "pattern": "^https://(?![^/]*(?:prod|production))[A-Za-z0-9.-]+(?:/.*)?$"
+      "pattern": "^https://(?![^/]*(?:prod|production))[A-Za-z0-9.-]+(?::[0-9]+)?/attendance/?$"
     }
   }
 }

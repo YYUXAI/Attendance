@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from typing import Any
+
+from infra.attendance_group_policy import (
+    group_policy_fingerprint,
+    normalize_group_policies,
+    public_group_values,
+)
 
 
 ROOT_DERIVED_ATTENDANCE_ENVIRONMENT = ("CHECKIN_AI_TESSERACT_CMD",)
@@ -13,6 +20,7 @@ ROOT_DERIVED_ATTENDANCE_ENVIRONMENT = ("CHECKIN_AI_TESSERACT_CMD",)
 class FileBinding:
     binding_ref: str
     category: str
+    components: tuple[str, ...]
     target_file_variables: tuple[str, ...]
     required_when: str
 
@@ -28,20 +36,24 @@ def derive_attendance_public_runtime_plan(
     config: dict[str, Any],
 ) -> AttendancePublicRuntimePlan:
     provider = config["provider"]
+    database = config["database"]
     webapp = config["webapp"]
     ai = config["ai"]
     sheets = config["sheets"]
     scheduler = config["scheduler"]
     worker = config["worker"]
     observability = config["observability"]
+    groups = normalize_group_policies(config["groups"])
+    public_config_fingerprint = hashlib.sha256(
+        _compact_json(config).encode("utf-8")
+    ).hexdigest()
     sheet_profiles = sheets["profiles"]
     daily_report_hour, daily_report_minute = str(scheduler["dailyReportTime"]).split(":")
 
     return AttendancePublicRuntimePlan(
         public_environment={
-            "GATEWAY_ENABLED": "true",
             "SHIFT_WEB_ENABLED": _enabled(webapp["enabled"]),
-            "SHIFT_WEB_APP_PUBLIC_URL": str(webapp["publicBaseUrl"]),
+            "SHIFT_WEB_APP_PUBLIC_URL": str(webapp["publicBaseUrl"]).rstrip("/"),
             "SHIFT_WEB_HOST": str(webapp["host"]),
             "SHIFT_WEB_PORT": str(webapp["port"]),
             "SHIFT_WEB_TIMEZONE": str(webapp["timezone"]),
@@ -82,16 +94,15 @@ def derive_attendance_public_runtime_plan(
             "TEST_GROUP_GOOGLE_SHEETS_TIMEZONE": str(
                 sheet_profiles["testGroup"]["timezone"]
             ),
-            "TEST_GROUP_ATTENDANCE_SHEET_TITLE": str(
-                sheet_profiles["testGroup"]["attendanceSheetTitle"]
-            ),
             "TEST_GROUP_SLACK_CHECKIN": _enabled(
                 sheet_profiles["testGroup"]["slackCheckin"]
             ),
             "BBQ_GOOGLE_SHEETS_ENABLED": _enabled(sheet_profiles["bbq"]["enabled"]),
             "BBQ_GOOGLE_SHEETS_TIMEZONE": str(sheet_profiles["bbq"]["timezone"]),
-            "BBQ_GOOGLE_SHEETS_SHEET_TITLE": str(sheet_profiles["bbq"]["sheetTitle"]),
-            "GROUP_DAILY_SUMMARY_ENABLED": _enabled(scheduler["enabled"]),
+            "ATTENDANCE_GROUPS_JSON": _compact_json(public_group_values(groups)),
+            "ATTENDANCE_GROUPS_FINGERPRINT": group_policy_fingerprint(groups),
+            "ATTENDANCE_PUBLIC_CONFIG_FINGERPRINT": public_config_fingerprint,
+            "GROUP_DAILY_SUMMARY_ENABLED": _enabled(scheduler["dailySummaryEnabled"]),
             "GROUP_DAILY_SUMMARY_TIME": str(scheduler["dailySummaryTime"]),
             "GROUP_DAILY_SUMMARY_TZ": str(scheduler["timezone"]),
             "GROUP_DAILY_SUMMARY_SKIP_DATE": str(scheduler["dailySummarySkipDate"]),
@@ -113,27 +124,40 @@ def derive_attendance_public_runtime_plan(
             "GATEWAY_INTERNAL_BASE_URL": "http://gateway-real:19081",
             "ATTENDANCE_PROVIDER_HOST": str(provider["host"]),
             "ATTENDANCE_PROVIDER_PORT": str(provider["port"]),
+            "ATTENDANCE_DATABASE_USER": str(database["applicationRole"]),
+            "ATTENDANCE_DATABASE_HOST": "postgres",
+            "ATTENDANCE_DATABASE_PORT": "5432",
+            "ATTENDANCE_DATABASE_NAME": str(database["logicalName"]),
             "LOG_LEVEL": str(observability["logLevel"]),
         },
         file_bindings=(
-            _secret("attendance_database_url", "always", "ATTENDANCE_DATABASE_URL_FILE"),
+            _secret(
+                "attendance_database_url",
+                ("migrate", "provider", "webapp", "scheduler", "worker"),
+                "always",
+                "ATTENDANCE_DATABASE_PASSWORD_FILE",
+            ),
             _secret(
                 "gateway_to_attendance_bearer",
+                ("provider",),
                 "provider",
                 "GATEWAY_TO_ATTENDANCE_BEARER_TOKEN_FILE",
             ),
             _secret(
                 "attendance_to_gateway_bearer",
+                ("provider", "scheduler", "worker"),
                 "provider-worker-scheduler",
                 "ATTENDANCE_TO_GATEWAY_BEARER_TOKEN_FILE",
             ),
             _secret(
                 "attendance_webapp_session_signing",
+                ("webapp",),
                 "webapp.enabled",
                 "GATEWAY_WEBAPP_SESSION_SIGNING_SECRET_FILE",
             ),
             _secret(
                 "attendance_ai_api_key",
+                ("provider", "scheduler"),
                 "ai.enabled",
                 "CHECKIN_AI_API_KEY_FILE",
                 "ZAI_API_KEY_FILE",
@@ -141,12 +165,14 @@ def derive_attendance_public_runtime_plan(
             ),
             _secret(
                 "attendance_premium_ai_api_key",
+                ("provider", "scheduler"),
                 "ai.premium.enabled",
                 "CHECKIN_AI_PREMIUM_API_KEY_FILE",
                 "ZHIPU_PREMIUM_API_KEY_FILE",
             ),
             _secret(
                 "attendance_google_service_account",
+                ("scheduler",),
                 "sheets.enabled",
                 "GOOGLE_SHEETS_CREDENTIALS_JSON_FILE",
                 "GOOGLE_SHEETS_ALT_CREDENTIALS_JSON_FILE",
@@ -167,11 +193,14 @@ def derive_attendance_public_runtime_plan(
                     "REMOTE_DIFF_GOOGLE_SHEETS_SHEET_GID_FILE",
                     "TEST_GROUP_ATTENDANCE_SPREADSHEET_ID_FILE",
                     "TEST_GROUP_ATTENDANCE_SHEET_GID_FILE",
+                    "TEST_GROUP_ATTENDANCE_SHEET_TITLE_FILE",
                     "TEST_GROUP_SHIFT_SPREADSHEET_ID_FILE",
                     "TEST_GROUP_SHIFT_SHEET_GID_FILE",
                     "BBQ_GOOGLE_SHEETS_SPREADSHEET_ID_FILE",
+                    "BBQ_GOOGLE_SHEETS_SHEET_TITLE_FILE",
                 ],
                 "publicContext": {"enabled": sheets["enabled"]},
+                "components": ["scheduler"],
             },
         ),
     )
@@ -181,5 +210,22 @@ def _enabled(value: bool) -> str:
     return "true" if value else "false"
 
 
-def _secret(binding_ref: str, required_when: str, *targets: str) -> FileBinding:
-    return FileBinding(binding_ref, "sensitive_secret", tuple(targets), required_when)
+def _compact_json(value: object) -> str:
+    import json
+
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _secret(
+    binding_ref: str,
+    components: tuple[str, ...],
+    required_when: str,
+    *targets: str,
+) -> FileBinding:
+    return FileBinding(
+        binding_ref,
+        "sensitive_secret",
+        components,
+        tuple(targets),
+        required_when,
+    )

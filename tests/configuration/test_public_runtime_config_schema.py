@@ -10,6 +10,7 @@ from infra.public_runtime_plan import (
     ROOT_DERIVED_ATTENDANCE_ENVIRONMENT,
     derive_attendance_public_runtime_plan,
 )
+from infra.attendance_group_policy import load_group_policies, normalize_group_policies
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -57,11 +58,22 @@ def test_attendance_public_config_has_only_logical_private_references() -> None:
 def test_attendance_runtime_plan_contains_only_public_env_and_file_mappings() -> None:
     plan = derive_attendance_public_runtime_plan(_fixture())
     assert plan.public_environment["SHIFT_WEB_PORT"] == "19084"
+    assert plan.public_environment["SHIFT_WEB_APP_PUBLIC_URL"].endswith("/attendance")
+    assert plan.public_environment["GROUP_DAILY_SUMMARY_ENABLED"] == "false"
+    assert plan.public_environment["DAILY_ATTENDANCE_REPORT_ENABLED"] == "true"
+    assert plan.public_environment["ATTENDANCE_PROVIDER_SCHEDULER_ENABLED"] == "true"
+    assert "ATTENDANCE_PROVIDER_SCHEDULER_ENABLED" in plan.public_environment
+    assert "sheetSyncIntervalSeconds" not in repr(plan)
+    policies = load_group_policies(plan.public_environment)
+    assert policies[0].title == "ux助手考勤测试群"
+    assert policies[0].roster == "main"
+    assert policies[0].capabilities == frozenset({"standard-checkin"})
     assert "GATEWAY_ATTENDANCE_CHAT_IDS" not in plan.public_environment
     assert "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON" not in plan.public_environment
     assert "DAILY_ATTENDANCE_REPORT_ROUTE_KEY" not in plan.public_environment
     assert "FORMAL_GROUP_ROSTER_SOURCE_MAP" not in plan.public_environment
     assert "ATTENDANCE_DATABASE_URL" not in plan.public_environment
+    assert plan.public_environment["ATTENDANCE_DATABASE_NAME"] == "attendance_v1"
     assert "GATEWAY_TO_ATTENDANCE_BEARER_TOKEN" not in plan.public_environment
     assert all(
         target.endswith("_FILE")
@@ -69,8 +81,53 @@ def test_attendance_runtime_plan_contains_only_public_env_and_file_mappings() ->
         for target in binding.target_file_variables
     )
     assert plan.derived_private_files[0]["bindingRef"] == "attendance_google_sheet_objects"
+    assert plan.derived_private_files[0]["components"] == ["scheduler"]
+    bindings = {binding.binding_ref: binding for binding in plan.file_bindings}
+    assert bindings["attendance_ai_api_key"].components == ("provider", "scheduler")
+    assert bindings["attendance_webapp_session_signing"].components == ("webapp",)
     rendered = repr(plan)
     assert "postgresql://" not in rendered
+
+
+def test_group_policy_supports_zero_one_or_many_and_standard_default() -> None:
+    assert normalize_group_policies([]) == ()
+    policies = normalize_group_policies([
+        {"title": "private group", "roster": "main"},
+        {
+            "title": "public group",
+            "roster": "alt",
+            "capabilities": ["premium-ai", "pc-only-screenshot"],
+        },
+    ])
+    assert policies[0].capabilities == frozenset({"standard-checkin"})
+    assert policies[1].capabilities == frozenset({"premium-ai", "pc-only-screenshot"})
+
+
+def test_group_policy_rejects_duplicate_unknown_and_conflicting_configuration() -> None:
+    invalid = (
+        [
+            {"title": "same", "roster": "main"},
+            {"title": "same", "roster": "alt"},
+        ],
+        [{"title": "one", "roster": "unknown"}],
+        [{"title": "one", "roster": "main", "capabilities": ["unknown"]}],
+        [{
+            "title": "one",
+            "roster": "main",
+            "capabilities": ["standard-checkin", "remote-diff-checkin"],
+        }],
+        [{
+            "title": "one",
+            "roster": "main",
+            "capabilities": ["test-group-google-sheets", "bbq-google-sheets"],
+        }],
+    )
+    for value in invalid:
+        try:
+            normalize_group_policies(value)
+        except ValueError:
+            continue
+        raise AssertionError(f"invalid group policy was accepted: {value!r}")
 
 
 def test_attendance_runtime_plan_covers_every_non_database_legacy_binding() -> None:
@@ -92,7 +149,8 @@ def test_attendance_runtime_plan_covers_every_non_database_legacy_binding() -> N
     }
 
     assert set(inventory["public"]) <= public_targets
-    assert set(inventory["sensitive_secret"]) <= secret_targets
+    assert set(inventory["sensitive_secret"]) - {"ATTENDANCE_DATABASE_URL"} <= secret_targets
+    assert "ATTENDANCE_DATABASE_PASSWORD" in secret_targets
     assert set(inventory["sensitive_identifier"]) <= identifier_targets
     assert set(inventory["derived_runtime_value"]) <= (
         public_targets | set(ROOT_DERIVED_ATTENDANCE_ENVIRONMENT)
@@ -102,6 +160,13 @@ def test_attendance_runtime_plan_covers_every_non_database_legacy_binding() -> N
 
 def _fixture() -> dict[str, object]:
     return deepcopy({
+        "groups": [
+            {
+                "title": "ux助手考勤测试群",
+                "roster": "main",
+                "capabilities": ["standard-checkin"],
+            }
+        ],
         "database": {
             "logicalName": "attendance_v1",
             "applicationRole": "ux_attendance_app",
@@ -114,7 +179,7 @@ def _fixture() -> dict[str, object]:
         },
         "webapp": {
             "enabled": True,
-            "publicBaseUrl": "https://ux-assistant-test.example.invalid",
+            "publicBaseUrl": "https://ux-assistant-test.example.invalid/attendance",
             "host": "0.0.0.0",
             "port": 19084,
             "timezone": "Asia/Shanghai",
@@ -152,13 +217,11 @@ def _fixture() -> dict[str, object]:
                 "testGroup": {
                     "enabled": False,
                     "timezone": "Asia/Shanghai",
-                    "attendanceSheetTitle": "Attendance",
                     "slackCheckin": True,
                 },
                 "bbq": {
                     "enabled": False,
                     "timezone": "Asia/Shanghai",
-                    "sheetTitle": "Attendance",
                 },
             },
             "credentialsSecretRef": "attendance_google_service_account",
@@ -169,11 +232,11 @@ def _fixture() -> dict[str, object]:
             "pollSeconds": 30,
             "leaseSeconds": 300,
             "timezone": "Asia/Shanghai",
+            "dailySummaryEnabled": False,
             "dailySummaryTime": "23:30",
             "dailySummarySkipDate": "",
             "dailyReportEnabled": True,
             "dailyReportTime": "23:00",
-            "sheetSyncIntervalSeconds": 14400,
         },
         "worker": {
             "enabled": True,
