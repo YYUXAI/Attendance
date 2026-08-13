@@ -65,16 +65,16 @@ ux test config --redacted --json
 群列表变化同时影响 Gateway 分类和 Attendance，需由 Shawn/root 在全局锁与源码指纹保护下执行：
 
 ```bash
-sudo ux test restart all
+ux test restart all
 ```
 
 不改变群路由的 Attendance 内部参数只需：
 
 ```bash
-sudo ux test restart attendance
+ux test restart attendance
 ```
 
-普通 `ux` 开发者只能请求维护者激活，不能自行 restart/rollback。无效 candidate、缺失 private binding、active projection 不匹配或任一 Provider/WebApp/scheduler/worker 指纹漂移均 fail closed。
+普通 `ux` 开发者只能通过固定 dispatcher 执行上述精确测试 restart；不能直接调用 Docker、Compose、root controller 或 rollback。无效 candidate、缺失 private binding、active projection 不匹配或任一 Provider/WebApp/scheduler/worker 指纹漂移均 fail closed。
 
 ## 当前测试群
 
