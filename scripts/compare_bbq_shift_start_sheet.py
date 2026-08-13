@@ -1,7 +1,6 @@
-"""对比 Y-UX-KQBBQ 开班总汇名单与 Google 班表。"""
+"""对比所有启用 BBQ capability 的群与 Google 班表。"""
 from __future__ import annotations
 
-import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -10,17 +9,11 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from dotenv import load_dotenv
-
-load_dotenv(override=True, encoding="utf-8")
-
-from infra.db import get_cursor
 from infra.google_sheets_config import load_google_sheets_config
-from repositories import registrations_repo
+from repositories import attendance_runtime_config_repo, registrations_repo
 from services import group_attendance_summary_service as g
 from services.google_sheets_shift_sync_service import fetch_shift_matrix_sheet, parse_shift_matrix
 
-CHAT_ID = int(os.getenv("COMPARE_BBQ_CHAT_ID", "0"))
 SHIFT_ID = 1
 REST_MARKERS = ("▲", "△", "休", "月休")
 
@@ -34,7 +27,7 @@ def _is_rest_cell(cell: str) -> bool:
     return any(m in c for m in REST_MARKERS)
 
 
-def main() -> None:
+def _compare_group(*, chat_id: int) -> None:
     today = date.today()
     cfg = load_google_sheets_config()
     _, rows = fetch_shift_matrix_sheet(
@@ -58,19 +51,19 @@ def main() -> None:
             sheet_work_today.add(p.employee_id)
 
     buckets = g.compute_shift_start_notice_buckets(
-        chat_id=CHAT_ID, target_date=today, shift_id=SHIFT_ID
+        chat_id=chat_id, target_date=today, shift_id=SHIFT_ID
     )
     reg_ids = {
         str(r.employee_id).strip()
         for r in registrations_repo.list_by_shift_id(shift_id=SHIFT_ID)
         if r.employee_id
     }
-    workers = g._fetch_group_workers(chat_id=CHAT_ID, year_month=today.strftime("%Y-%m"))
+    workers = g._fetch_group_workers(chat_id=chat_id, year_month=today.strftime("%Y-%m"))
     worker_ids = {w["employee_id"] for w in workers}
     notice_scope = (worker_ids & reg_ids) if reg_ids else worker_ids
 
     print("=== CONFIG ===")
-    print(f"sheet_id={cfg.spreadsheet_id} gid={cfg.sheet_gid}")
+    print(f"chat_id={chat_id} sheet_binding=configured")
     print(f"date={today.isoformat()}")
     print(f"sheet_total={len(sheet_ids)} sheet_work_today={len(sheet_work_today)} sheet_rest={len(sheet_rest_today)}")
 
@@ -108,30 +101,16 @@ def main() -> None:
             f"reg={eid in reg_ids} clock={eid in worker_ids}"
         )
 
-    print("\n=== NOTICE NAMES ===")
-    print("rest:", ", ".join(p.english_name for p in buckets.on_rest) or "-")
-    print("absent:", ", ".join(p.english_name for p in buckets.absent) or "-")
-    print("late:", ", ".join(p.english_name for p in buckets.late) or "-")
-    print("arrived:", ", ".join(p.english_name for p in buckets.arrived) or "-")
 
-    with get_cursor() as cur:
-        cur.execute(
-            """
-            SELECT id, status, created_at, LEFT(payload::text, 200)
-            FROM public.notifications
-            WHERE template_id = 3003 AND shift_id = %s AND work_date = %s
-            ORDER BY id DESC LIMIT 3
-            """,
-            (SHIFT_ID, today),
-        )
-        notifs = cur.fetchall()
-    print("\n=== 3003 notifications today ===")
-    if not notifs:
-        print("none")
-    else:
-        for n in notifs:
-            print(n)
-
+def main() -> None:
+    chat_ids = attendance_runtime_config_repo.active_chat_ids_with_capability(
+        capability="bbq-google-sheets"
+    )
+    if not chat_ids:
+        print("没有 active bbq-google-sheets 群")
+        return
+    for chat_id in chat_ids:
+        _compare_group(chat_id=chat_id)
 
 if __name__ == "__main__":
     main()

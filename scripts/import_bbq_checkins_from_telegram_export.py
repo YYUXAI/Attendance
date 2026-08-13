@@ -29,7 +29,6 @@ load_dotenv(override=True, encoding="utf-8")
 from infra.db import get_cursor
 from repositories.clock_records_repo import insert_clock_record
 
-DEFAULT_BBQ_CHAT_ID = 0
 TZ_SHANGHAI = ZoneInfo("Asia/Shanghai")
 _EMPLOYEE_RE = re.compile(r"工号\s*[：:]\s*(\d+)")
 _ACTION_RE = re.compile(r"事项\s*[：:]\s*(签到|签退)")
@@ -293,7 +292,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="导入 Telegram 导出文件(JSON/HTML)为 BBQ 历史打卡")
     parser.add_argument("--export-file", help="Telegram 导出文件路径（result.json 或 messages.html）")
     parser.add_argument("--export-json", help="兼容旧参数，等价于 --export-file")
-    parser.add_argument("--chat-id", type=int, default=DEFAULT_BBQ_CHAT_ID, help="目标群 chat_id")
+    parser.add_argument("--chat-id", type=int, required=True, help="目标群 chat_id")
     parser.add_argument("--start-date", help="开始日期(含)，格式 YYYY-MM-DD（按北京时间）")
     parser.add_argument("--end-date", help="结束日期(不含)，格式 YYYY-MM-DD（按北京时间）")
     parser.add_argument("--apply", action="store_true", help="真实写入数据库（默认 dry-run）")

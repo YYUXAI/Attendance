@@ -568,18 +568,26 @@ def main() -> int:
     parser.add_argument(
         "--out",
         type=Path,
-        default=ROOT.parent / "排班2026-06_99999_bodyhh.xlsx",
+        default=ROOT.parent / "attendance-shift.xlsx",
         help="输出 xlsx 路径",
+    )
+    parser.add_argument(
+        "--employee",
+        action="append",
+        required=True,
+        metavar="EMPLOYEE_ID:ENGLISH_NAME[:CHINESE_NAME]",
     )
     args = parser.parse_args()
 
-    employees = [
-        ("nliliii", "99999", ""),
-        ("bodyhh", "102", ""),
-    ]
+    employees: list[tuple[str, str, str]] = []
+    for raw in args.employee:
+        parts = [part.strip() for part in raw.split(":", 2)]
+        if len(parts) < 2 or not parts[0] or not parts[1]:
+            raise RuntimeError("--employee must be EMPLOYEE_ID:ENGLISH_NAME[:CHINESE_NAME]")
+        employees.append((parts[1], parts[0], parts[2] if len(parts) == 3 else ""))
     path = generate_local_shift_xlsx(out_path=args.out.resolve(), employees=employees)
     print(f"已生成: {path}")
-    print(f"员工: 99999/nliliii, 102/bodyhh | 班次: WG (13:00-01:00)")
+    print(f"员工数: {len(employees)} | 班次: WG (13:00-01:00)")
     return 0
 
 

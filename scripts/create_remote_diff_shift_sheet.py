@@ -3,23 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-
-from dotenv import load_dotenv
-
-load_dotenv(ROOT / ".env", override=True, encoding="utf-8")
-
-# 统筹部 6 月排班模板
-TEMPLATE_SPREADSHEET_ID = "1BD6PeaCdiavNiynK8Dp2e5kqYSHT-tPle5brn-2LSiU"
-TEMPLATE_SHEET_GID = 757170338
-
-# 工号打卡群班表（默认目标）
-DEFAULT_TARGET_SPREADSHEET_ID = "10RTURqDJqSEmaTQxl6dQU_Sc5zZlH-Wg92zrdDy9xsw"
-DEFAULT_SHEET_TITLE = "排班 2026-06"
 
 SHIFT_CODE = "WG"  # 13:00-01:00
 REST_DAYS = frozenset({6, 13, 20, 27})  # 4 天月休
@@ -52,6 +41,8 @@ def _build_employee_row(
 def create_shift_sheet_from_template(
     *,
     target_spreadsheet_id: str,
+    template_spreadsheet_id: str,
+    template_sheet_gid: int,
     sheet_title: str,
     credentials_json: str,
     employees: list[tuple[str, str, str]],
@@ -74,8 +65,8 @@ def create_shift_sheet_from_template(
     )
 
     sheet_id, title = copy_sheet_to_spreadsheet(
-        source_spreadsheet_id=TEMPLATE_SPREADSHEET_ID,
-        source_sheet_gid=TEMPLATE_SHEET_GID,
+        source_spreadsheet_id=template_spreadsheet_id,
+        source_sheet_gid=template_sheet_gid,
         destination_spreadsheet_id=target_spreadsheet_id,
         credentials_json=credentials_json,
         new_title=sheet_title,
@@ -114,25 +105,44 @@ def main() -> int:
     from infra.remote_diff_google_sheets_config import load_remote_diff_google_sheets_config
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--spreadsheet-id", default=DEFAULT_TARGET_SPREADSHEET_ID)
-    parser.add_argument("--sheet-title", default=DEFAULT_SHEET_TITLE)
+    parser.add_argument(
+        "--employee",
+        action="append",
+        required=True,
+        metavar="EMPLOYEE_ID:ENGLISH_NAME[:CHINESE_NAME]",
+    )
     args = parser.parse_args()
 
     cfg = load_remote_diff_google_sheets_config()
-    creds = cfg.credentials_json
-    employees = [
-        ("nliliii", "99999", ""),
-        ("bodyhh", "102", ""),
-        ("Brucewillis", "17025", ""),
-    ]
-    sheet_id, title = create_shift_sheet_from_template(
-        target_spreadsheet_id=args.spreadsheet_id.strip(),
-        sheet_title=args.sheet_title.strip(),
-        credentials_json=creds,
+    template_spreadsheet_id = (
+        os.environ.get("REMOTE_DIFF_TEMPLATE_SPREADSHEET_ID") or ""
+    ).strip()
+    template_gid_raw = (os.environ.get("REMOTE_DIFF_TEMPLATE_SHEET_GID") or "").strip()
+    sheet_title = (os.environ.get("REMOTE_DIFF_OUTPUT_SHEET_TITLE") or "").strip()
+    if not cfg.spreadsheet_id or not cfg.credentials_json:
+        raise RuntimeError("remote-diff Sheet private bindings are required")
+    if not template_spreadsheet_id or not template_gid_raw or not sheet_title:
+        raise RuntimeError("remote-diff template private bindings are required")
+    try:
+        template_sheet_gid = int(template_gid_raw)
+    except ValueError as error:
+        raise RuntimeError("remote-diff template Sheet binding is invalid") from error
+    employees: list[tuple[str, str, str]] = []
+    for raw in args.employee:
+        parts = [part.strip() for part in raw.split(":", 2)]
+        if len(parts) < 2 or not parts[0] or not parts[1]:
+            raise RuntimeError("--employee must be EMPLOYEE_ID:ENGLISH_NAME[:CHINESE_NAME]")
+        employees.append((parts[1], parts[0], parts[2] if len(parts) == 3 else ""))
+    _sheet_id, title = create_shift_sheet_from_template(
+        target_spreadsheet_id=cfg.spreadsheet_id,
+        template_spreadsheet_id=template_spreadsheet_id,
+        template_sheet_gid=template_sheet_gid,
+        sheet_title=sheet_title,
+        credentials_json=cfg.credentials_json,
         employees=employees,
     )
     print(
-        f"OK sheet_id={sheet_id} title={title!r} employees="
+        f"OK title={title!r} employees="
         + ",".join(f"{eid}/{name}" for name, eid, _ in employees)
         + f" shift={SHIFT_CODE}(13:00-01:00)"
     )

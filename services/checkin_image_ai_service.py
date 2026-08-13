@@ -2448,7 +2448,7 @@ async def extract_checkin_from_image(
             "AI_TIMEOUT",
             (
                 f"打卡失败，AI 识别超时（已等待 {int(config.timeout_seconds)} 秒）。\n"
-                "请确认 Ollama 已启动且未卡住；首次识别较慢，可在 .env 调大 CHECKIN_AI_TIMEOUT_SECONDS。"
+                "请确认 AI 后端可用，并检查 active Attendance timeout 配置。"
             ),
         )
     except httpx.ConnectError:

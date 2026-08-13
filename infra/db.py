@@ -50,7 +50,7 @@ def _raise_friendly_connect_error(
         msg = (
             "PostgreSQL 连接失败（中文系统下常见原因：密码错误或数据库不存在，"
             "驱动无法显示原始报错）。\n"
-            f"请检查 .env：DB_HOST={host} DB_PORT={port} DB_NAME={name} DB_USER={user}\n"
+            "请检查 active Attendance 数据库绑定。\n"
             "1) 确认 postgres 密码与 DB_PASSWORD 一致\n"
             "2) 在 pgAdmin / SQL Shell 执行：\n"
             "   ALTER USER postgres PASSWORD '你的密码';\n"

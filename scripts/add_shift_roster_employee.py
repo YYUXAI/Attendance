@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from copy import deepcopy
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-
-from dotenv import load_dotenv
-
-load_dotenv(ROOT / ".env", override=True, encoding="utf-8")
 
 
 def _norm_row(row: list[str], width: int = 40) -> list[str]:
@@ -149,20 +146,21 @@ def main() -> int:
     from infra.test_group_google_config import load_test_group_google_config
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--template-id", default="99999")
-    parser.add_argument("--employee-id", default="17025")
-    parser.add_argument("--english-name", default="Brucewillis")
-    parser.add_argument("--seq", type=int, default=3)
+    parser.add_argument("--template-id", required=True)
+    parser.add_argument("--employee-id", required=True)
+    parser.add_argument("--english-name", required=True)
+    parser.add_argument("--seq", type=int)
     args = parser.parse_args()
 
     cfg = load_test_group_google_config()
+    shift_sheet_title = (os.environ.get("TEST_GROUP_SHIFT_SHEET_TITLE") or "").strip()
     targets = [
-        (cfg.shift_spreadsheet_id, "工作表1"),
-        (cfg.attendance_spreadsheet_id, "排班 2026-06"),
+        (cfg.shift_spreadsheet_id, shift_sheet_title),
+        (cfg.attendance_spreadsheet_id, cfg.attendance_sheet_title),
     ]
     for sid, title in targets:
-        if not sid:
-            continue
+        if not sid or not title or not cfg.credentials_json:
+            raise RuntimeError("test-group Sheet private bindings are required")
         append_employee_like(
             spreadsheet_id=sid,
             sheet_title=title,

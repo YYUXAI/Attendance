@@ -2194,12 +2194,10 @@ async def current_bugfix_recoveries() -> dict[str, Any]:
     fixed_now = scheduler_fixture._NOW
     scheduler_fixture._prepare_database()
     environment_names = (
-        "CHECKIN_EXPORT_CHAT_IDS",
         "GOOGLE_SHEETS_ENABLED",
         "GOOGLE_SHEETS_SYNC_INTERVAL_SECONDS",
     )
     previous_environment = {name: os.environ.get(name) for name in environment_names}
-    os.environ["CHECKIN_EXPORT_CHAT_IDS"] = str(scheduler_fixture._CHAT_ID)
     os.environ["GOOGLE_SHEETS_ENABLED"] = "true"
     os.environ["GOOGLE_SHEETS_SYNC_INTERVAL_SECONDS"] = "3600"
     sheets_calls: list[str] = []
