@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import logging
-import os
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from typing import Dict, Iterable, List, Literal, Optional, Set
@@ -13,7 +12,7 @@ from infra.bbq_google_sheets_config import bbq_summary_excluded_employee_ids
 from infra.checkin_remote_diff_config import yymg_summary_excluded_employee_ids
 from infra.google_sheets_alt_config import load_google_sheets_alt_config
 from infra.db import get_cursor
-from repositories import registrations_repo
+from repositories import attendance_runtime_config_repo, registrations_repo
 from services.shift_view_service import (
     SHIFT_VIEW_ALT,
     SHIFT_VIEW_MAIN,
@@ -59,24 +58,10 @@ _STATUS_CHART_COLORS: tuple[tuple[str, str], ...] = (
 
 
 def _export_scope_chat_ids() -> frozenset[int]:
-    """
-    导出群范围：
-    - 未配置 CHECKIN_EXPORT_CHAT_IDS：导出全量考勤群（历史行为）
-    - 已配置：仅导出指定群，其他群不计入统计
-    """
-    raw = (os.getenv("CHECKIN_EXPORT_CHAT_IDS") or "").strip()
-    if not raw:
-        return frozenset()
-    out: set[int] = set()
-    for part in raw.replace("，", ",").split(","):
-        p = part.strip()
-        if not p:
-            continue
-        try:
-            out.add(int(p))
-        except ValueError:
-            continue
-    return frozenset(out)
+    scoped = attendance_runtime_config_repo.active_chat_ids_with_capability(
+        capability="export-scope"
+    )
+    return frozenset(scoped)
 
 
 def _filter_bbq_export_excluded(rows: List[AttendanceSummaryRow]) -> List[AttendanceSummaryRow]:
@@ -298,18 +283,21 @@ async def collect_rows_for_date(
     view = shift_view_for_tg_id(tg_id=int(export_tg_id)) if export_tg_id else SHIFT_VIEW_MAIN
     roster_ids = roster_employee_ids(year_month=ym, view=view) if export_tg_id else frozenset()
 
-    # MGZ 班表管理员：按 Google 班表 roster，打卡仅统计 YYMG 考勤群
+    # alt roster 管理员：按数据库 roster，打卡仅统计 active alt 群。
     if export_tg_id and view == SHIFT_VIEW_ALT and roster_ids:
-        alt_cfg = load_google_sheets_alt_config()
-        alt_chat = alt_cfg.attendance_chat_id if alt_cfg else None
-        if alt_chat is not None:
-            gname = fallback_group_display_name_from_db(chat_id=int(alt_chat))
-            deduped = build_rows_for_roster_at_chat(
-                target_date=target_date,
-                chat_id=int(alt_chat),
-                only_employee_ids=roster_ids,
-                group_name=gname,
-            )
+        alt_chats = attendance_runtime_config_repo.active_chat_ids_for_roster(
+            roster_source="alt"
+        )
+        if alt_chats:
+            deduped = []
+            for alt_chat in alt_chats:
+                gname = fallback_group_display_name_from_db(chat_id=int(alt_chat))
+                deduped.extend(build_rows_for_roster_at_chat(
+                    target_date=target_date,
+                    chat_id=int(alt_chat),
+                    only_employee_ids=roster_ids,
+                    group_name=gname,
+                ))
         else:
             deduped = build_rows_for_monthly_roster_remainder(
                 target_date=target_date,

@@ -198,7 +198,6 @@ def test_scheduler_durably_enqueues_current_summary_daily_csv_and_sheets_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _prepare_database()
-    monkeypatch.setenv("CHECKIN_EXPORT_CHAT_IDS", str(_CHAT_ID))
     monkeypatch.setenv("GOOGLE_SHEETS_ENABLED", "true")
     monkeypatch.setenv("GOOGLE_SHEETS_SYNC_INTERVAL_SECONDS", "3600")
     sheets_calls: list[str] = []

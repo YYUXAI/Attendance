@@ -145,12 +145,15 @@ def _extract_team_group_name(row: list[str]) -> str:
     return ""
 
 
-def main_export_roster_employee_ids(employees: list[ParsedEmployee]) -> list[str]:
+def main_export_roster_employee_ids(
+    employees: list[ParsedEmployee],
+    *,
+    excluded_employee_ids: frozenset[str] = frozenset(),
+) -> list[str]:
     """主表导出/开班 roster：默认仅 UX设计组（排除夏荷组等）。"""
     ux = [emp.employee_id for emp in employees if emp.sheet_team_group == _MAIN_EXPORT_SHEET_TEAM]
     ids = ux if ux else [emp.employee_id for emp in employees]
-    excluded = bbq_summary_excluded_employee_ids()
-    return [eid for eid in ids if eid not in excluded]
+    return [eid for eid in ids if eid not in excluded_employee_ids]
 
 
 def _pick_primary_code(daily: dict[int, str]) -> str:
@@ -442,15 +445,18 @@ def sync_shifts_from_google_sheets(
             fallback_gid=cfg.sheet_gid,
         )
         _, employees = parse_shift_matrix(rows, year_month=ym)
-    except Exception as e:
-        log.exception("google_sheets sync failed")
-        return SyncResult(False, str(e), ym, 0, 0)
+    except Exception as error:
+        log.error("google_sheets sync failed", extra={"error_type": type(error).__name__})
+        return SyncResult(False, "configured Sheet sync failed", ym, 0, 0)
 
     employee_shift_config_repo.ensure_table()
     employee_shift_calendar_repo.ensure_table()
     employee_shift_roster_repo.ensure_table()
     emp_ids = [emp.employee_id for emp in employees]
-    export_roster_ids = main_export_roster_employee_ids(employees)
+    export_roster_ids = main_export_roster_employee_ids(
+        employees,
+        excluded_employee_ids=bbq_summary_excluded_employee_ids(),
+    )
     employee_shift_roster_repo.set_roster(
         year_month=ym,
         source="main",
@@ -463,15 +469,15 @@ def sync_shifts_from_google_sheets(
     alt_msg = ""
     if alt_cfg:
         try:
-            alt_count, alt_cells, alt_title, alt_roster_ids = _sync_alt_sheet_employees(
+            alt_count, alt_cells, _alt_title, alt_roster_ids = _sync_alt_sheet_employees(
                 alt_cfg=alt_cfg,
                 year_month=ym,
             )
             if alt_count:
-                alt_msg = f"；MGZ表 {alt_count} 人、{alt_cells} 格（{alt_title}）"
-        except Exception as e:
-            log.exception("google_sheets alt sync failed")
-            return SyncResult(False, f"主表成功但 MGZ 表失败：{e}", ym, len(employees), calendar_count)
+                alt_msg = f"；alt roster {alt_count} 人、{alt_cells} 格"
+        except Exception as error:
+            log.error("google_sheets alt sync failed", extra={"error_type": type(error).__name__})
+            return SyncResult(False, "主表成功但 alt roster Sheet 失败", ym, len(employees), calendar_count)
     else:
         alt_roster_ids = employee_shift_roster_repo.list_roster(year_month=ym, source="alt")
 
@@ -490,9 +496,9 @@ def sync_shifts_from_google_sheets(
                 test_msg = f"；{test_result.message}"
             else:
                 log.warning("google_sheets: test group shift sync: %s", test_result.message)
-        except Exception as e:
-            log.exception("google_sheets test group shift sync failed")
-            return SyncResult(False, f"主表成功但测试群班表失败：{e}", ym, len(employees), calendar_count)
+        except Exception as error:
+            log.error("google_sheets test group shift sync failed", extra={"error_type": type(error).__name__})
+            return SyncResult(False, "主表成功但测试群班表失败", ym, len(employees), calendar_count)
 
     protected = set(alt_roster_ids) | set(test_roster_ids)
     if alt_cfg:
@@ -502,7 +508,7 @@ def sync_shifts_from_google_sheets(
     employee_shift_calendar_repo.delete_not_in(year_month=ym, employee_ids=keep_ids)
 
     msg = f"同步成功：{len(employees)} 人、{calendar_count} 格{alt_msg}{test_msg}"
-    log.info("google_sheets: %s (%s)", msg, sheet_title)
+    log.info("google_sheets: %s", msg)
     return SyncResult(
         ok=True,
         message=msg,

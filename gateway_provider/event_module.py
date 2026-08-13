@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -52,6 +53,7 @@ from gateway_provider.export_module import (
 )
 from gateway_provider.profile_module import profile_text_for_tg_id
 from infra.checkin_remote_diff_config import requires_remote_diff_checkin
+from infra.attendance_group_policy import load_group_policies
 from infra.db import database_url_scope
 from domain.action_drafts import (
     build_back_draft,
@@ -59,7 +61,11 @@ from domain.action_drafts import (
     build_leave_draft,
     report_reason,
 )
-from repositories import registrations_repo, temporary_leave_records_repo
+from repositories import (
+    attendance_runtime_config_repo,
+    registrations_repo,
+    temporary_leave_records_repo,
+)
 from services import register_service
 from services.leave_flow_guard import (
     LEAVE_BACK_OVERTIME_MINUTES,
@@ -180,6 +186,21 @@ def _process_attendance_event(
     ):
         raise GatewayRouteOwnershipMismatchError()
     update = request.telegramUpdate
+    if request.routeReason == "GROUP_OWNER":
+        chat = _group_event_chat(update)
+        if chat is None or request.groupRouteRef is None:
+            raise GatewayRouteOwnershipMismatchError()
+        fingerprint = (os.environ.get("ATTENDANCE_GROUPS_FINGERPRINT") or "").strip()
+        if len(fingerprint) != 64:
+            raise RuntimeError("ATTENDANCE_GROUPS_FINGERPRINT is required")
+        attendance_runtime_config_repo.bind_observed_group_cur(
+            cursor,
+            chat_id=chat.id,
+            route_ref=request.groupRouteRef,
+            title=chat.title,
+            policies=load_group_policies(os.environ),
+            config_fingerprint=fingerprint,
+        )
     if isinstance(update, TelegramInlineQueryUpdate):
         if request.routeReason != "INLINE_QUERY":
             raise GatewayRouteOwnershipMismatchError()
@@ -873,7 +894,7 @@ def _shift_content(
         return "无权限操作", None
     if shift_web_app_url is None:
         return (
-            "班表 Web 未配置：请在 .env 设置 SHIFT_WEB_APP_PUBLIC_URL\n"
+            "班表 Web 未配置：请检查 active Attendance publicBaseUrl\n"
             "（须为 Telegram 可访问的 HTTPS 地址）",
             None,
         )
@@ -987,6 +1008,7 @@ def _show_leave_back_action(
         cursor,
         tg_id=callback.sender.id,
         chat_id=message.chat.id,
+        chat_title=message.chat.title,
         operation=operation,
         now_utc=_received_at_utc(request.receivedAt),
     )
@@ -1015,6 +1037,7 @@ def _show_leave_back_message_action(
         cursor,
         tg_id=sender.id,
         chat_id=message.chat.id,
+        chat_title=message.chat.title,
         operation=operation,
         now_utc=_received_at_utc(request.receivedAt),
     )
@@ -1074,6 +1097,7 @@ def _leave_back_content(
     *,
     tg_id: int,
     chat_id: int,
+    chat_title: str | None,
     operation: str,
     now_utc: datetime,
 ) -> tuple[str, InlineKeyboardMarkup | None]:
@@ -1100,7 +1124,9 @@ def _leave_back_content(
         employee_id=registration.employee_id,
         chat_id=chat_id,
     )
-    mutual_exclusion = requires_leave_mutual_exclusion(chat_id=chat_id)
+    mutual_exclusion = requires_leave_mutual_exclusion(
+        chat_id=chat_id, chat_title=chat_title
+    )
     if operation == "leave" and mutual_exclusion and open_record is not None:
         return "您已离岗", None
     if operation == "back" and mutual_exclusion and open_record is None:
@@ -1132,7 +1158,9 @@ def _leave_back_content(
             leave_overtime=overtime,
             now_local=now_local,
         )
-    copy_fallback = requires_leave_back_copy_fallback(chat_id=chat_id)
+    copy_fallback = requires_leave_back_copy_fallback(
+        chat_id=chat_id, chat_title=chat_title
+    )
     buttons = [
         InlineKeyboardButton(
             text=label,
@@ -1273,7 +1301,10 @@ def _process_group_leave_report(
         chat_id=message.chat.id,
         for_update=True,
     )
-    mutual_exclusion = requires_leave_mutual_exclusion(chat_id=message.chat.id)
+    mutual_exclusion = requires_leave_mutual_exclusion(
+        chat_id=message.chat.id,
+        chat_title=message.chat.title,
+    )
     if operation == "leave":
         if mutual_exclusion and open_record is not None:
             return _group_report_message(
@@ -1318,6 +1349,16 @@ def _process_group_leave_report(
     ):
         raise RuntimeError("temporary leave record close lost ownership")
     return _group_report_without_actions(request)
+
+
+def _group_event_chat(update: object):
+    if isinstance(update, TelegramMessageUpdate):
+        return update.message.chat
+    if isinstance(update, TelegramEditedMessageUpdate):
+        return update.edited_message.chat
+    if isinstance(update, TelegramCallbackUpdate):
+        return update.callback_query.message.chat
+    return None
 
 
 def _group_report_without_actions(

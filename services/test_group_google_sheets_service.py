@@ -10,7 +10,6 @@ from infra.test_group_google_config import (
     ConfiguredTestGroupGoogleConfig,
     is_test_group_chat,
     load_test_group_google_config,
-    primary_test_group_chat_id,
 )
 from repositories import (
     employee_shift_calendar_repo,
@@ -53,11 +52,12 @@ def _month_range(*, today: date) -> tuple[date, date, str]:
 async def build_test_group_month_export_grid(
     *,
     timezone: str,
+    chat_id: int,
     cfg: ConfiguredTestGroupGoogleConfig | None = None,
 ) -> tuple[list[list[object]], date, date]:
     """按 Google 班表 roster 全员统计；打卡仅取自测试群（上班卡/下班卡，月休保留）。"""
     cfg = cfg or load_test_group_google_config()
-    attendance_chat_id = primary_test_group_chat_id()
+    attendance_chat_id = int(chat_id)
     today = today_in_tz(tz_name=timezone)
     start, end, range_label = _month_range(today=today)
     year_month = start.strftime("%Y-%m")
@@ -116,15 +116,15 @@ def sync_test_group_shifts_from_google(
         return ConfiguredTestGroupSheetsSyncResult(False, "缺少 year_month")
 
     try:
-        sheet_title, rows = fetch_sheet_values(
+        _sheet_title, rows = fetch_sheet_values(
             spreadsheet_id=cfg.shift_spreadsheet_id,
             credentials_json=cfg.credentials_json,
             sheet_gid=cfg.shift_sheet_gid,
         )
         _, employees = parse_shift_matrix(rows, year_month=ym)
-    except Exception as exc:
-        log.exception("test_group_sheets: shift fetch failed")
-        return ConfiguredTestGroupSheetsSyncResult(False, str(exc))
+    except Exception as error:
+        log.error("test_group_sheets: shift fetch failed", extra={"error_type": type(error).__name__})
+        return ConfiguredTestGroupSheetsSyncResult(False, "configured shift Sheet fetch failed")
 
     if not employees:
         return ConfiguredTestGroupSheetsSyncResult(False, "测试群班表未解析到员工")
@@ -151,14 +151,15 @@ def sync_test_group_shifts_from_google(
             ",".join(skipped),
         )
     count, cells = _upsert_employees(to_upsert, year_month=ym)
-    msg = f"测试群班表同步：{count} 人、{cells} 格（{sheet_title}）"
+    msg = f"测试群班表同步：{count} 人、{cells} 格"
     log.info("test_group_sheets: %s", msg)
-    return ConfiguredTestGroupSheetsSyncResult(True, msg, row_count=count, sheet_title=sheet_title)
+    return ConfiguredTestGroupSheetsSyncResult(True, msg, row_count=count)
 
 
 async def sync_test_group_month_to_google_sheets(
     *,
     chat_id: int,
+    chat_title: str | None = None,
     cfg: ConfiguredTestGroupGoogleConfig | None = None,
 ) -> ConfiguredTestGroupSheetsSyncResult:
     """测试群当月考勤 → Google 表（格式同私聊导出 XLSX）。"""
@@ -167,15 +168,18 @@ async def sync_test_group_month_to_google_sheets(
         return ConfiguredTestGroupSheetsSyncResult(False, "TEST_GROUP_GOOGLE_SHEETS_ENABLED=false")
     if not cfg.attendance_spreadsheet_id:
         return ConfiguredTestGroupSheetsSyncResult(False, "缺少 TEST_GROUP_ATTENDANCE_SPREADSHEET_ID")
-    if not is_test_group_chat(chat_id=int(chat_id)):
+    if not cfg.attendance_sheet_title:
+        return ConfiguredTestGroupSheetsSyncResult(False, "缺少 TEST_GROUP_ATTENDANCE_SHEET_TITLE")
+    if not is_test_group_chat(chat_id=int(chat_id), chat_title=chat_title):
         return ConfiguredTestGroupSheetsSyncResult(False, f"chat_id={chat_id} 非测试群，跳过")
 
     grid, start, end = await build_test_group_month_export_grid(
         timezone=cfg.timezone,
+        chat_id=chat_id,
         cfg=cfg,
     )
     try:
-        tab_title = (cfg.attendance_sheet_title or "测试群").strip()
+        tab_title = cfg.attendance_sheet_title.strip()
         await asyncio.to_thread(
             ensure_sheet_tab,
             spreadsheet_id=cfg.attendance_spreadsheet_id,
@@ -189,14 +193,13 @@ async def sync_test_group_month_to_google_sheets(
             values=grid,
             sheet_title=tab_title,
         )
-    except Exception as exc:
-        log.exception(
-            "test_group_sheets: export sync failed chat_id=%s spreadsheet=%s",
-            chat_id,
-            cfg.attendance_spreadsheet_id,
+    except Exception as error:
+        log.error(
+            "test_group_sheets: export sync failed",
+            extra={"error_type": type(error).__name__},
         )
-        return ConfiguredTestGroupSheetsSyncResult(False, f"Google 表写入失败: {exc}")
+        return ConfiguredTestGroupSheetsSyncResult(False, "Google 表写入失败")
 
-    msg = f"已同步测试群 {start}~{end} 共 {row_count} 行到 {sheet_title!r}（上班卡/下班卡）"
+    msg = f"已同步测试群 {start}~{end} 共 {row_count} 行（上班卡/下班卡）"
     log.info("test_group_sheets: %s chat_id=%s", msg, chat_id)
-    return ConfiguredTestGroupSheetsSyncResult(True, msg, row_count=row_count, sheet_title=sheet_title)
+    return ConfiguredTestGroupSheetsSyncResult(True, msg, row_count=row_count)

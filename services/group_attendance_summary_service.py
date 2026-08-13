@@ -801,7 +801,7 @@ def summarize_text(
     """群 23:00 汇总：聚焦异常，正常仅报人数。
 
     顺序：迟到 / 早退 / 缺卡 / 未返岗 / 正常 / 月休。
-    Y-UX-KQBBQ 群不展示「未返岗」块。
+    声明 bbq-google-sheets capability 的群不展示「未返岗」块。
     「迟到+早退」同时计入迟到与早退。除正常外均列出名单。
     """
     row_list = list(rows)

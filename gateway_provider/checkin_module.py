@@ -72,6 +72,7 @@ def process_group_checkin(
     year_month = sent_at_utc.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m")
     roster_source = checkin_service.formal_group_roster_source_for_chat(
         chat_id=message.chat.id,
+        chat_title=message.chat.title,
     )
     roster_allowed = _employee_in_roster(
         cursor,
@@ -232,7 +233,9 @@ def _enqueue_checkin_sheets_syncs(
     ):
         kinds.append("TEST_GROUP")
     bbq_config = load_bbq_google_sheets_config()
-    if bbq_config.enabled and int(bbq_config.chat_id) == int(chat_id):
+    from infra.bbq_google_sheets_config import is_bbq_chat
+
+    if bbq_config.enabled and is_bbq_chat(chat_id=chat_id, chat_title=chat_title):
         kinds.append("BBQ")
     for sync_kind in kinds:
         worker_schedule_repo.enqueue_run_cur(
@@ -242,7 +245,11 @@ def _enqueue_checkin_sheets_syncs(
                 f"{int(source_message_id)}"
             ),
             job_kind="CHECKIN_SHEETS_SYNC",
-            payload={"chatId": int(chat_id), "syncKind": sync_kind},
+            payload={
+                "chatId": int(chat_id),
+                "chatTitle": chat_title,
+                "syncKind": sync_kind,
+            },
             now=created_at,
         )
 

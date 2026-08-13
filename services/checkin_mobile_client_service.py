@@ -40,15 +40,16 @@ async def is_mobile_client_screenshot(
     image_bytes: bytes,
     config: CheckinAiConfig | None = None,
     chat_id: int | None = None,
+    chat_title: str | None = None,
 ) -> tuple[bool, str]:
     """
     判断是否手机端截图。
-    仅在 CHECKIN_PC_ONLY_CHAT_IDS 配置的群内校验；
+    仅在声明 pc-only-screenshot capability 的群内校验；
     识别到「设置头像」或「更改头像」时返回 (True, reason)。
     """
     if not image_bytes:
         return False, ""
-    if not requires_pc_screenshot(chat_id=chat_id):
+    if not requires_pc_screenshot(chat_id=chat_id, chat_title=chat_title):
         return False, ""
 
     ocr_text = await asyncio.to_thread(_ocr_text, image_bytes)

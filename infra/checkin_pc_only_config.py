@@ -1,26 +1,11 @@
 """仅指定考勤群要求 PC 端截图（手机端浏览器 / Telegram 拒绝打卡）。"""
 from __future__ import annotations
 
-import os
+from infra.attendance_group_policy import title_has_capability
 
 
-def pc_only_checkin_chat_ids() -> frozenset[int]:
-    raw = (os.getenv("CHECKIN_PC_ONLY_CHAT_IDS") or "").strip()
-    if not raw:
-        return frozenset()
-    out: set[int] = set()
-    for part in raw.replace("，", ",").split(","):
-        p = part.strip()
-        if not p:
-            continue
-        try:
-            out.add(int(p))
-        except ValueError:
-            continue
-    return frozenset(out)
-
-
-def requires_pc_screenshot(*, chat_id: int | None) -> bool:
-    if chat_id is None:
-        return False
-    return int(chat_id) in pc_only_checkin_chat_ids()
+def requires_pc_screenshot(
+    *, chat_id: int | None, chat_title: str | None = None
+) -> bool:
+    del chat_id
+    return title_has_capability(chat_title, "pc-only-screenshot")

@@ -117,11 +117,12 @@ async def resolve_clock_time_with_ai_from_bytes(
             chat_title,
             tg_id,
         )
-    elif requires_pc_screenshot(chat_id=chat_id):
+    elif requires_pc_screenshot(chat_id=chat_id, chat_title=chat_title):
         is_mobile, mobile_reason = await is_mobile_client_screenshot(
             image_bytes=image_bytes,
             config=cfg,
             chat_id=chat_id,
+            chat_title=chat_title,
         )
         if is_mobile:
             log.info(

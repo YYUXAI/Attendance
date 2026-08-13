@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
 
@@ -12,6 +11,7 @@ from repositories.organizations_repo import get_department_name_by_id
 from repositories import employee_shift_config_repo, employee_shift_roster_repo, profile_repo
 from services.employee_shift_day_service import get_daily_shift
 from repositories.registrations_repo import get_by_tg_id, update_registered_chat_by_tg_id
+from infra.attendance_group_policy import configured_policy_for_title, title_has_capability
 
 
 ALLOWED_TIMEZONES = frozenset(
@@ -23,16 +23,12 @@ ALLOWED_TIMEZONES = frozenset(
     }
 )
 
-_AI_DRY_RUN_EMPLOYEE_IDS_IN_YYMG = frozenset({"99999"})
-# 非正式群但全员跑 AI、不入库（勿并入「测试群」Google 回写名单）
-_DEFAULT_AI_DRY_RUN_CHAT_IDS: frozenset[int] = frozenset()
-_DEFAULT_AI_DRY_RUN_GROUP_TITLES: frozenset[str] = frozenset({"New-考勤测试群"})
-
-
-def formal_group_roster_source_for_chat(*, chat_id: int) -> str | None:
-    """Gateway classification already proves this is an Attendance group."""
+def formal_group_roster_source_for_chat(
+    *, chat_id: int, chat_title: str | None = None
+) -> str | None:
     del chat_id
-    return "main"
+    policy = configured_policy_for_title(chat_title)
+    return policy.roster if policy else None
 
 
 def should_accept_checkin_for_chat_roster(
@@ -50,40 +46,6 @@ def should_accept_checkin_for_chat_roster(
     return False, "不在本群对应班表"
 
 
-def _ai_dry_run_chat_ids() -> frozenset[int]:
-    raw = (os.getenv("AI_DRY_RUN_CHAT_IDS") or "").strip()
-    if not raw:
-        return _DEFAULT_AI_DRY_RUN_CHAT_IDS
-    out: set[int] = set()
-    for part in raw.replace("，", ",").split(","):
-        p = part.strip()
-        if not p:
-            continue
-        try:
-            out.add(int(p))
-        except ValueError:
-            continue
-    return frozenset(out) if out else _DEFAULT_AI_DRY_RUN_CHAT_IDS
-
-
-def _ai_dry_run_group_titles() -> frozenset[str]:
-    raw = (os.getenv("AI_DRY_RUN_GROUP_TITLES") or "").strip()
-    if not raw:
-        return _DEFAULT_AI_DRY_RUN_GROUP_TITLES
-    out = {p.strip() for p in raw.replace("，", ",").split(",") if p.strip()}
-    return frozenset(out) if out else _DEFAULT_AI_DRY_RUN_GROUP_TITLES
-
-
-def _yymg_chat_id() -> int | None:
-    raw = (os.getenv("YYMG_CHAT_ID") or "").strip()
-    if not raw:
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None
-
-
 def should_run_ai_without_persist(
     *,
     chat_id: int,
@@ -94,22 +56,8 @@ def should_run_ai_without_persist(
     """指定场景：走完整 AI 校验，但不写入打卡记录。"""
     if roster_allowed:
         return False
-    # 「测试群」：全员跑 AI，前台按结果回复，不入库（含 Google 回写配置，勿混用）
-    from infra.test_group_google_config import is_test_group_chat
-
-    if is_test_group_chat(chat_id=int(chat_id), chat_title=chat_title):
-        return True
-    # New-考勤测试群等：过 AI、不入库（不触发测试群 Google 回写）
-    if int(chat_id) in _ai_dry_run_chat_ids():
-        return True
-    title = (chat_title or "").strip()
-    if title and title in _ai_dry_run_group_titles():
-        return True
-    # YYMG 内指定测试工号
-    yymg_chat_id = _yymg_chat_id()
-    if yymg_chat_id is None or int(chat_id) != yymg_chat_id:
-        return False
-    return str(employee_id).strip() in _AI_DRY_RUN_EMPLOYEE_IDS_IN_YYMG
+    del chat_id, employee_id
+    return title_has_capability(chat_title, "ai-dry-run-no-persist")
 
 
 def switch_attendance_group_to_chat(*, tg_id: int, chat_id: int) -> ServiceResult:

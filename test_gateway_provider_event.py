@@ -31,12 +31,33 @@ from tasks.provider_scheduler import (
     run_deferred_interaction_cycle,
 )
 from gateway_provider.gateway_file_client import GatewayFileReader
+from infra.attendance_group_policy import group_policy_fingerprint, normalize_group_policies
 
 
 _TEST_GATEWAY_CREDENTIAL = "gateway-to-attendance-test-credential"
 _TEST_ATTENDANCE_TO_GATEWAY_CREDENTIAL = "attendance-to-gateway-test-credential"
 _TEST_UNUSED_GATEWAY_BASE_URL = "http://127.0.0.1:19089"
 _TEST_SHIFT_WEB_PUBLIC_URL = "https://attendance.example.test"
+
+
+def _set_group_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    capabilities: list[str] | None = None,
+) -> None:
+    groups = [{
+        "title": "Mutable title",
+        "roster": "main",
+        "capabilities": capabilities or ["standard-checkin"],
+    }]
+    policies = normalize_group_policies(groups)
+    monkeypatch.setenv("ATTENDANCE_GROUPS_JSON", json.dumps(groups))
+    monkeypatch.setenv("ATTENDANCE_GROUPS_FINGERPRINT", group_policy_fingerprint(policies))
+
+
+@pytest.fixture(autouse=True)
+def _default_group_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_group_policy(monkeypatch)
 
 
 def _database_url() -> str:
@@ -60,6 +81,7 @@ def _apply_gateway_provider_migration() -> None:
                 "0009_durable_provider_worker.sql",
             "0010_scheduler_fencing_and_sheets_outbox.sql",
             "0011_worker_action_dependencies.sql",
+            "0012_attendance_group_policy_and_business_facts.sql",
         )
     ]
     with psycopg2.connect(_database_url()) as connection:
@@ -2724,7 +2746,7 @@ def test_remote_group_signin_restores_the_copy_fallback_and_exact_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _apply_gateway_provider_migration()
-    monkeypatch.setenv("CHECKIN_REMOTE_DIFF_CHAT_IDS", "-10081002")
+    _set_group_policy(monkeypatch, capabilities=["remote-diff-checkin"])
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -2761,7 +2783,7 @@ def test_leave_copy_fallback_chat_restores_the_copy_button_and_exact_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _apply_gateway_provider_migration()
-    monkeypatch.setenv("LEAVE_BACK_COPY_FALLBACK_CHAT_IDS", "-10081002")
+    _set_group_policy(monkeypatch, capabilities=["leave-back-copy-fallback"])
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -3244,11 +3266,10 @@ def test_group_photo_checkin_reads_gateway_file_and_persists_once(
     edited: bool,
 ) -> None:
     _apply_gateway_provider_migration()
-    monkeypatch.setenv("FORMAL_GROUP_ROSTER_SOURCE_MAP", "-10081002:main")
     monkeypatch.setenv("CHECKIN_AI_ENABLED", "false")
     monkeypatch.setenv("TEST_GROUP_GOOGLE_SHEETS_ENABLED", "false")
     monkeypatch.setenv("BBQ_GOOGLE_SHEETS_ENABLED", "true")
-    monkeypatch.setenv("BBQ_GOOGLE_SHEETS_CHAT_ID", "-10081002")
+    _set_group_policy(monkeypatch, capabilities=["bbq-google-sheets"])
     monkeypatch.setenv("BBQ_GOOGLE_SHEETS_SPREADSHEET_ID", "sheet-bbq-1401")
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:
@@ -3416,7 +3437,6 @@ def test_group_photo_checkin_outside_roster_fails_without_false_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _apply_gateway_provider_migration()
-    monkeypatch.setenv("FORMAL_GROUP_ROSTER_SOURCE_MAP", "-10081002:main")
     monkeypatch.setenv("CHECKIN_AI_ENABLED", "false")
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:

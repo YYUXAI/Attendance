@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from infra.attendance_override_config import load_attendance_override_config
+from infra.attendance_group_policy import title_has_capability
 from repositories import temporary_leave_records_repo
 
 # YYMG 返岗模板：离岗时长 >= 21 分钟时追加「提示：你已超时」
@@ -17,31 +16,18 @@ class OpenLeaveDraftInfo:
     overtime: bool
 
 
-def _parse_int_set(raw: str) -> frozenset[int]:
-    out: set[int] = set()
-    for part in (raw or "").replace("，", ",").split(","):
-        item = part.strip()
-        if not item:
-            continue
-        try:
-            out.add(int(item))
-        except ValueError:
-            continue
-    return frozenset(out)
+def requires_leave_mutual_exclusion(
+    *, chat_id: int, chat_title: str | None = None
+) -> bool:
+    del chat_id
+    return title_has_capability(chat_title, "leave-mutual-exclusion")
 
 
-def _leave_back_copy_fallback_chat_ids() -> frozenset[int]:
-    return _parse_int_set(os.getenv("LEAVE_BACK_COPY_FALLBACK_CHAT_IDS") or "")
-
-
-def requires_leave_mutual_exclusion(*, chat_id: int) -> bool:
-    cfg = load_attendance_override_config()
-    return int(chat_id) in cfg.leave_mutual_exclusion_chat_ids
-
-
-def requires_leave_back_copy_fallback(*, chat_id: int) -> bool:
-    """仅 YYMG 群：离岗/返岗除 ↗ 外提供「复制」按钮。"""
-    return int(chat_id) in _leave_back_copy_fallback_chat_ids()
+def requires_leave_back_copy_fallback(
+    *, chat_id: int, chat_title: str | None = None
+) -> bool:
+    del chat_id
+    return title_has_capability(chat_title, "leave-back-copy-fallback")
 
 
 def format_leave_duration_minutes(mins: int) -> str:
@@ -95,8 +81,12 @@ def compute_open_leave_duration(
     return info.duration_text if info else None
 
 
-def check_can_leave(*, employee_id: str, chat_id: int) -> tuple[bool, str | None]:
-    if not requires_leave_mutual_exclusion(chat_id=int(chat_id)):
+def check_can_leave(
+    *, employee_id: str, chat_id: int, chat_title: str | None = None
+) -> tuple[bool, str | None]:
+    if not requires_leave_mutual_exclusion(
+        chat_id=int(chat_id), chat_title=chat_title
+    ):
         return True, None
     open_rec = temporary_leave_records_repo.get_latest_open(
         employee_id=str(employee_id),
@@ -107,8 +97,12 @@ def check_can_leave(*, employee_id: str, chat_id: int) -> tuple[bool, str | None
     return True, None
 
 
-def check_can_back(*, employee_id: str, chat_id: int) -> tuple[bool, str | None]:
-    if not requires_leave_mutual_exclusion(chat_id=int(chat_id)):
+def check_can_back(
+    *, employee_id: str, chat_id: int, chat_title: str | None = None
+) -> tuple[bool, str | None]:
+    if not requires_leave_mutual_exclusion(
+        chat_id=int(chat_id), chat_title=chat_title
+    ):
         return True, None
     open_rec = temporary_leave_records_repo.get_latest_open(
         employee_id=str(employee_id),
