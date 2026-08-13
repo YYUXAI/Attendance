@@ -38,6 +38,7 @@ from gateway_provider.registration_session_module import (
     end_private_registration_session,
 )
 from gateway_provider.summary_module import read_attendance_summary
+from repositories import runtime_component_repo
 
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ class AttendanceGatewayProviderConfig:
     gateway_internal_base_url: str
     attendance_to_gateway_bearer_token: str
     shift_web_app_public_url: str
+    public_config_fingerprint: str = ""
 
     def __post_init__(self) -> None:
         if not self.database_url.strip():
@@ -79,6 +81,8 @@ class AttendanceGatewayProviderConfig:
                 "shift_web_app_public_url must be an HTTPS base URL"
             )
         object.__setattr__(self, "shift_web_app_public_url", public_url)
+        if self.public_config_fingerprint and len(self.public_config_fingerprint) != 64:
+            raise ValueError("public_config_fingerprint must be SHA-256")
 
 
 def create_attendance_gateway_provider_app(
@@ -108,16 +112,36 @@ def create_attendance_gateway_provider_app(
 
     @app.get("/readyz")
     async def readiness() -> JSONResponse:
+        runtime_config: dict[str, object] | None = None
+        if config.public_config_fingerprint:
+            await run_in_threadpool(
+                runtime_component_repo.record_runtime_component,
+                database_url=config.database_url,
+                component="provider",
+                public_config_fingerprint=config.public_config_fingerprint,
+            )
+            runtime_config = await run_in_threadpool(
+                runtime_component_repo.read_runtime_component_state,
+                database_url=config.database_url,
+                expected_fingerprint=config.public_config_fingerprint,
+            )
         result = await run_in_threadpool(
             read_provider_readiness,
             config.database_url,
         )
+        ready = bool(result["ok"]) and (
+            runtime_config is None or bool(runtime_config["match"])
+        )
+        payload = {
+            **result,
+            "ok": ready,
+            "gatewayProtocolFingerprint": GATEWAY_PROTOCOL_FINGERPRINT,
+        }
+        if runtime_config is not None:
+            payload["runtimeConfig"] = runtime_config
         return JSONResponse(
-            {
-                **result,
-                "gatewayProtocolFingerprint": GATEWAY_PROTOCOL_FINGERPRINT,
-            },
-            status_code=200 if result["ok"] else 503,
+            payload,
+            status_code=200 if ready else 503,
         )
 
     @app.post("/integration/gateway/v1/events")

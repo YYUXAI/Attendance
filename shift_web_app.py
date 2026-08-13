@@ -12,11 +12,13 @@ from gateway_provider.webapp_session_store import AttendanceWebAppSessionStore
 from infra.db import get_cursor
 from infra.db import database_url_scope
 from infra.logger import configure_logging
+from infra.runtime_config_validation import validate_attendance_process_environment
 from infra.shift_web_http import (
     SHIFT_WEB_PROVIDER_SESSION_STORE_KEY,
     SHIFT_WEB_SESSION_VERIFIER_KEY,
     register_shift_web_routes,
 )
+from repositories import runtime_component_repo
 log = logging.getLogger("attendance-shift-web")
 
 
@@ -34,6 +36,15 @@ def _database_ready() -> bool:
 
 
 async def _health(_request: web.Request) -> web.Response:
+    database_url = str(_request.app["attendance.database_url"])
+    fingerprint = str(_request.app["attendance.public_config_fingerprint"])
+    if fingerprint:
+        await asyncio.to_thread(
+            runtime_component_repo.record_runtime_component,
+            database_url=database_url,
+            component="webapp",
+            public_config_fingerprint=fingerprint,
+        )
     database_ready = await asyncio.to_thread(_database_ready)
     return web.json_response(
         {
@@ -55,6 +66,7 @@ def create_shift_web_app(
     *,
     database_url: str,
     gateway_session_signing_secret: str,
+    public_config_fingerprint: str = "",
 ) -> web.Application:
     resolved_database_url = database_url.strip()
     if not resolved_database_url:
@@ -69,6 +81,8 @@ def create_shift_web_app(
             return await handler(request)
 
     app = web.Application(middlewares=[database_scope])
+    app["attendance.database_url"] = resolved_database_url
+    app["attendance.public_config_fingerprint"] = public_config_fingerprint
     app[SHIFT_WEB_SESSION_VERIFIER_KEY] = GatewayWebAppSessionVerifier(
         signing_secret=gateway_session_signing_secret,
         audience="ATTENDANCE",
@@ -88,6 +102,7 @@ def _required_environment(name: str) -> str:
 
 def main() -> None:
     assert_no_telegram_owner_credentials(os.environ)
+    validate_attendance_process_environment("webapp", os.environ)
     configure_logging()
     host = (os.getenv("SHIFT_WEB_HOST") or "127.0.0.1").strip()
     port = int((os.getenv("SHIFT_WEB_PORT") or "19084").strip())
@@ -95,6 +110,9 @@ def main() -> None:
         database_url=_required_environment("ATTENDANCE_DATABASE_URL"),
         gateway_session_signing_secret=_required_environment(
             "GATEWAY_WEBAPP_SESSION_SIGNING_SECRET"
+        ),
+        public_config_fingerprint=_required_environment(
+            "ATTENDANCE_PUBLIC_CONFIG_FINGERPRINT"
         ),
     )
     web.run_app(app, host=host, port=port, print=None)

@@ -7,6 +7,7 @@ from gateway_provider.app import (
     create_attendance_gateway_provider_app,
 )
 from gateway_provider.runtime_security import assert_no_telegram_owner_credentials
+from infra.runtime_config_validation import validate_attendance_process_environment
 
 
 def _required_environment(name: str) -> str:
@@ -17,6 +18,7 @@ def _required_environment(name: str) -> str:
 
 
 assert_no_telegram_owner_credentials(os.environ)
+validate_attendance_process_environment("provider", os.environ)
 
 
 app = create_attendance_gateway_provider_app(
@@ -34,5 +36,8 @@ app = create_attendance_gateway_provider_app(
         shift_web_app_public_url=(
             os.environ.get("SHIFT_WEB_APP_PUBLIC_URL") or ""
         ).strip(),
+        public_config_fingerprint=_required_environment(
+            "ATTENDANCE_PUBLIC_CONFIG_FINGERPRINT"
+        ),
     )
 )

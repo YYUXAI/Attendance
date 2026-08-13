@@ -35,7 +35,8 @@ from gateway_provider.runtime_security import assert_no_telegram_owner_credentia
 from infra.db import database_url_scope
 from infra.google_sheets_config import load_google_sheets_config
 from infra.shift_web_config import load_shift_web_config
-from repositories import worker_action_repo, worker_schedule_repo
+from infra.runtime_config_validation import validate_attendance_process_environment
+from repositories import runtime_component_repo, worker_action_repo, worker_schedule_repo
 from services import attendance_export_service, group_attendance_summary_service
 from services.bbq_google_sheets_export_service import (
     sync_bbq_group_month_to_google_sheets,
@@ -535,25 +536,34 @@ def run_checkin_sheets_sync_cycle(
     for pending in due:
         sync_kind = str(pending.payload.get("syncKind") or "")
         chat_id = pending.payload.get("chatId")
-        if sync_kind not in {"TEST_GROUP", "BBQ"} or not isinstance(chat_id, int):
+        chat_title = pending.payload.get("chatTitle")
+        if (
+            sync_kind not in {"TEST_GROUP", "BBQ"}
+            or not isinstance(chat_id, int)
+            or not isinstance(chat_title, str)
+            or not chat_title
+        ):
             raise RuntimeError("invalid persisted check-in Sheets sync payload")
 
         def run_sync(
             *,
             sync_kind: str = sync_kind,
             chat_id: int = chat_id,
+            chat_title: str = chat_title,
         ) -> int:
             with database_url_scope(config.database_url):
                 if sync_kind == "TEST_GROUP":
                     result = asyncio.run(
                         (test_group_sync or sync_test_group_month_to_google_sheets)(
-                            chat_id=chat_id
+                            chat_id=chat_id,
+                            chat_title=chat_title,
                         )
                     )
                 else:
                     result = asyncio.run(
                         (bbq_sync or sync_bbq_group_month_to_google_sheets)(
-                            chat_id=chat_id
+                            chat_id=chat_id,
+                            chat_title=chat_title,
                         )
                     )
             if not bool(getattr(result, "ok", False)):
@@ -747,18 +757,32 @@ def load_scheduler_config(environment: dict[str, str]) -> ProviderSchedulerConfi
 
 def main(arguments: Sequence[str] | None = None) -> int:
     assert_no_telegram_owner_credentials(os.environ)
+    validate_attendance_process_environment("scheduler", os.environ)
     args = list(arguments if arguments is not None else sys.argv[1:])
     if args not in ([], ["--once"]):
         raise RuntimeError("usage: python -m tasks.provider_scheduler [--once]")
     config = load_scheduler_config(dict(os.environ))
     worker_action_repo.assert_schema_ready(database_url=config.database_url)
     worker_schedule_repo.assert_schema_ready(database_url=config.database_url)
+    public_config_fingerprint = _required(
+        dict(os.environ), "ATTENDANCE_PUBLIC_CONFIG_FINGERPRINT"
+    )
+    runtime_component_repo.record_runtime_component(
+        database_url=config.database_url,
+        component="scheduler",
+        public_config_fingerprint=public_config_fingerprint,
+    )
     worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:12]}"
     if args == ["--once"]:
         run_scheduler_cycle(config, worker_id=worker_id)
         return 0
     while True:
         try:
+            runtime_component_repo.record_runtime_component(
+                database_url=config.database_url,
+                component="scheduler",
+                public_config_fingerprint=public_config_fingerprint,
+            )
             run_scheduler_cycle(config, worker_id=worker_id)
         except Exception:
             log.exception("Attendance provider scheduler cycle failed")

@@ -15,7 +15,8 @@ import httpx
 
 from gateway_provider.contracts import GatewayAsyncActionAcceptanceResponse
 from gateway_provider.runtime_security import assert_no_telegram_owner_credentials
-from repositories import worker_action_repo
+from infra.runtime_config_validation import validate_attendance_process_environment
+from repositories import runtime_component_repo, worker_action_repo
 
 
 log = logging.getLogger(__name__)
@@ -214,16 +215,32 @@ def load_durable_worker_config(environment: dict[str, str]) -> DurableProviderWo
 
 def main(arguments: Sequence[str] | None = None) -> int:
     assert_no_telegram_owner_credentials(os.environ)
+    validate_attendance_process_environment("worker", os.environ)
     args = list(arguments if arguments is not None else sys.argv[1:])
     if args not in ([], ["--once"]):
         raise RuntimeError("usage: python -m tasks.provider_worker [--once]")
     config = load_durable_worker_config(dict(os.environ))
     worker_action_repo.assert_schema_ready(database_url=config.database_url)
+    public_config_fingerprint = _required_environment(
+        dict(os.environ), "ATTENDANCE_PUBLIC_CONFIG_FINGERPRINT"
+    )
+    runtime_component_repo.record_runtime_component(
+        database_url=config.database_url,
+        component="worker",
+        public_config_fingerprint=public_config_fingerprint,
+    )
     worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:12]}"
     if args == ["--once"]:
         run_durable_worker_cycle(config, worker_id=worker_id)
         return 0
-    run_durable_worker_loop(config, worker_id=worker_id)
+    while True:
+        runtime_component_repo.record_runtime_component(
+            database_url=config.database_url,
+            component="worker",
+            public_config_fingerprint=public_config_fingerprint,
+        )
+        run_durable_worker_cycle(config, worker_id=worker_id)
+        time.sleep(config.poll_interval_seconds)
     return 0
 
 

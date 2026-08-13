@@ -84,7 +84,11 @@ def _enqueue_job_and_clock() -> None:
                 cursor,
                 run_key="checkin-sheets:TEST_GROUP:10087141:9141",
                 job_kind="CHECKIN_SHEETS_SYNC",
-                payload={"chatId": _CHAT_ID, "syncKind": "TEST_GROUP"},
+                payload={
+                    "chatId": _CHAT_ID,
+                    "chatTitle": "configured attendance group",
+                    "syncKind": "TEST_GROUP",
+                },
                 now=_NOW,
             )
 
@@ -167,7 +171,11 @@ def test_checkin_sheets_outbox_rolls_back_with_the_clock_transaction() -> None:
             cursor,
             run_key="checkin-sheets:TEST_GROUP:10087141:9141",
             job_kind="CHECKIN_SHEETS_SYNC",
-            payload={"chatId": _CHAT_ID, "syncKind": "TEST_GROUP"},
+            payload={
+                "chatId": _CHAT_ID,
+                "chatTitle": "configured attendance group",
+                "syncKind": "TEST_GROUP",
+            },
             now=_NOW,
         )
         connection.rollback()
