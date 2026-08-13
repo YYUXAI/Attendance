@@ -358,6 +358,44 @@ def test_provider_readiness_fails_for_worker_terminal_without_gateway_receipt() 
     assert readiness.json()["operational"]["workerPermanentFailures"] == 1
 
 
+def test_provider_readiness_allows_fresh_scheduler_retry() -> None:
+    _apply_provider_health_migrations()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO attendance_worker_schedule_runs (
+                    run_key, job_kind, status, attempt_count,
+                    next_attempt_at, last_error_code, created_at,
+                    updated_at, payload, lease_version
+                ) VALUES (
+                    'health:fresh-retry:0001',
+                    'HEALTH_TEST',
+                    'RETRYING',
+                    1,
+                    clock_timestamp() + interval '1 minute',
+                    'TEST_RETRY',
+                    clock_timestamp(),
+                    clock_timestamp(),
+                    '{}'::jsonb,
+                    1
+                )
+                """
+            )
+
+    readiness = _provider_client().get("/readyz")
+
+    assert readiness.status_code == 200
+    assert readiness.json()["operational"]["schedulerRetrying"] == 1
+    assert readiness.json()["operational"]["schedulerStaleBacklog"] == 0
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM attendance_worker_schedule_runs "
+                "WHERE run_key = 'health:fresh-retry:0001'"
+            )
+
+
 def test_provider_readiness_exposes_expired_lease_and_stale_scheduler() -> None:
     _apply_provider_health_migrations()
     with psycopg2.connect(_database_url()) as connection:

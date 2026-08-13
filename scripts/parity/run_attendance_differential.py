@@ -18,6 +18,11 @@ from typing import Any
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--old-root", type=Path)
+    parser.add_argument(
+        "--python",
+        type=Path,
+        help="Use one explicit Python runtime for both frozen and current traces",
+    )
     parser.add_argument("--mode", choices=("old", "current"))
     parser.add_argument("--import-root", type=Path)
     parser.add_argument("--matrix", type=Path)
@@ -36,8 +41,8 @@ def main() -> None:
         raise SystemExit("--old-root is required")
 
     script = Path(__file__).resolve()
-    old_python = args.old_root / ".venv/bin/python"
-    current_python = current_root / ".venv/bin/python"
+    old_python = args.python or args.old_root / ".venv/bin/python"
+    current_python = args.python or current_root / ".venv/bin/python"
     old = run_trace(old_python, script, "old", args.old_root, matrix_path)
     current = run_trace(current_python, script, "current", current_root, matrix_path)
     expected_ids = sorted(scenario["scenarioId"] for scenario in scenarios)

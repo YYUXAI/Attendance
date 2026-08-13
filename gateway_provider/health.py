@@ -228,7 +228,6 @@ def _readiness_result(
         and worker_uncertain == 0
         and worker_expired_leases == 0
         and worker_stale_backlog == 0
-        and scheduler_retrying == 0
         and scheduler_failed == 0
         and scheduler_expired_leases == 0
         and scheduler_stale_backlog == 0

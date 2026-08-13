@@ -17,7 +17,13 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+RUN groupadd --system --gid 10003 uxattendance \
+    && useradd --system --uid 10003 --gid uxattendance --home-dir /nonexistent --shell /usr/sbin/nologin uxattendance
+
+COPY --chown=uxattendance:uxattendance . .
+
+USER uxattendance
+ENTRYPOINT ["python", "/app/runtime-secret-entrypoint.py"]
 
 EXPOSE 19083
 
