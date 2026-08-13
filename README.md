@@ -25,6 +25,12 @@ Gateway 与 Attendance 使用方向不同的 service credential。Gateway `202 A
 
 群摘要等异步群动作只接受部署时显式配置的 Gateway 业务 `routeKey`。`GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON` 使用 `{ "<telegram_chat_id>": "<routeKey>" }` 形式绑定 Attendance 自有业务群与 Gateway 路由；不得从 `chatId` 计算路由，也没有旧目标回退。
 
+## 测试主线与环境
+
+本仓库唯一的长期测试分支是 `main`，`/srv/ux` 隔离测试环境只从 `main` 构建。当前测试机器人显示名为“刘亦菲”，username 为 `@yyuxai_test_bot`；Bot Token 与 Telegram 连接只属于 UXAssistant-Gateway，本仓库只通过 Gateway 使用该机器人。
+
+未来计划的独立 `production` 分支尚未创建。生产机器人、群、凭据、分支和部署需要新的明确授权。
+
 ## 目录
 
 - `gateway_provider/`：严格合同、事件入口、业务动作映射和 Provider 组装。
