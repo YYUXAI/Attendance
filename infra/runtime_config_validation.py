@@ -79,7 +79,7 @@ def _validate_sheets(environment: Mapping[str, str]) -> None:
 
 def _require(environment: Mapping[str, str], name: str) -> str:
     value = environment.get(name)
-    if value is None or not value.strip():
+    if value is None or not value.strip() or value.strip() == "[UNBOUND]":
         raise RuntimeError(f"{name} is required")
     return value
 
