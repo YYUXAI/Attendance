@@ -53,6 +53,7 @@ def _prepare_database() -> None:
                 "0009_durable_provider_worker.sql",
                 "0010_scheduler_fencing_and_sheets_outbox.sql",
                 "0011_worker_action_dependencies.sql",
+                "0012_attendance_group_policy_and_business_facts.sql",
             ):
                 cursor.execute((root / "migrations" / name).read_text(encoding="utf-8"))
             cursor.execute(

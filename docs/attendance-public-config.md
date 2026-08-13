@@ -58,23 +58,27 @@ root-only logical binding 保存数据库连接、Gateway 双向 bearer、WebApp
 
 ```bash
 ux test config --redacted --json
+ux test config validate
+ux test config diff --json
 ```
 
 该输出应显示 candidate/active Attendance 业务配置、projection 状态、runtime fingerprint 与 drift，且不显示凭据或 Sheet 对象标识。
 
-群列表变化同时影响 Gateway 分类和 Attendance，需由 Shawn/root 在全局锁与源码指纹保护下执行：
+公开 manifest 的 candidate 需由 Shawn/root 在全局锁与源码指纹保护下原子激活：
 
 ```bash
-ux test restart all
+sudo ux test config apply
 ```
 
-不改变群路由的 Attendance 内部参数只需：
+该命令校验 private binding、保存 previous config、生成 active projection，并执行匹配的 `restart all`；失败时恢复原 config/image 组合。不得先手工复制 projection 再 restart。
+
+只修改 Attendance 源码、未改变公开 manifest 时，Shawn/root 执行：
 
 ```bash
-ux test restart attendance
+sudo ux test restart attendance
 ```
 
-普通 `ux` 开发者只能通过固定 dispatcher 执行上述精确测试 restart；不能直接调用 Docker、Compose、root controller 或 rollback。无效 candidate、缺失 private binding、active projection 不匹配或任一 Provider/WebApp/scheduler/worker 指纹漂移均 fail closed。
+普通 `ux` 开发者可以读取 redacted config、validate、diff、status 和受控日志，但不能执行 config apply、restart 或 rollback；应把验证结果交给 Shawn/root 激活。任何人都不能直接调用 Docker、Compose 或 root controller。无效 candidate、缺失 private binding、active projection 不匹配或任一 Provider/WebApp/scheduler/worker 指纹漂移均 fail closed。
 
 ## 当前测试群
 

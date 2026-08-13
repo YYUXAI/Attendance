@@ -72,9 +72,19 @@ def test_markup_normalization_preserves_exact_button_payloads() -> None:
 def test_attendance_differential_executes_every_matrix_scenario() -> None:
     old_root_value = os.environ.get("ATTENDANCE_PARITY_OLD_ROOT")
     matrix_value = os.environ.get("ATTENDANCE_PARITY_MATRIX")
-    if not old_root_value or not matrix_value:
+    old_database_url = os.environ.get("ATTENDANCE_PARITY_OLD_DATABASE_URL")
+    current_database_url = os.environ.get(
+        "ATTENDANCE_PARITY_CURRENT_DATABASE_URL"
+    )
+    if (
+        not old_root_value
+        or not matrix_value
+        or not old_database_url
+        or not current_database_url
+    ):
         pytest.skip(
-            "set ATTENDANCE_PARITY_OLD_ROOT and ATTENDANCE_PARITY_MATRIX "
+            "set ATTENDANCE_PARITY_OLD_ROOT, ATTENDANCE_PARITY_MATRIX, and "
+            "isolated old/current database URLs "
             "for the cross-version parity gate"
         )
 
@@ -100,12 +110,12 @@ def test_attendance_differential_executes_every_matrix_scenario() -> None:
     expected = _attendance_matrix(matrix_path)
     expected_ids = sorted(item["scenarioId"] for item in expected)
     assert len(expected_ids) == 104
-    assert sum(item["classification"] == "PARITY" for item in expected) == 91
-    assert sum(item["classification"] == "BUGFIX_DELTA" for item in expected) == 13
+    assert sum(item["classification"] == "PARITY" for item in expected) == 89
+    assert sum(item["classification"] == "BUGFIX_DELTA" for item in expected) == 15
     assert report["scenarioIds"] == expected_ids
     assert report["counts"] == {
-        "BUGFIX_DELTA": 13,
-        "PARITY": 91,
+        "BUGFIX_DELTA": 15,
+        "PARITY": 89,
         "TOTAL": 104,
     }
     assert report["result"] == "PASS"

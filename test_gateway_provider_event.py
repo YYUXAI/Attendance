@@ -916,7 +916,7 @@ def test_shift_callback_reports_unconfigured_web_app() -> None:
         "chatId": 81002,
         "replyToMessageId": 502,
         "text": (
-            "班表 Web 未配置：请在 .env 设置 SHIFT_WEB_APP_PUBLIC_URL\n"
+            "班表 Web 未配置：请检查 active Attendance publicBaseUrl\n"
             "（须为 Telegram 可访问的 HTTPS 地址）"
         ),
     }
@@ -3421,7 +3421,11 @@ def test_group_photo_checkin_reads_gateway_file_and_persists_once(
             "checkin-sheets:BBQ:10081002:1401",
             "CHECKIN_SHEETS_SYNC",
             "PENDING",
-            {"chatId": -10081002, "syncKind": "BBQ"},
+            {
+                "chatId": -10081002,
+                "chatTitle": "Mutable title",
+                "syncKind": "BBQ",
+            },
         )
     ]
     assert terminal_actions == [{

@@ -98,7 +98,8 @@ def test_checkin_sheets_outbox_is_commit_visible_and_restart_recoverable() -> No
     _enqueue_job_and_clock()
     calls: list[tuple[int, int]] = []
 
-    async def fail_once(*, chat_id: int) -> object:
+    async def fail_once(*, chat_id: int, chat_title: str) -> object:
+        assert chat_title == "configured attendance group"
         with psycopg2.connect(_database_url()) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -123,7 +124,8 @@ def test_checkin_sheets_outbox_is_commit_visible_and_restart_recoverable() -> No
         test_group_sync=fail_once,
     )
 
-    async def succeed(*, chat_id: int) -> object:
+    async def succeed(*, chat_id: int, chat_title: str) -> object:
+        assert chat_title == "configured attendance group"
         with psycopg2.connect(_database_url()) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(

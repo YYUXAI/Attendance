@@ -7,6 +7,7 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -59,6 +60,7 @@ def main() -> None:
 
     evidence: dict[str, dict[str, Any]] = {}
     trace_digests: dict[str, str] = {}
+    digest_mismatches: list[str] = []
     parity_count = 0
     bugfix_count = 0
     for scenario in scenarios:
@@ -94,7 +96,8 @@ def main() -> None:
                 and current_value.get("passed") is True
             ):
                 raise AssertionError(
-                    f"{scenario_id} lacks a passing current recovery execution"
+                    f"{scenario_id} lacks a passing current recovery execution: "
+                    f"{json.dumps(current_value, ensure_ascii=False, sort_keys=True)}"
                 )
             trace_equal = False
             current_recovery_passed = True
@@ -140,10 +143,16 @@ def main() -> None:
             ).encode("utf-8")
         ).hexdigest()
         if trace_digests[scenario_id] != scenario.get("executableTraceSha256"):
-            raise AssertionError(
-                f"{scenario_id} executable trace changed from the reviewed "
-                "locked baseline"
+            digest_mismatches.append(
+                f"{scenario_id}: expected={scenario.get('executableTraceSha256')} "
+                f"actual={trace_digests[scenario_id]}"
             )
+
+    if digest_mismatches:
+        raise AssertionError(
+            "Attendance executable traces changed from the reviewed locked "
+            f"baseline: {'; '.join(digest_mismatches)}"
+        )
 
     print(json.dumps({
         "baseline": "Attendance@1b9c779",
@@ -174,6 +183,33 @@ def run_trace(
         "SHIFT_WEB_ENABLED": "true",
         "SHIFT_WEB_APP_PUBLIC_URL": "https://attendance.example.test",
     }
+    database_environment = {
+        "old": "ATTENDANCE_PARITY_OLD_DATABASE_URL",
+        "current": "ATTENDANCE_PARITY_CURRENT_DATABASE_URL",
+    }[mode]
+    database_url = (os.environ.get(database_environment) or "").strip()
+    if not database_url:
+        raise RuntimeError(f"{database_environment} is required")
+    env.pop("ATTENDANCE_PARITY_OLD_DATABASE_URL", None)
+    env.pop("ATTENDANCE_PARITY_CURRENT_DATABASE_URL", None)
+    env["ATTENDANCE_TEST_DATABASE_URL"] = database_url
+    if mode == "current":
+        env.update({
+            "ATTENDANCE_GROUPS_JSON": json.dumps([
+                {
+                    "title": "Attendance Parity",
+                    "roster": "main",
+                    "capabilities": ["standard-checkin"],
+                },
+                {
+                    "title": "Mutable title",
+                    "roster": "main",
+                    "capabilities": ["standard-checkin"],
+                },
+            ], separators=(",", ":"), sort_keys=True),
+            "ATTENDANCE_GROUPS_FINGERPRINT": "a" * 64,
+            "ATTENDANCE_PUBLIC_CONFIG_FINGERPRINT": "b" * 64,
+        })
     completed = subprocess.run(
         [
             str(python),
@@ -187,10 +223,25 @@ def run_trace(
         ],
         cwd=import_root,
         env=env,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    if completed.returncode:
+        diagnostic = re.sub(
+            r"(?i)\b(?:postgres(?:ql)?|redis|amqps?)://[^\s\"'<>]+",
+            "[REDACTED:CREDENTIAL]",
+            completed.stderr,
+        )
+        diagnostic = re.sub(
+            r"(?i)(?:authorization|bearer|token|password|secret)\s*[:=]\s*[^\s,;]+",
+            "[REDACTED:CREDENTIAL]",
+            diagnostic,
+        )
+        raise RuntimeError(
+            f"{mode} Attendance trace failed with rc={completed.returncode}:\n"
+            + "\n".join(diagnostic.splitlines()[-40:])
+        )
     return json.loads(completed.stdout)
 
 
@@ -239,9 +290,9 @@ def load_attendance_matrix(matrix_path: Path) -> list[dict[str, Any]]:
             f"received {len(ids)} rows and {len(set(ids))} unique ids"
         )
     classifications = [str(item.get("classification")) for item in value]
-    if classifications.count("PARITY") != 91 or classifications.count(
+    if classifications.count("PARITY") != 89 or classifications.count(
         "BUGFIX_DELTA"
-    ) != 13:
+    ) != 15:
         raise RuntimeError(
             "Attendance parity matrix classification census changed: "
             f"PARITY={classifications.count('PARITY')} "
@@ -672,7 +723,7 @@ async def current_trace() -> dict[str, Any]:
         )
         ignored_response = event_module._process_attendance_event(
             ignored_request,
-            object(),
+            ParityCursor(),
             object(),
             shift_web_app_public_url="https://attendance.example.test",
         )
@@ -2281,7 +2332,9 @@ async def current_bugfix_recoveries() -> dict[str, Any]:
         checkin_outbox_fixture._enqueue_job_and_clock()
         checkin_sync_calls: list[tuple[int, int, str]] = []
 
-        async def fail_checkin_sync(*, chat_id: int) -> object:
+        async def fail_checkin_sync(*, chat_id: int, chat_title: str) -> object:
+            if chat_title != "configured attendance group":
+                raise AssertionError("unexpected Attendance group title")
             with psycopg2.connect(checkin_outbox_fixture._database_url()) as connection:
                 with connection.cursor() as cursor:
                     cursor.execute(
@@ -2293,7 +2346,9 @@ async def current_bugfix_recoveries() -> dict[str, Any]:
             checkin_sync_calls.append((chat_id, visible, "failed"))
             raise RuntimeError("sheet transport failed")
 
-        async def recover_checkin_sync(*, chat_id: int) -> object:
+        async def recover_checkin_sync(*, chat_id: int, chat_title: str) -> object:
+            if chat_title != "configured attendance group":
+                raise AssertionError("unexpected Attendance group title")
             with psycopg2.connect(checkin_outbox_fixture._database_url()) as connection:
                 with connection.cursor() as cursor:
                     cursor.execute(
@@ -2573,6 +2628,44 @@ def normalize_old_callback_answers(callback_ids: list[str]) -> list[dict[str, An
     ]
 
 
+OLD_UNCONFIGURED_SHIFT_WEB_COPY = (
+    "班表 Web 未配置：请在 .env 设置 SHIFT_WEB_APP_PUBLIC_URL\n"
+    "（须为 Telegram 可访问的 HTTPS 地址）"
+)
+CURRENT_UNCONFIGURED_SHIFT_WEB_COPY = (
+    "班表 Web 未配置：请检查 active Attendance publicBaseUrl\n"
+    "（须为 Telegram 可访问的 HTTPS 地址）"
+)
+
+
+def trace_contains_text(value: Any, expected: str) -> bool:
+    if isinstance(value, dict):
+        return any(trace_contains_text(item, expected) for item in value.values())
+    if isinstance(value, list):
+        return any(trace_contains_text(item, expected) for item in value)
+    return value == expected
+
+
+def old_public_config_message_characterization(trace: Any) -> dict[str, Any]:
+    return {
+        "proofKind": "OLD_CODE_CHARACTERIZATION",
+        "characterizationExecuted": True,
+        "lockedDeploymentExecuted": True,
+        "failureReproduced": trace_contains_text(
+            trace, OLD_UNCONFIGURED_SHIFT_WEB_COPY
+        ),
+        "trace": trace,
+    }
+
+
+def current_public_config_message_recovery(trace: Any) -> dict[str, Any]:
+    return {
+        "proofKind": "CURRENT_RECOVERY",
+        "passed": trace_contains_text(trace, CURRENT_UNCONFIGURED_SHIFT_WEB_COPY),
+        "trace": trace,
+    }
+
+
 async def old_profile_shift_switch_traces(
     *,
     attendance_actions: Any,
@@ -2612,6 +2705,9 @@ async def old_profile_shift_switch_traces(
             "sessionCleared": session_clears == [actor_id],
             "trace": normalize_old_replies(message.replies),
         }
+        traces[scenario_id] = old_public_config_message_characterization(
+            traces[scenario_id]
+        )
 
     for scenario_id, actor_id, configured, is_admin in (
         ("AT-SHIFT-CALLBACK-ADMIN", 87099, True, True),
@@ -2649,6 +2745,10 @@ async def old_profile_shift_switch_traces(
             *normalize_old_callback_answers(callback.answers),
             *normalize_old_replies(message.replies),
         ]
+        if not configured:
+            traces[scenario_id] = old_public_config_message_characterization(
+                traces[scenario_id]
+            )
 
     profile.register_service.clear_waiting_register_input = (
         lambda **kwargs: session_clears.append(int(kwargs["tg_id"]))
@@ -2766,6 +2866,11 @@ def current_profile_shift_switch_traces(
         "sessionCleared": session_clears == [87099],
         "trace": traces["AT-SHIFT-TEXT-UNCONFIGURED"],
     }
+    traces["AT-SHIFT-TEXT-UNCONFIGURED"] = (
+        current_public_config_message_recovery(
+            traces["AT-SHIFT-TEXT-UNCONFIGURED"]
+        )
+    )
 
     for scenario_id, actor_id, configured, is_admin in (
         ("AT-SHIFT-CALLBACK-ADMIN", 87099, True, True),
@@ -2792,6 +2897,10 @@ def current_profile_shift_switch_traces(
             ),
         )
         traces[scenario_id] = trace
+        if not configured:
+            traces[scenario_id] = current_public_config_message_recovery(
+                traces[scenario_id]
+            )
 
     for scenario_id, actor_id, bound, callback_mode in (
         ("AT-PROFILE-TEXT-BOUND", 87001, True, False),
@@ -3736,7 +3845,11 @@ class AdminExportParityCursor:
 
     def execute(self, statement: str, parameters: tuple[object, ...] = ()) -> None:
         normalized = " ".join(statement.split()).lower()
-        if normalized.startswith("insert into attendance_admin_export_sessions"):
+        if normalized.startswith(
+            "insert into public.attendance_runtime_group_policies"
+        ):
+            self.last_row = None
+        elif normalized.startswith("insert into attendance_admin_export_sessions"):
             self.stage = "waiting_shift_id"
             self.shift_id = self.start_date = self.end_date = None
             self.transitions.extend(["empty", "waiting_shift_id"])
