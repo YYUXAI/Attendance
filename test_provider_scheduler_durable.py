@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import codecs
+import hashlib
 import json
 import os
 import threading
@@ -17,6 +18,7 @@ from infra.db import database_url_scope
 from infra.google_sheets_config import GoogleSheetsConfig
 from services import google_sheets_shift_sync_service
 from tasks import provider_scheduler
+from gateway_provider.group_route_client import AttendanceGroupRoute
 from repositories import worker_schedule_repo
 from tasks.provider_scheduler import ProviderSchedulerConfig, run_scheduler_cycle
 
@@ -24,9 +26,13 @@ from tasks.provider_scheduler import ProviderSchedulerConfig, run_scheduler_cycl
 _TARGET_DATE = date(2099, 8, 8)
 _NOW = datetime(2099, 8, 8, 15, 40, tzinfo=timezone.utc)
 _CHAT_ID = -10087091
-_NOTIFY_ROUTE_KEY = "group-route.attendance.daily-report"
-_SUMMARY_ROUTE_KEY = "attendance.summary.main"
+_SUMMARY_ROUTE_KEY = "telegram-group-route.attendance-main"
 _EMPLOYEE_ID = "74891"
+
+
+def _daily_action_id(target_date: date) -> str:
+    suffix = hashlib.sha256(_SUMMARY_ROUTE_KEY.encode("utf-8")).hexdigest()[:12]
+    return f"attendance.daily-report.{target_date.isoformat()}.{suffix}"
 
 
 def _database_url() -> str:
@@ -145,16 +151,29 @@ def _config() -> ProviderSchedulerConfig:
         group_summary_minute=30,
         group_summary_timezone="Asia/Shanghai",
         group_summary_skip_dates=frozenset(),
-        group_summary_route_keys={_CHAT_ID: _SUMMARY_ROUTE_KEY},
         daily_report_enabled=True,
         daily_report_hour=23,
         daily_report_minute=30,
         daily_report_timezone="Asia/Shanghai",
-        daily_report_route_key=_NOTIFY_ROUTE_KEY,
+        gateway_base_url="http://gateway",
+        gateway_bearer_token="attendance-to-gateway-test-credential",
     )
 
 
-def test_scheduler_configuration_uses_an_explicit_group_route_binding() -> None:
+def _group_routes() -> tuple[AttendanceGroupRoute, ...]:
+    return (
+        AttendanceGroupRoute(
+            route_ref=_SUMMARY_ROUTE_KEY,
+            chat_id=_CHAT_ID,
+            chat_type="supergroup",
+            current_title="ux助手考勤测试群",
+            public_username=None,
+            last_seen_at="2099-08-08T15:39:00Z",
+        ),
+    )
+
+
+def test_scheduler_configuration_requires_the_dynamic_gateway_directory() -> None:
     config = ProviderSchedulerConfig(
         database_url="postgresql://scheduler-config-test",
         poll_interval_seconds=1,
@@ -164,15 +183,15 @@ def test_scheduler_configuration_uses_an_explicit_group_route_binding() -> None:
         group_summary_minute=30,
         group_summary_timezone="Asia/Shanghai",
         group_summary_skip_dates=frozenset(),
-        group_summary_route_keys={_CHAT_ID: _SUMMARY_ROUTE_KEY},
         daily_report_enabled=False,
         daily_report_hour=23,
         daily_report_minute=30,
         daily_report_timezone="Asia/Shanghai",
-        daily_report_route_key=None,
+        gateway_base_url="http://gateway",
+        gateway_bearer_token="attendance-to-gateway-test-credential",
     )
 
-    assert config.group_summary_route_keys == {_CHAT_ID: _SUMMARY_ROUTE_KEY}
+    assert config.gateway_base_url == "http://gateway"
 
 
 def test_scheduler_durably_enqueues_current_summary_daily_csv_and_sheets_once(
@@ -193,10 +212,12 @@ def test_scheduler_durably_enqueues_current_summary_daily_csv_and_sheets_once(
         return SheetsResult()
 
     first = run_scheduler_cycle(
-        _config(), worker_id="scheduler-a", now=_NOW, sheets_sync=sheets_sync
+        _config(), worker_id="scheduler-a", now=_NOW, sheets_sync=sheets_sync,
+        group_route_reader=_group_routes,
     )
     second = run_scheduler_cycle(
-        _config(), worker_id="scheduler-b", now=_NOW, sheets_sync=sheets_sync
+        _config(), worker_id="scheduler-b", now=_NOW, sheets_sync=sheets_sync,
+        group_route_reader=_group_routes,
     )
 
     assert first.claimed_runs == 3
@@ -216,7 +237,7 @@ def test_scheduler_durably_enqueues_current_summary_daily_csv_and_sheets_once(
                 """,
                 (
                     f"attendance.group-summary.{_TARGET_DATE.isoformat()}.{abs(_CHAT_ID)}",
-                    f"attendance.daily-report.{_TARGET_DATE.isoformat()}",
+                    _daily_action_id(_TARGET_DATE),
                 ),
             )
             actions = cursor.fetchall()
@@ -236,13 +257,13 @@ def test_scheduler_durably_enqueues_current_summary_daily_csv_and_sheets_once(
             schedule_runs = cursor.fetchall()
 
     assert [row[:2] for row in actions] == [
-        ("DAILY_REPORT", _TARGET_DATE.isoformat()),
+        ("DAILY_REPORT", f"{_TARGET_DATE.isoformat()}:{_SUMMARY_ROUTE_KEY}"),
         ("GROUP_SUMMARY", f"{_TARGET_DATE.isoformat()}:{_CHAT_ID}"),
     ]
     daily = actions[0][2]
     summary = actions[1][2]
     assert daily["action"]["type"] == "SEND_GROUP_DOCUMENT"
-    assert daily["action"]["routeKey"] == _NOTIFY_ROUTE_KEY
+    assert daily["action"]["routeKey"] == _SUMMARY_ROUTE_KEY
     assert daily["action"]["document"]["fileName"] == "attendance_2099-08-08.csv"
     csv_text = base64.b64decode(
         daily["action"]["document"]["contentBase64"]
@@ -292,8 +313,10 @@ def test_scheduler_catches_up_every_missed_local_date_in_order(
         *,
         target_date: date,
         created_at: datetime,
+        group_routes: tuple[AttendanceGroupRoute, ...],
     ) -> int:
         assert created_at.tzinfo is not None
+        assert group_routes == _group_routes()
         observed_group_dates.append(target_date)
         return 0
 
@@ -302,8 +325,10 @@ def test_scheduler_catches_up_every_missed_local_date_in_order(
         *,
         report_date: date,
         created_at: datetime,
+        group_routes: tuple[AttendanceGroupRoute, ...],
     ) -> int:
         assert created_at.tzinfo is not None
+        assert group_routes == _group_routes()
         observed_daily_dates.append(report_date)
         return 0
 
@@ -326,19 +351,23 @@ def test_scheduler_catches_up_every_missed_local_date_in_order(
         group_summary_minute=30,
         group_summary_timezone="Asia/Shanghai",
         group_summary_skip_dates=frozenset(),
-        group_summary_route_keys={_CHAT_ID: _SUMMARY_ROUTE_KEY},
         daily_report_enabled=True,
         daily_report_hour=23,
         daily_report_minute=30,
         daily_report_timezone="Asia/Shanghai",
-        daily_report_route_key=_NOTIFY_ROUTE_KEY,
+        gateway_base_url="http://gateway",
+        gateway_bearer_token="attendance-to-gateway-test-credential",
     )
 
-    first = run_scheduler_cycle(config, worker_id="scheduler-before-outage", now=_NOW)
+    first = run_scheduler_cycle(
+        config, worker_id="scheduler-before-outage", now=_NOW,
+        group_route_reader=_group_routes,
+    )
     recovered = run_scheduler_cycle(
         config,
         worker_id="scheduler-after-outage",
         now=_NOW + timedelta(days=3),
+        group_route_reader=_group_routes,
     )
 
     assert first.claimed_runs == 2
@@ -385,7 +414,7 @@ def test_scheduler_recovers_yesterday_immediately_after_midnight_before_today_du
     monkeypatch.setattr(
         provider_scheduler,
         "_enqueue_group_summaries",
-        lambda _config, *, target_date, created_at: (
+        lambda _config, *, target_date, created_at, group_routes: (
             observed.append(target_date) or 0
         ),
     )
@@ -398,18 +427,19 @@ def test_scheduler_recovers_yesterday_immediately_after_midnight_before_today_du
         group_summary_minute=30,
         group_summary_timezone="Asia/Shanghai",
         group_summary_skip_dates=frozenset(),
-        group_summary_route_keys={_CHAT_ID: _SUMMARY_ROUTE_KEY},
         daily_report_enabled=False,
         daily_report_hour=23,
         daily_report_minute=30,
         daily_report_timezone="Asia/Shanghai",
-        daily_report_route_key=None,
+        gateway_base_url="http://gateway",
+        gateway_bearer_token="attendance-to-gateway-test-credential",
     )
 
     result = run_scheduler_cycle(
         config,
         worker_id="scheduler-after-midnight",
         now=datetime(2099, 8, 8, 16, 1, tzinfo=timezone.utc),
+        group_route_reader=_group_routes,
     )
 
     assert result.claimed_runs == 1
@@ -490,12 +520,10 @@ def test_long_scheduler_operation_renews_lease_before_a_second_instance_can_clai
         group_summary_minute=30,
         group_summary_timezone="Asia/Shanghai",
         group_summary_skip_dates=frozenset(),
-        group_summary_route_keys={},
         daily_report_enabled=False,
         daily_report_hour=23,
         daily_report_minute=30,
         daily_report_timezone="Asia/Shanghai",
-        daily_report_route_key=None,
     )
     worker = threading.Thread(
         target=lambda: result.append(
@@ -527,39 +555,24 @@ def test_long_scheduler_operation_renews_lease_before_a_second_instance_can_clai
     assert result == [provider_scheduler.SchedulerCycleResult(1, 0)]
 
 
-def test_scheduler_config_is_fail_closed_without_schema_or_notify_target() -> None:
+def test_scheduler_config_is_fail_closed_without_gateway_route_directory() -> None:
     from tasks.provider_scheduler import load_scheduler_config
 
     with pytest.raises(RuntimeError, match="ATTENDANCE_PROVIDER_SCHEDULER_ENABLED"):
         load_scheduler_config(
             {"ATTENDANCE_DATABASE_URL": "postgresql://scheduler-config-test"}
         )
-    with pytest.raises(ValueError, match="DAILY_ATTENDANCE_REPORT_ROUTE_KEY"):
+    with pytest.raises(RuntimeError, match="GATEWAY_INTERNAL_BASE_URL"):
         load_scheduler_config(
             {
                 "ATTENDANCE_PROVIDER_SCHEDULER_ENABLED": "true",
                 "ATTENDANCE_DATABASE_URL": "postgresql://scheduler-config-test",
                 "GROUP_DAILY_SUMMARY_ENABLED": "false",
                 "DAILY_ATTENDANCE_REPORT_ENABLED": "true",
-                "GATEWAY_INTERNAL_BASE_URL": "http://gateway.test",
-                "ATTENDANCE_TO_GATEWAY_BEARER_TOKEN": "scheduler-test-token",
             }
         )
 
-    with pytest.raises(ValueError, match="GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON"):
-        load_scheduler_config(
-            {
-                "ATTENDANCE_PROVIDER_SCHEDULER_ENABLED": "true",
-                "ATTENDANCE_DATABASE_URL": "postgresql://scheduler-config-test",
-                "GROUP_DAILY_SUMMARY_ENABLED": "true",
-                "DAILY_ATTENDANCE_REPORT_ENABLED": "false",
-                "GATEWAY_INTERNAL_BASE_URL": "http://gateway.test",
-                "ATTENDANCE_TO_GATEWAY_BEARER_TOKEN": "scheduler-test-token",
-            }
-        )
-
-
-def test_scheduler_config_loads_explicit_group_route_bindings() -> None:
+def test_scheduler_config_ignores_removed_static_group_route_bindings() -> None:
     from tasks.provider_scheduler import load_scheduler_config
 
     config = load_scheduler_config(
@@ -570,13 +583,15 @@ def test_scheduler_config_loads_explicit_group_route_bindings() -> None:
             "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON": json.dumps(
                 {str(_CHAT_ID): _SUMMARY_ROUTE_KEY}
             ),
+            "DAILY_ATTENDANCE_REPORT_ROUTE_KEY": "legacy-route-must-be-ignored",
             "DAILY_ATTENDANCE_REPORT_ENABLED": "false",
-            "GATEWAY_INTERNAL_BASE_URL": "http://gateway.test",
-            "ATTENDANCE_TO_GATEWAY_BEARER_TOKEN": "scheduler-test-token",
+            "GATEWAY_INTERNAL_BASE_URL": "http://gateway",
+            "ATTENDANCE_TO_GATEWAY_BEARER_TOKEN": "attendance-to-gateway-test-credential",
         }
     )
 
-    assert config.group_summary_route_keys == {_CHAT_ID: _SUMMARY_ROUTE_KEY}
+    assert not hasattr(config, "group_summary_route_keys")
+    assert not hasattr(config, "daily_report_route_key")
 
 
 def test_failed_scheduler_run_honors_durable_retry_time(
@@ -594,12 +609,10 @@ def test_failed_scheduler_run_honors_durable_retry_time(
         group_summary_minute=30,
         group_summary_timezone="Asia/Shanghai",
         group_summary_skip_dates=frozenset(),
-        group_summary_route_keys={},
         daily_report_enabled=False,
         daily_report_hour=23,
         daily_report_minute=30,
         daily_report_timezone="Asia/Shanghai",
-        daily_report_route_key=None,
     )
     calls: list[str] = []
 

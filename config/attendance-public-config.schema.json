@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:ux-assistant:attendance-public-config:v1",
+  "$id": "urn:ux-assistant:attendance-public-config:v2",
   "title": "UX Assistant Attendance public runtime configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["database", "provider", "webapp", "ai", "sheets", "groups", "scheduler", "worker", "observability", "credentials"],
+  "required": ["database", "provider", "webapp", "ai", "sheets", "scheduler", "worker", "observability", "credentials"],
   "properties": {
     "database": {
       "type": "object",
@@ -76,12 +76,11 @@
         "premium": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "apiBaseUrl", "model", "groupRefs", "apiKeySecretRef"],
+          "required": ["enabled", "apiBaseUrl", "model", "apiKeySecretRef"],
           "properties": {
             "enabled": { "type": "boolean" },
             "apiBaseUrl": { "$ref": "#/$defs/httpUrl" },
             "model": { "$ref": "#/$defs/publicName" },
-            "groupRefs": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/logicalRef" } },
             "apiKeySecretRef": { "const": "attendance_premium_ai_api_key" }
           }
         }
@@ -142,46 +141,10 @@
       "x-ownerComponent": "attendance",
       "x-restartComponents": ["attendance"]
     },
-    "groups": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["ownedGroupRefs", "dailySummaryRouteKeys", "aiDryRunGroupRefs", "pcOnlyGroupRefs", "employeeIdOnlyGroupRefs", "remoteDiffGroupRefs", "testGroupRefs", "bbqGroupRefs", "visibleTexts"],
-      "properties": {
-        "ownedGroupRefs": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": { "$ref": "#/$defs/logicalRef" }
-        },
-        "dailySummaryRouteKeys": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": { "$ref": "#/$defs/routeKey" }
-        },
-        "aiDryRunGroupRefs": { "$ref": "#/$defs/groupRefs" },
-        "pcOnlyGroupRefs": { "$ref": "#/$defs/groupRefs" },
-        "employeeIdOnlyGroupRefs": { "$ref": "#/$defs/groupRefs" },
-        "remoteDiffGroupRefs": { "$ref": "#/$defs/groupRefs" },
-        "testGroupRefs": { "$ref": "#/$defs/groupRefs" },
-        "bbqGroupRefs": { "$ref": "#/$defs/groupRefs" },
-        "visibleTexts": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["enabled", "groupRefs"],
-          "properties": {
-            "enabled": { "type": "boolean" },
-            "groupRefs": { "$ref": "#/$defs/groupRefs" }
-          }
-        }
-      },
-      "x-ownerComponent": "attendance",
-      "x-restartComponents": ["attendance", "gateway"]
-    },
     "scheduler": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "pollSeconds", "leaseSeconds", "timezone", "dailySummaryTime", "dailySummarySkipDate", "dailyReportEnabled", "dailyReportTime", "dailyReportRouteKey", "sheetSyncIntervalSeconds"],
+      "required": ["enabled", "pollSeconds", "leaseSeconds", "timezone", "dailySummaryTime", "dailySummarySkipDate", "dailyReportEnabled", "dailyReportTime", "sheetSyncIntervalSeconds"],
       "properties": {
         "enabled": { "type": "boolean" },
         "pollSeconds": { "type": "number", "minimum": 0.1, "maximum": 3600 },
@@ -191,7 +154,6 @@
         "dailySummarySkipDate": { "type": "string", "pattern": "^(?:|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:,[0-9]{4}-[0-9]{2}-[0-9]{2})*)$" },
         "dailyReportEnabled": { "type": "boolean" },
         "dailyReportTime": { "type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$" },
-        "dailyReportRouteKey": { "$ref": "#/$defs/routeKey" },
         "sheetSyncIntervalSeconds": { "type": "integer", "minimum": 60, "maximum": 604800 }
       },
       "x-ownerComponent": "attendance",
@@ -225,11 +187,10 @@
     "credentials": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["gatewayToAttendanceBearerRef", "attendanceToGatewayBearerRef", "groupBindingsIdentifierRef"],
+      "required": ["gatewayToAttendanceBearerRef", "attendanceToGatewayBearerRef"],
       "properties": {
         "gatewayToAttendanceBearerRef": { "const": "gateway_to_attendance_bearer" },
-        "attendanceToGatewayBearerRef": { "const": "attendance_to_gateway_bearer" },
-        "groupBindingsIdentifierRef": { "const": "attendance_group_bindings" }
+        "attendanceToGatewayBearerRef": { "const": "attendance_to_gateway_bearer" }
       },
       "x-ownerComponent": "attendance",
       "x-restartComponents": ["attendance", "gateway"]

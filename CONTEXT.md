@@ -32,9 +32,10 @@ Gateway 文件只通过 `GET /internal/v1/telegram-files/{fileRef}` 读取。Att
 当前群考勤摘要、每日 CSV 与 Google Sheets 班表同步由独立的
 `python -m tasks.provider_scheduler` 进程调度。每个时间窗口先通过
 `attendance_worker_schedule_runs` 持久 claim/lease/retry；摘要和日报再写入稳定
-owner key 的 `attendance_worker_actions`。群摘要目标必须由部署配置
-`GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON` 显式绑定业务 `routeKey`；Attendance 不得从
-Telegram `chatId` 计算、猜测或回退路由，缺失绑定时该调度任务失败并保留重试真相。
+owner key 的 `attendance_worker_actions`。群摘要目标来自 Gateway 动态 group-route
+directory 中全部 active Attendance routes；公开配置只按名称分类，Attendance 不人工
+维护 Telegram `chatId`/`routeKey`，也不得从 `chatId` 计算、猜测或回退路由。0 个匹配群时
+fan-out 为空且 readiness 保持正常；目录不可用或返回错误分类时 fail closed 并保留重试真相。
 QC、audit 与 legacy notification 不会由该
 调度器恢复。日报和摘要以已完成日期为游标顺序补跑遗漏日期；长时间 Sheets/报表操作
 通过 lease heartbeat 续租，并用递增 `lease_version` fencing token 阻止失效 worker

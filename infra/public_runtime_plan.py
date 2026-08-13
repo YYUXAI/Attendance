@@ -26,25 +26,16 @@ class AttendancePublicRuntimePlan:
 
 def derive_attendance_public_runtime_plan(
     config: dict[str, Any],
-    public_groups: list[dict[str, str]],
 ) -> AttendancePublicRuntimePlan:
     provider = config["provider"]
     webapp = config["webapp"]
     ai = config["ai"]
     sheets = config["sheets"]
-    groups = config["groups"]
     scheduler = config["scheduler"]
     worker = config["worker"]
     observability = config["observability"]
     sheet_profiles = sheets["profiles"]
-    group_display_names = {
-        group["groupRef"]: group["displayName"]
-        for group in public_groups
-    }
     daily_report_hour, daily_report_minute = str(scheduler["dailyReportTime"]).split(":")
-
-    def group_titles(group_refs: list[str]) -> str:
-        return ",".join(group_display_names[group_ref] for group_ref in group_refs)
 
     return AttendancePublicRuntimePlan(
         public_environment={
@@ -76,21 +67,6 @@ def derive_attendance_public_runtime_plan(
             "CHECKIN_AI_PREMIUM_ENABLED": _enabled(ai["premium"]["enabled"]),
             "CHECKIN_AI_PREMIUM_BASE_URL": str(ai["premium"]["apiBaseUrl"]),
             "CHECKIN_AI_PREMIUM_MODEL": str(ai["premium"]["model"]),
-            "CHECKIN_AI_PREMIUM_GROUP_TITLES": group_titles(ai["premium"]["groupRefs"]),
-            "AI_DRY_RUN_GROUP_TITLES": group_titles(groups["aiDryRunGroupRefs"]),
-            "CHECKIN_EMPLOYEE_ID_ONLY_GROUP_TITLES": group_titles(
-                groups["employeeIdOnlyGroupRefs"]
-            ),
-            "CHECKIN_REMOTE_DIFF_GROUP_TITLE": group_titles(
-                groups["remoteDiffGroupRefs"][:1]
-            ),
-            "CHECKIN_REMOTE_DIFF_GROUP_TITLES": group_titles(
-                groups["remoteDiffGroupRefs"]
-            ),
-            "CHECKIN_VISIBLE_TEXTS_ENABLED": _enabled(groups["visibleTexts"]["enabled"]),
-            "CHECKIN_VISIBLE_TEXTS_GROUP_TITLES": group_titles(
-                groups["visibleTexts"]["groupRefs"]
-            ),
             "GOOGLE_SHEETS_ENABLED": _enabled(sheets["enabled"]),
             "GOOGLE_SHEETS_SYNC_INTERVAL_SECONDS": str(sheets["syncIntervalSeconds"]),
             "GOOGLE_SHEETS_YEAR_MONTH": str(sheets["yearMonth"]),
@@ -112,7 +88,6 @@ def derive_attendance_public_runtime_plan(
             "TEST_GROUP_SLACK_CHECKIN": _enabled(
                 sheet_profiles["testGroup"]["slackCheckin"]
             ),
-            "TEST_GROUP_GROUP_TITLES": group_titles(groups["testGroupRefs"]),
             "BBQ_GOOGLE_SHEETS_ENABLED": _enabled(sheet_profiles["bbq"]["enabled"]),
             "BBQ_GOOGLE_SHEETS_TIMEZONE": str(sheet_profiles["bbq"]["timezone"]),
             "BBQ_GOOGLE_SHEETS_SHEET_TITLE": str(sheet_profiles["bbq"]["sheetTitle"]),
@@ -127,7 +102,6 @@ def derive_attendance_public_runtime_plan(
             "DAILY_ATTENDANCE_REPORT_HOUR": daily_report_hour,
             "DAILY_ATTENDANCE_REPORT_MINUTE": daily_report_minute,
             "DAILY_ATTENDANCE_REPORT_TIMEZONE": str(scheduler["timezone"]),
-            "DAILY_ATTENDANCE_REPORT_ROUTE_KEY": str(scheduler["dailyReportRouteKey"]),
             "ATTENDANCE_PROVIDER_WORKER_ENABLED": _enabled(worker["enabled"]),
             "ATTENDANCE_PROVIDER_WORKER_POLL_SECONDS": str(worker["pollSeconds"]),
             "ATTENDANCE_PROVIDER_WORKER_LEASE_SECONDS": str(worker["leaseSeconds"]),
@@ -182,42 +156,6 @@ def derive_attendance_public_runtime_plan(
             ),
         ),
         derived_private_files=(
-            {
-                "bindingRef": "attendance_group_bindings",
-                "targetFileVariables": [
-                    "AI_DRY_RUN_CHAT_IDS_FILE",
-                    "ALLOWED_CHAT_IDS_FILE",
-                    "BBQ_GOOGLE_SHEETS_CHAT_ID_FILE",
-                    "CHECKIN_AI_PREMIUM_CHAT_IDS_FILE",
-                    "CHECKIN_EMPLOYEE_ID_ONLY_CHAT_IDS_FILE",
-                    "CHECKIN_EXPORT_CHAT_IDS_FILE",
-                    "CHECKIN_PC_ONLY_CHAT_IDS_FILE",
-                    "CHECKIN_REMOTE_DIFF_CHAT_IDS_FILE",
-                    "CHECKIN_VISIBLE_TEXTS_CHAT_IDS_FILE",
-                    "GATEWAY_ATTENDANCE_CHAT_IDS_FILE",
-                    "GATEWAY_OMNI_CLIENT_GROUP_CHAT_IDS_FILE",
-                    "GATEWAY_OMNI_INPUT_CHAT_IDS_FILE",
-                    "GOOGLE_SHEETS_ALT_ATTENDANCE_CHAT_ID_FILE",
-                    "GROUP_CHAT_IDS_FILE",
-                    "LEAVE_BACK_COPY_FALLBACK_CHAT_IDS_FILE",
-                    "LEAVE_MUTUAL_EXCLUSION_CHAT_IDS_FILE",
-                    "NEW_ATTENDANCE_TEST_CHAT_ID_FILE",
-                    "TEST_GROUP_CHAT_IDS_FILE",
-                    "YYMG_CHAT_ID_FILE",
-                    "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON_FILE",
-                ],
-                "publicRoutes": [
-                    {
-                        "groupRef": group_ref,
-                        "routeKey": route_key,
-                    }
-                    for group_ref, route_key in zip(
-                        groups["ownedGroupRefs"],
-                        groups["dailySummaryRouteKeys"],
-                        strict=True,
-                    )
-                ],
-            },
             {
                 "bindingRef": "attendance_google_sheet_objects",
                 "targetFileVariables": [

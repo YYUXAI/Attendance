@@ -2,19 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
+import hashlib
 import logging
 import os
-import re
 import socket
 import sys
 import time
 import uuid
-from collections.abc import Awaitable, Mapping
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import date, datetime, time as wall_time, timedelta, timezone
 from threading import Event, Thread
-from types import MappingProxyType
 from typing import Callable, Sequence
 from zoneinfo import ZoneInfo
 
@@ -29,6 +27,10 @@ from gateway_provider.contracts import (
     TelegramMessageUpdate,
 )
 from gateway_provider.gateway_file_client import GatewayFileReader
+from gateway_provider.group_route_client import (
+    AttendanceGroupRoute,
+    GatewayAttendanceGroupRouteReader,
+)
 from gateway_provider.runtime_security import assert_no_telegram_owner_credentials
 from infra.db import database_url_scope
 from infra.google_sheets_config import load_google_sheets_config
@@ -46,9 +48,6 @@ from services.test_group_google_sheets_service import (
 
 log = logging.getLogger(__name__)
 
-_GATEWAY_ROUTE_KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._:-]{2,127}$")
-
-
 @dataclass(frozen=True)
 class ProviderSchedulerConfig:
     database_url: str
@@ -59,12 +58,10 @@ class ProviderSchedulerConfig:
     group_summary_minute: int
     group_summary_timezone: str
     group_summary_skip_dates: frozenset[date]
-    group_summary_route_keys: Mapping[int, str]
     daily_report_enabled: bool
     daily_report_hour: int
     daily_report_minute: int
     daily_report_timezone: str
-    daily_report_route_key: str | None
     gateway_base_url: str | None = None
     gateway_bearer_token: str | None = None
 
@@ -77,38 +74,15 @@ class ProviderSchedulerConfig:
             raise ValueError("lease_seconds must be between 1 and 3600")
         ZoneInfo(self.group_summary_timezone)
         ZoneInfo(self.daily_report_timezone)
-        route_keys = dict(self.group_summary_route_keys)
-        for chat_id, route_key in route_keys.items():
-            if (
-                not isinstance(chat_id, int)
-                or isinstance(chat_id, bool)
-                or chat_id >= 0
-            ):
-                raise ValueError(
-                    "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON keys must be negative Telegram chat IDs"
-                )
-            if not isinstance(route_key, str) or not _GATEWAY_ROUTE_KEY_PATTERN.fullmatch(
-                route_key
-            ):
-                raise ValueError(
-                    "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON values must be valid Gateway route keys"
-                )
-        if self.group_summary_enabled and not route_keys:
-            raise ValueError(
-                "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON is required when group summaries are enabled"
-            )
-        object.__setattr__(
-            self,
-            "group_summary_route_keys",
-            MappingProxyType(route_keys),
-        )
-        if self.daily_report_enabled and self.daily_report_route_key is None:
-            raise ValueError(
-                "DAILY_ATTENDANCE_REPORT_ROUTE_KEY is required when the daily report is enabled"
-            )
         if (self.gateway_base_url is None) != (self.gateway_bearer_token is None):
             raise ValueError(
                 "gateway_base_url and gateway_bearer_token must be configured together"
+            )
+        if (
+            self.group_summary_enabled or self.daily_report_enabled
+        ) and self.gateway_base_url is None:
+            raise ValueError(
+                "Gateway dynamic group route directory is required when group schedules are enabled"
             )
 
 
@@ -134,10 +108,21 @@ def run_scheduler_cycle(
     test_group_sync: Callable[..., Awaitable[object]] | None = None,
     bbq_sync: Callable[..., Awaitable[object]] | None = None,
     file_reader: GatewayFileReader | None = None,
+    group_route_reader: Callable[[], Sequence[AttendanceGroupRoute]] | None = None,
 ) -> SchedulerCycleResult:
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     claimed = 0
     enqueued = 0
+    group_routes: Sequence[AttendanceGroupRoute] = ()
+    if config.group_summary_enabled or config.daily_report_enabled:
+        if group_route_reader is None:
+            if config.gateway_base_url is None or config.gateway_bearer_token is None:
+                raise RuntimeError("Gateway dynamic group route directory is unavailable")
+            group_route_reader = GatewayAttendanceGroupRouteReader(
+                base_url=config.gateway_base_url,
+                bearer_token=config.gateway_bearer_token,
+            ).read
+        group_routes = tuple(group_route_reader())
 
     deferred_claimed, deferred_actions = run_deferred_interaction_cycle(
         config,
@@ -179,6 +164,7 @@ def run_scheduler_cycle(
                     config,
                     target_date=target_date,
                     created_at=current,
+                    group_routes=group_routes,
                 ),
             )
             if result.claimed:
@@ -210,6 +196,7 @@ def run_scheduler_cycle(
                     config,
                     report_date=report_date,
                     created_at=current,
+                    group_routes=group_routes,
                 ),
             )
             if result.claimed:
@@ -591,17 +578,14 @@ def _enqueue_group_summaries(
     *,
     target_date: date,
     created_at: datetime,
+    group_routes: Sequence[AttendanceGroupRoute],
 ) -> int:
     if target_date in config.group_summary_skip_dates:
         return 0
     enqueued = 0
     with database_url_scope(config.database_url):
-        for chat_id in group_attendance_summary_service.list_attendance_group_ids():
-            route_key = config.group_summary_route_keys.get(chat_id)
-            if route_key is None:
-                raise RuntimeError(
-                    f"Gateway group summary route is not configured for chat {chat_id}"
-                )
+        for group_route in group_routes:
+            chat_id = group_route.chat_id
             rows = group_attendance_summary_service.build_rows_for_group(
                 chat_id=chat_id,
                 target_date=target_date,
@@ -624,7 +608,7 @@ def _enqueue_group_summaries(
                 request=_message_request(
                     action_id=action_id,
                     created_at=created_at,
-                    route_key=route_key,
+                    route_key=group_route.route_ref,
                     text=text,
                 ),
             )
@@ -637,10 +621,8 @@ def _enqueue_daily_report(
     *,
     report_date: date,
     created_at: datetime,
+    group_routes: Sequence[AttendanceGroupRoute],
 ) -> int:
-    route_key = config.daily_report_route_key
-    if route_key is None:
-        raise RuntimeError("daily report Gateway route key is not configured")
     with database_url_scope(config.database_url):
         rows = asyncio.run(
             attendance_export_service.collect_rows_for_date(
@@ -648,32 +630,38 @@ def _enqueue_daily_report(
             )
         )
         csv_bytes = group_attendance_summary_service.encode_csv(rows=rows)
-    action_id = f"attendance.daily-report.{report_date.isoformat()}"
-    request = {
-        "protocolVersion": "1.0",
-        "provider": "ATTENDANCE",
-        "correlationId": action_id,
-        "createdAt": _timestamp(created_at),
-        "action": {
-            "actionId": action_id,
-            "type": "SEND_GROUP_DOCUMENT",
-            "routeKey": route_key,
-            "document": {
-                "source": "BYTES",
-                "contentBase64": base64.b64encode(csv_bytes).decode("ascii"),
-                "fileName": f"attendance_{report_date.isoformat()}.csv",
-                "mimeType": "text/csv; charset=utf-8",
+    enqueued = 0
+    for group_route in group_routes:
+        route_suffix = hashlib.sha256(group_route.route_ref.encode("utf-8")).hexdigest()[:12]
+        action_id = (
+            f"attendance.daily-report.{report_date.isoformat()}.{route_suffix}"
+        )
+        request = {
+            "protocolVersion": "1.0",
+            "provider": "ATTENDANCE",
+            "correlationId": action_id,
+            "createdAt": _timestamp(created_at),
+            "action": {
+                "actionId": action_id,
+                "type": "SEND_GROUP_DOCUMENT",
+                "routeKey": group_route.route_ref,
+                "document": {
+                    "source": "BYTES",
+                    "contentBase64": base64.b64encode(csv_bytes).decode("ascii"),
+                    "fileName": f"attendance_{report_date.isoformat()}.csv",
+                    "mimeType": "text/csv; charset=utf-8",
+                },
             },
-        },
-    }
-    result = worker_action_repo.enqueue_action(
-        database_url=config.database_url,
-        owner_key=report_date.isoformat(),
-        action_kind="DAILY_REPORT",
-        max_attempts=3,
-        request=request,
-    )
-    return int(result == "ENQUEUED")
+        }
+        result = worker_action_repo.enqueue_action(
+            database_url=config.database_url,
+            owner_key=f"{report_date.isoformat()}:{group_route.route_ref}",
+            action_kind="DAILY_REPORT",
+            max_attempts=3,
+            request=request,
+        )
+        enqueued += result == "ENQUEUED"
+    return int(enqueued)
 
 
 def _message_request(
@@ -718,9 +706,6 @@ def load_scheduler_config(environment: dict[str, str]) -> ProviderSchedulerConfi
     daily_minute = _bounded_int(
         environment.get("DAILY_ATTENDANCE_REPORT_MINUTE") or "0", 0, 59
     )
-    daily_report_route_key = (
-        environment.get("DAILY_ATTENDANCE_REPORT_ROUTE_KEY") or ""
-    ).strip() or None
     skip_raw = (environment.get("GROUP_DAILY_SUMMARY_SKIP_DATE") or "").replace("，", ",")
     skip_dates = frozenset(
         date.fromisoformat(value.strip())
@@ -744,9 +729,6 @@ def load_scheduler_config(environment: dict[str, str]) -> ProviderSchedulerConfi
             environment.get("GROUP_DAILY_SUMMARY_TZ") or "Asia/Shanghai"
         ).strip(),
         group_summary_skip_dates=skip_dates,
-        group_summary_route_keys=_group_summary_route_keys(
-            environment.get("GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON")
-        ),
         daily_report_enabled=_enabled(
             environment, "DAILY_ATTENDANCE_REPORT_ENABLED", True
         ),
@@ -755,7 +737,6 @@ def load_scheduler_config(environment: dict[str, str]) -> ProviderSchedulerConfi
         daily_report_timezone=(
             environment.get("DAILY_ATTENDANCE_REPORT_TIMEZONE") or "Asia/Shanghai"
         ).strip(),
-        daily_report_route_key=daily_report_route_key,
         gateway_base_url=_required(environment, "GATEWAY_INTERNAL_BASE_URL"),
         gateway_bearer_token=_required(
             environment,
@@ -803,41 +784,6 @@ def _hour_minute(value: str) -> tuple[int, int]:
     if len(parts) != 2:
         raise ValueError("GROUP_DAILY_SUMMARY_TIME must be HH:MM")
     return _bounded_int(parts[0], 0, 23), _bounded_int(parts[1], 0, 59)
-
-
-def _group_summary_route_keys(raw: str | None) -> dict[int, str]:
-    if raw is None or not raw.strip():
-        return {}
-    try:
-        document = json.loads(raw)
-    except json.JSONDecodeError as error:
-        raise ValueError(
-            "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON must be a JSON object"
-        ) from error
-    if not isinstance(document, dict):
-        raise ValueError("GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON must be a JSON object")
-    result: dict[int, str] = {}
-    for raw_chat_id, route_key in document.items():
-        if not isinstance(raw_chat_id, str):
-            raise ValueError(
-                "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON keys must be negative Telegram chat IDs"
-            )
-        try:
-            chat_id = int(raw_chat_id)
-        except ValueError as error:
-            raise ValueError(
-                "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON keys must be negative Telegram chat IDs"
-            ) from error
-        if str(chat_id) != raw_chat_id or chat_id >= 0:
-            raise ValueError(
-                "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON keys must be negative Telegram chat IDs"
-            )
-        if not isinstance(route_key, str):
-            raise ValueError(
-                "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON values must be valid Gateway route keys"
-            )
-        result[chat_id] = route_key
-    return result
 
 
 def _bounded_int(value: str, minimum: int, maximum: int) -> int:

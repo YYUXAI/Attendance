@@ -174,6 +174,11 @@ def _process_attendance_event(
     *,
     shift_web_app_public_url: str,
 ) -> GatewayEventResponse:
+    if request.routeReason == "GROUP_OWNER" and (
+        request.groupRouteRef is None
+        or request.groupClassification != "ATTENDANCE"
+    ):
+        raise GatewayRouteOwnershipMismatchError()
     update = request.telegramUpdate
     if isinstance(update, TelegramInlineQueryUpdate):
         if request.routeReason != "INLINE_QUERY":

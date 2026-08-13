@@ -2216,6 +2216,7 @@ async def current_bugfix_recoveries() -> dict[str, Any]:
             worker_id="parity-scheduler-a",
             now=fixed_now,
             sheets_sync=lambda: sheets_calls.append("sync") or SheetsResult(),
+            group_route_reader=scheduler_fixture._group_routes,
         )
         duplicate_cycle = await asyncio.to_thread(
             scheduler.run_scheduler_cycle,
@@ -2223,6 +2224,7 @@ async def current_bugfix_recoveries() -> dict[str, Any]:
             worker_id="parity-scheduler-b",
             now=fixed_now,
             sheets_sync=lambda: sheets_calls.append("duplicate") or SheetsResult(),
+            group_route_reader=scheduler_fixture._group_routes,
         )
 
         def fail_sync() -> object:
@@ -2235,6 +2237,7 @@ async def current_bugfix_recoveries() -> dict[str, Any]:
             worker_id="parity-scheduler-failed",
             now=fixed_now + timedelta(hours=2),
             sheets_sync=fail_sync,
+            group_route_reader=scheduler_fixture._group_routes,
         )
         early_retry_cycle = await asyncio.to_thread(
             scheduler.run_scheduler_cycle,
@@ -2242,6 +2245,7 @@ async def current_bugfix_recoveries() -> dict[str, Any]:
             worker_id="parity-scheduler-too-soon",
             now=fixed_now + timedelta(hours=2, seconds=59),
             sheets_sync=fail_sync,
+            group_route_reader=scheduler_fixture._group_routes,
         )
         recovered_cycle = await asyncio.to_thread(
             scheduler.run_scheduler_cycle,
@@ -2249,6 +2253,7 @@ async def current_bugfix_recoveries() -> dict[str, Any]:
             worker_id="parity-scheduler-recovered",
             now=fixed_now + timedelta(hours=2, seconds=61),
             sheets_sync=lambda: retry_calls.append("recovered") or SheetsResult(),
+            group_route_reader=scheduler_fixture._group_routes,
         )
         with psycopg2.connect(scheduler_fixture._database_url()) as connection:
             with connection.cursor() as cursor:
@@ -2261,7 +2266,7 @@ async def current_bugfix_recoveries() -> dict[str, Any]:
                     """,
                     (
                         "attendance.group-summary.2099-08-08.10087091",
-                        "attendance.daily-report.2099-08-08",
+                        scheduler_fixture._daily_action_id(fixed_now.date()),
                     ),
                 )
                 scheduler_actions = {row[0]: row[1] for row in cursor.fetchall()}
@@ -2415,7 +2420,7 @@ async def current_bugfix_recoveries() -> dict[str, Any]:
         "BG-AT-DAILY-CSV-CATCHUP": recovery(
             daily_action["action"]["type"] == "SEND_GROUP_DOCUMENT"
             and daily_action["action"]["routeKey"]
-            == scheduler_fixture._NOTIFY_ROUTE_KEY
+            == scheduler_fixture._SUMMARY_ROUTE_KEY
             and "chatId" not in daily_action["action"]
             and daily_action["action"]["document"]["fileName"]
             == "attendance_2099-08-08.csv"
@@ -2427,7 +2432,7 @@ async def current_bugfix_recoveries() -> dict[str, Any]:
             first_cycle.enqueued_actions == 2
             and daily_action["action"]["type"] == "SEND_GROUP_DOCUMENT"
             and daily_action["action"]["routeKey"]
-            == scheduler_fixture._NOTIFY_ROUTE_KEY
+            == scheduler_fixture._SUMMARY_ROUTE_KEY
             and "chatId" not in daily_action["action"],
             action=daily_action,
         ),
@@ -4172,6 +4177,8 @@ def gateway_event(update: dict[str, Any]) -> dict[str, Any]:
         "eventId": f"evt-attendance-group-ignored-{update_id}",
         "target": "ATTENDANCE",
         "routeReason": "GROUP_OWNER",
+        "groupRouteRef": "telegram-group-route.attendance-test",
+        "groupClassification": "ATTENDANCE",
         "conversationId": "telegram:chat:-10087001",
         "receivedAt": "2026-08-08T08:02:00Z",
         "telegramUpdate": update,
@@ -4344,6 +4351,8 @@ def group_start_event() -> dict[str, Any]:
         "eventId": "evt-attendance-parity-group-menu",
         "target": "ATTENDANCE",
         "routeReason": "GROUP_OWNER",
+        "groupRouteRef": "telegram-group-route.attendance-test",
+        "groupClassification": "ATTENDANCE",
         "conversationId": "telegram:chat:-10087001",
         "receivedAt": "2026-08-09T01:00:00.000Z",
         "telegramUpdate": {
@@ -4419,6 +4428,8 @@ def group_message_event(text: str, *, sender_id: int = 87001) -> dict[str, Any]:
         "eventId": "evt-attendance-parity-group-interaction",
         "target": "ATTENDANCE",
         "routeReason": "GROUP_OWNER",
+        "groupRouteRef": "telegram-group-route.attendance-test",
+        "groupClassification": "ATTENDANCE",
         "conversationId": "telegram:chat:-10087001",
         "receivedAt": "2026-08-08T09:00:00Z",
         "telegramUpdate": {
@@ -4483,6 +4494,8 @@ def checkin_event(case: dict[str, Any]) -> dict[str, Any]:
         "eventId": f"evt-attendance-parity-{case['scenarioId']}",
         "target": "ATTENDANCE",
         "routeReason": "GROUP_OWNER",
+        "groupRouteRef": "telegram-group-route.attendance-test",
+        "groupClassification": "ATTENDANCE",
         "conversationId": "telegram:chat:-10087001",
         "receivedAt": "2026-08-08T09:00:00Z",
         "telegramUpdate": {

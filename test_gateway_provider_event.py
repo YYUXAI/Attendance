@@ -130,12 +130,10 @@ def _deferred_scheduler_config() -> ProviderSchedulerConfig:
         group_summary_minute=30,
         group_summary_timezone="Asia/Shanghai",
         group_summary_skip_dates=frozenset(),
-        group_summary_route_keys={},
         daily_report_enabled=False,
         daily_report_hour=23,
         daily_report_minute=30,
         daily_report_timezone="Asia/Shanghai",
-        daily_report_route_key=None,
     )
 
 
@@ -251,7 +249,7 @@ def test_provider_health_and_readiness_verify_owned_database() -> None:
     assert readiness.json() == {
         "ok": True,
         "gatewayProtocolFingerprint": (
-            "sha256:3d528d502b0b530e5a210e3680bad27a5ccfe78216aaa9f345b69c36bb94b5f9"
+            "sha256:3a90c0f00bae06f7fb14ddafc969acfff076de116324eb1745532393a2930061"
         ),
         "status": "READY",
         "database": True,
@@ -498,7 +496,7 @@ def test_provider_health_fails_closed_when_database_is_unavailable() -> None:
     assert readiness.json() == {
         "ok": False,
         "gatewayProtocolFingerprint": (
-            "sha256:3d528d502b0b530e5a210e3680bad27a5ccfe78216aaa9f345b69c36bb94b5f9"
+            "sha256:3a90c0f00bae06f7fb14ddafc969acfff076de116324eb1745532393a2930061"
         ),
         "status": "NOT_READY",
         "database": False,
@@ -1836,6 +1834,8 @@ def _group_action_command_event(text: str) -> dict[str, object]:
         "eventId": "evt-attendance-group-1203",
         "target": "ATTENDANCE",
         "routeReason": "GROUP_OWNER",
+        "groupRouteRef": "telegram-group-route.attendance-test",
+        "groupClassification": "ATTENDANCE",
         "conversationId": "telegram:chat:-10081002",
         "receivedAt": "2026-08-08T08:02:00Z",
         "telegramUpdate": {
@@ -1871,6 +1871,8 @@ def _group_report_event(
         "eventId": f"evt-attendance-report-{event_number}",
         "target": "ATTENDANCE",
         "routeReason": "GROUP_OWNER",
+        "groupRouteRef": "telegram-group-route.attendance-test",
+        "groupClassification": "ATTENDANCE",
         "conversationId": "telegram:chat:-10081002",
         "receivedAt": received_at,
         "telegramUpdate": {
@@ -1907,6 +1909,8 @@ def _group_checkin_event(
         "eventId": f"evt-attendance-checkin-{event_number}",
         "target": "ATTENDANCE",
         "routeReason": "GROUP_OWNER",
+        "groupRouteRef": "telegram-group-route.attendance-test",
+        "groupClassification": "ATTENDANCE",
         "conversationId": "telegram:chat:-10081002",
         "receivedAt": "2026-08-08T08:00:01Z",
         "telegramUpdate": {

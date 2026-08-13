@@ -23,11 +23,11 @@
 
 Gateway 与 Attendance 使用方向不同的 service credential。Gateway `202 ACCEPTED` 不是发送成功；只有 `DELIVERED` 终态回执才能把对应业务动作标记为 delivered。
 
-群摘要等异步群动作只接受部署时显式配置的 Gateway 业务 `routeKey`。`GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON` 使用 `{ "<telegram_chat_id>": "<routeKey>" }` 形式绑定 Attendance 自有业务群与 Gateway 路由；不得从 `chatId` 计算路由，也没有旧目标回退。
+群摘要等异步群动作只接受 Gateway 动态 group-route directory 返回的 Attendance routes。公开 manifest 只维护 `attendanceTitles` 名称集合；Gateway 发现并分类 0..N 个群，Attendance 不人工配置 chat ID 或 routeKey，也不得从 `chatId` 计算路由或回退旧目标。0 个 Attendance 群时 Provider、scheduler 和 worker 仍可 readiness，群摘要 fan-out 为空。
 
 ## 测试主线与环境
 
-本仓库唯一的长期测试分支是 `main`，`/srv/ux` 隔离测试环境只从 `main` 构建。当前测试机器人显示名为“刘亦菲”，username 为 `@yyuxai_test_bot`；Bot Token 与 Telegram 连接只属于 UXAssistant-Gateway，本仓库只通过 Gateway 使用该机器人。
+本仓库唯一的长期测试分支是 `main`，`/srv/ux` 隔离测试环境只从 `main` 构建。当前测试机器人显示名为“UX助手”，username 为 `@yyux_helper_bot`；Bot Token 与 Telegram 连接只属于 UXAssistant-Gateway，本仓库只通过 Gateway 使用该机器人。
 
 未来计划的独立 `production` 分支尚未创建。生产机器人、群、凭据、分支和部署需要新的明确授权。
 
@@ -52,7 +52,7 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-从 `.env.example` 复制本地配置时，只填写测试或开发凭据。不得提交数据库密码、Gateway token、真实 Telegram 身份或群信息。
+从 `.env.example` 复制本地配置时，只填写测试或开发凭据。不得提交数据库密码、Gateway token、可复用 Telegram session/auth key 或其他凭据。测试 Telegram numeric ID 是公开诊断信息，但动态群 ID/route 不作为人工运行配置提交。
 
 ## 检查
 

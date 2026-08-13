@@ -51,12 +51,10 @@ def _prepare_database() -> None:
                 "WHERE action_id LIKE 'attendance.worker.integration.%'",
             )
             cursor.execute(
-                "DELETE FROM attendance_worker_action_attempts "
-                "WHERE root_action_id LIKE 'attendance.worker.integration.%'",
+                "DELETE FROM attendance_worker_action_attempts",
             )
             cursor.execute(
-                "DELETE FROM attendance_worker_actions "
-                "WHERE action_id LIKE 'attendance.worker.integration.%'",
+                "DELETE FROM attendance_worker_actions",
             )
 
 

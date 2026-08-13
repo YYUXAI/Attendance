@@ -45,7 +45,8 @@ def test_attendance_public_config_has_only_logical_private_references() -> None:
     rendered = json.dumps(config, ensure_ascii=False)
     assert "postgresql://" not in rendered
     assert "TELEGRAM_BOT_TOKEN" not in rendered
-    assert "chatId" not in rendered
+    assert "groupRef" not in rendered
+    assert "routeKey" not in rendered
     assert config["credentials"]["gatewayToAttendanceBearerRef"] != (
         config["credentials"]["attendanceToGatewayBearerRef"]
     )
@@ -54,15 +55,12 @@ def test_attendance_public_config_has_only_logical_private_references() -> None:
 
 
 def test_attendance_runtime_plan_contains_only_public_env_and_file_mappings() -> None:
-    plan = derive_attendance_public_runtime_plan(_fixture(), [{
-        "groupRef": "attendance-test",
-        "displayName": "Attendance test group",
-    }])
+    plan = derive_attendance_public_runtime_plan(_fixture())
     assert plan.public_environment["SHIFT_WEB_PORT"] == "19084"
+    assert "GATEWAY_ATTENDANCE_CHAT_IDS" not in plan.public_environment
     assert "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON" not in plan.public_environment
-    assert plan.public_environment["CHECKIN_AI_PREMIUM_GROUP_TITLES"] == (
-        "Attendance test group"
-    )
+    assert "DAILY_ATTENDANCE_REPORT_ROUTE_KEY" not in plan.public_environment
+    assert "FORMAL_GROUP_ROSTER_SOURCE_MAP" not in plan.public_environment
     assert "ATTENDANCE_DATABASE_URL" not in plan.public_environment
     assert "GATEWAY_TO_ATTENDANCE_BEARER_TOKEN" not in plan.public_environment
     assert all(
@@ -70,27 +68,17 @@ def test_attendance_runtime_plan_contains_only_public_env_and_file_mappings() ->
         for binding in plan.file_bindings
         for target in binding.target_file_variables
     )
-    assert plan.derived_private_files[0]["bindingRef"] == "attendance_group_bindings"
-    assert "GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON_FILE" in (
-        plan.derived_private_files[0]["targetFileVariables"]
-    )
-    assert plan.derived_private_files[0]["publicRoutes"] == [
-        {"groupRef": "attendance-test", "routeKey": "attendance.main"}
-    ]
+    assert plan.derived_private_files[0]["bindingRef"] == "attendance_google_sheet_objects"
     rendered = repr(plan)
     assert "postgresql://" not in rendered
-    assert "chatId" not in rendered
 
 
 def test_attendance_runtime_plan_covers_every_non_database_legacy_binding() -> None:
     inventory = json.loads(
         (ROOT / "config" / "legacy-runtime-env-inventory.json").read_text(encoding="utf-8")
     )["categories"]
-    plan = derive_attendance_public_runtime_plan(_fixture(), [{
-        "groupRef": "attendance-test",
-        "displayName": "Attendance test group",
-    }])
-    public_targets = set(plan.public_environment) | {"GROUP_DAILY_SUMMARY_ROUTE_KEYS_JSON"}
+    plan = derive_attendance_public_runtime_plan(_fixture())
+    public_targets = set(plan.public_environment)
     secret_targets = {
         target.removesuffix("_FILE")
         for binding in plan.file_bindings
@@ -151,7 +139,6 @@ def _fixture() -> dict[str, object]:
                 "enabled": True,
                 "apiBaseUrl": "https://open.bigmodel.cn/api/paas/v4",
                 "model": "glm-4.6v",
-                "groupRefs": ["attendance-test"],
                 "apiKeySecretRef": "attendance_premium_ai_api_key",
             },
         },
@@ -177,17 +164,6 @@ def _fixture() -> dict[str, object]:
             "credentialsSecretRef": "attendance_google_service_account",
             "objectBindingsIdentifierRef": "attendance_google_sheet_objects",
         },
-        "groups": {
-            "ownedGroupRefs": ["attendance-test"],
-            "dailySummaryRouteKeys": ["attendance.main"],
-            "aiDryRunGroupRefs": ["attendance-test"],
-            "pcOnlyGroupRefs": ["attendance-test"],
-            "employeeIdOnlyGroupRefs": [],
-            "remoteDiffGroupRefs": ["attendance-test"],
-            "testGroupRefs": ["attendance-test"],
-            "bbqGroupRefs": ["attendance-test"],
-            "visibleTexts": {"enabled": False, "groupRefs": []},
-        },
         "scheduler": {
             "enabled": True,
             "pollSeconds": 30,
@@ -197,7 +173,6 @@ def _fixture() -> dict[str, object]:
             "dailySummarySkipDate": "",
             "dailyReportEnabled": True,
             "dailyReportTime": "23:00",
-            "dailyReportRouteKey": "attendance.main",
             "sheetSyncIntervalSeconds": 14400,
         },
         "worker": {
@@ -212,6 +187,5 @@ def _fixture() -> dict[str, object]:
         "credentials": {
             "gatewayToAttendanceBearerRef": "gateway_to_attendance_bearer",
             "attendanceToGatewayBearerRef": "attendance_to_gateway_bearer",
-            "groupBindingsIdentifierRef": "attendance_group_bindings",
         },
     })

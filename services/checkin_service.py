@@ -23,49 +23,26 @@ ALLOWED_TIMEZONES = frozenset(
     }
 )
 
-_DEFAULT_FORMAL_GROUP_ROSTER_SOURCE_BY_CHAT_ID: dict[int, str] = {}
-
 _AI_DRY_RUN_EMPLOYEE_IDS_IN_YYMG = frozenset({"99999"})
 # 非正式群但全员跑 AI、不入库（勿并入「测试群」Google 回写名单）
 _DEFAULT_AI_DRY_RUN_CHAT_IDS: frozenset[int] = frozenset()
 _DEFAULT_AI_DRY_RUN_GROUP_TITLES: frozenset[str] = frozenset({"New-考勤测试群"})
 
 
-def _formal_group_roster_source_by_chat_id() -> dict[int, str]:
-    """支持通过环境变量覆写正式群与 roster source 的映射。"""
-    out = dict(_DEFAULT_FORMAL_GROUP_ROSTER_SOURCE_BY_CHAT_ID)
-    raw = (os.getenv("FORMAL_GROUP_ROSTER_SOURCE_MAP") or "").strip()
-    if not raw:
-        return out
-    for part in raw.replace("，", ",").split(","):
-        item = part.strip()
-        if not item or ":" not in item:
-            continue
-        left, right = item.split(":", 1)
-        src = right.strip().lower()
-        if src not in {"main", "alt"}:
-            continue
-        try:
-            out[int(left.strip())] = src
-        except ValueError:
-            continue
-    return out
-
-
 def formal_group_roster_source_for_chat(*, chat_id: int) -> str | None:
-    return _formal_group_roster_source_by_chat_id().get(int(chat_id))
+    """Gateway classification already proves this is an Attendance group."""
+    del chat_id
+    return "main"
 
 
 def should_accept_checkin_for_chat_roster(
     *, chat_id: int, employee_id: str, tz_name: str
 ) -> tuple[bool, str]:
     """
-    正式群规则：仅记录该群所属 Google 班表 roster 内员工。
-    非正式群（不在映射中）直接不记录打卡。
+    Dynamic Attendance groups share the canonical main roster source.
     """
-    roster_source = _formal_group_roster_source_by_chat_id().get(int(chat_id))
-    if not roster_source:
-        return False, "非正式考勤群"
+    del chat_id
+    roster_source = "main"
     ym = datetime.now(ZoneInfo(tz_name)).strftime("%Y-%m")
     allowed = employee_shift_roster_repo.roster_set(year_month=ym, source=roster_source)
     if str(employee_id).strip() in allowed:

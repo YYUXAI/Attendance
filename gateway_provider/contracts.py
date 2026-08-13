@@ -15,7 +15,7 @@ from pydantic import (
 )
 
 GATEWAY_PROTOCOL_FINGERPRINT = (
-    "sha256:3d528d502b0b530e5a210e3680bad27a5ccfe78216aaa9f345b69c36bb94b5f9"
+    "sha256:3a90c0f00bae06f7fb14ddafc969acfff076de116324eb1745532393a2930061"
 )
 
 
@@ -164,6 +164,16 @@ class GatewayEventRequest(BaseModel):
     ]
     conversationId: Annotated[str, StringConstraints(min_length=1, max_length=256)]
     receivedAt: str
+    groupRouteRef: Annotated[
+        str,
+        StringConstraints(
+            min_length=8,
+            max_length=192,
+            pattern=r"^telegram-group-route\.[A-Za-z0-9._:-]{6,180}$",
+        ),
+    ] | None = None
+    groupClassification: Literal["ORDINARY", "ATTENDANCE", "REQUIREMENT"] | None = None
+    messageThreadId: Annotated[int, Field(gt=0)] | None = None
     privateReachabilityRef: StableId | None = None
     telegramUpdate: (
         TelegramMessageUpdate
@@ -185,6 +195,17 @@ class GatewayEventRequest(BaseModel):
         if parsed.tzinfo is None or parsed.utcoffset() is None:
             raise ValueError("receivedAt must include a UTC offset")
         return value
+
+    @model_validator(mode="after")
+    def validate_group_route_ownership(self) -> "GatewayEventRequest":
+        if self.routeReason == "GROUP_OWNER":
+            if self.groupRouteRef is None or self.groupClassification != "ATTENDANCE":
+                raise ValueError(
+                    "Attendance group events require an ATTENDANCE dynamic group route"
+                )
+        elif self.groupRouteRef is not None or self.groupClassification is not None:
+            raise ValueError("dynamic group route fields require GROUP_OWNER")
+        return self
 
 class InlineKeyboardButton(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
