@@ -1,19 +1,9 @@
 from __future__ import annotations
 
-import logging
 import os
 from dataclasses import dataclass, replace
 
-log = logging.getLogger(__name__)
-
-# 专群：测试群 + Y-UX-KQBBQ → 新智谱 API + glm-4.6v
-_DEFAULT_PREMIUM_CHAT_IDS: frozenset[int] = frozenset()
-_DEFAULT_PREMIUM_TITLES: frozenset[str] = frozenset(
-    {
-        "测试群",
-        "Y-UX-KQBBQ",
-    }
-)
+from infra.attendance_group_policy import load_group_policies, policy_for_title
 
 
 @dataclass(frozen=True)
@@ -45,46 +35,13 @@ class CheckinAiConfig:
         return self.extract_backend == "zhipu"
 
 
-def _parse_int_set(raw: str) -> frozenset[int]:
-    out: set[int] = set()
-    for part in (raw or "").replace("，", ",").split(","):
-        p = part.strip()
-        if not p:
-            continue
-        try:
-            out.add(int(p))
-        except ValueError:
-            continue
-    return frozenset(out)
-
-
-def _parse_str_set(raw: str) -> frozenset[str]:
-    return frozenset(p.strip() for p in (raw or "").replace("，", ",").split(",") if p.strip())
-
-
-def premium_zhipu_chat_ids() -> frozenset[int]:
-    raw = (os.getenv("CHECKIN_AI_PREMIUM_CHAT_IDS") or "").strip()
-    if not raw:
-        return _DEFAULT_PREMIUM_CHAT_IDS
-    return _parse_int_set(raw)
-
-
-def premium_zhipu_group_titles() -> frozenset[str]:
-    raw = (os.getenv("CHECKIN_AI_PREMIUM_GROUP_TITLES") or "").strip()
-    if not raw:
-        return _DEFAULT_PREMIUM_TITLES
-    return _parse_str_set(raw)
-
-
 def premium_zhipu_enabled(*, chat_id: int | None, chat_title: str | None = None) -> bool:
-    """测试群 / BBQ 是否走专群智谱（新 key + glm-4.6v）。"""
-    flag = (os.getenv("CHECKIN_AI_PREMIUM_ENABLED") or "true").strip().lower()
-    if flag in {"0", "false", "no", "off"}:
+    del chat_id
+    flag = (os.getenv("CHECKIN_AI_PREMIUM_ENABLED") or "false").strip().lower()
+    if flag != "true":
         return False
-    if chat_id is not None and int(chat_id) in premium_zhipu_chat_ids():
-        return True
-    title = (chat_title or "").strip()
-    return bool(title and title in premium_zhipu_group_titles())
+    policy = policy_for_title(load_group_policies(os.environ), chat_title)
+    return bool(policy and policy.has("premium-ai"))
 
 
 def resolve_checkin_ai_config_for_chat(
@@ -99,27 +56,14 @@ def resolve_checkin_ai_config_for_chat(
     if not premium_zhipu_enabled(chat_id=chat_id, chat_title=chat_title):
         return config
     premium_key = (
-        os.getenv("CHECKIN_AI_PREMIUM_API_KEY")
-        or os.getenv("ZHIPU_PREMIUM_API_KEY")
-        or ""
+        os.getenv("CHECKIN_AI_PREMIUM_API_KEY") or ""
     ).strip()
     if not premium_key:
-        log.warning(
-            "checkin_ai: premium group chat_id=%s but CHECKIN_AI_PREMIUM_API_KEY empty; keep default key",
-            chat_id,
-        )
-        return config
+        raise RuntimeError("CHECKIN_AI_PREMIUM_API_KEY is required")
     premium_model = (os.getenv("CHECKIN_AI_PREMIUM_MODEL") or "glm-4.6v").strip() or "glm-4.6v"
     premium_base = (
         os.getenv("CHECKIN_AI_PREMIUM_BASE_URL") or config.base_url or ""
     ).strip().rstrip("/") or config.base_url
-    log.info(
-        "checkin_ai: premium zhipu chat_id=%s title=%r model=%s key=...%s",
-        chat_id,
-        (chat_title or "")[:40],
-        premium_model,
-        premium_key[-6:] if len(premium_key) >= 6 else "****",
-    )
     return replace(
         config,
         api_key=premium_key,
@@ -129,18 +73,18 @@ def resolve_checkin_ai_config_for_chat(
 
 
 def load_checkin_ai_config() -> CheckinAiConfig:
-    enabled = os.getenv("CHECKIN_AI_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    enabled_raw = (os.getenv("CHECKIN_AI_ENABLED") or "").strip().lower()
+    if enabled_raw not in {"true", "false"}:
+        raise RuntimeError("CHECKIN_AI_ENABLED must be true or false")
+    enabled = enabled_raw == "true"
     extract_backend = (os.getenv("CHECKIN_AI_EXTRACT_BACKEND") or "zhipu").strip().lower()
     if extract_backend not in {"ollama", "ocr_only", "ocr_text_llm", "zhipu"}:
-        extract_backend = "zhipu"
+        raise RuntimeError("CHECKIN_AI_EXTRACT_BACKEND is invalid")
 
     if extract_backend == "zhipu":
         base_url = (os.getenv("CHECKIN_AI_BASE_URL") or "https://open.bigmodel.cn/api/paas/v4").rstrip("/")
         api_key = (
-            os.getenv("CHECKIN_AI_API_KEY")
-            or os.getenv("ZHIPU_API_KEY")
-            or os.getenv("ZAI_API_KEY")
-            or ""
+            os.getenv("CHECKIN_AI_API_KEY") or ""
         ).strip()
         model = os.getenv("CHECKIN_AI_MODEL") or "glm-4v-flash"
     else:
@@ -150,7 +94,9 @@ def load_checkin_ai_config() -> CheckinAiConfig:
     # assist：仅当 CHECKIN_AI_ENABLED=false 时由调用方走服务器时间；开启后一律严格校验姓名+时间
     mode = (os.getenv("CHECKIN_AI_MODE") or "required").strip().lower()
     if mode not in {"assist", "required"}:
-        mode = "required"
+        raise RuntimeError("CHECKIN_AI_MODE is invalid")
+    if mode == "required" and not enabled:
+        raise RuntimeError("CHECKIN_AI_MODE=required requires CHECKIN_AI_ENABLED=true")
     try:
         max_skew = int(os.getenv("CHECKIN_AI_MAX_CLOCK_SKEW_MINUTES") or "30")
     except ValueError:
@@ -178,6 +124,10 @@ def load_checkin_ai_config() -> CheckinAiConfig:
         clock_fallback = extract_backend not in {"ocr_only", "ocr_text_llm"}
     else:
         clock_fallback = fallback_raw.strip().lower() in {"1", "true", "yes", "on"}
+    if mode == "required" and clock_fallback:
+        raise RuntimeError("required AI forbids message-time fallback")
+    if enabled and extract_backend in {"zhipu", "ocr_text_llm"} and not api_key:
+        raise RuntimeError("CHECKIN_AI_API_KEY is required")
     return CheckinAiConfig(
         enabled=enabled,
         base_url=base_url,

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -30,10 +29,7 @@ def load_google_sheets_config() -> GoogleSheetsConfig:
             sheet_gid = int(gid_raw)
         except ValueError:
             sheet_gid = None
-    creds = (os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON") or "secrets/google_service_account.json").strip()
-    if creds and not os.path.isabs(creds):
-        root = Path(__file__).resolve().parents[1]
-        creds = str((root / creds).resolve())
+    creds = (os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON") or "").strip()
     try:
         interval = int(os.getenv("GOOGLE_SHEETS_SYNC_INTERVAL_SECONDS") or "14400")
     except ValueError:

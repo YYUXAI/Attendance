@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from typing import Any
 
 from google.oauth2 import service_account
@@ -14,10 +15,13 @@ _SCOPES_READWRITE = ("https://www.googleapis.com/auth/spreadsheets",)
 
 def _build_service(*, credentials_json: str, write: bool = False):
     scopes = _SCOPES_READWRITE if write else _SCOPES_READONLY
-    creds = service_account.Credentials.from_service_account_file(
-        credentials_json,
-        scopes=scopes,
-    )
+    try:
+        value = json.loads(credentials_json)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise RuntimeError("Google service account binding is invalid") from error
+    if not isinstance(value, dict):
+        raise RuntimeError("Google service account binding is invalid")
+    creds = service_account.Credentials.from_service_account_info(value, scopes=scopes)
     return build("sheets", "v4", credentials=creds, cache_discovery=False)
 
 
@@ -55,9 +59,7 @@ def fetch_sheet_values(
     raw_rows = result.get("values") or []
     rows = [[str(c) if c is not None else "" for c in row] for row in raw_rows]
     log.info(
-        "google_sheets: fetched spreadsheet=%s sheet=%r rows=%s",
-        spreadsheet_id,
-        title,
+        "google_sheets: fetched configured sheet rows=%s",
         len(rows),
     )
     return title, rows
@@ -82,7 +84,7 @@ def ensure_sheet_tab(
         spreadsheetId=spreadsheet_id,
         body={"requests": [{"addSheet": {"properties": {"title": want}}}]},
     ).execute()
-    log.info("google_sheets: created sheet tab %r in %s", want, spreadsheet_id)
+    log.info("google_sheets: created configured sheet tab")
     return want
 
 
@@ -113,9 +115,7 @@ def replace_sheet_values(
             body={"values": values},
         ).execute()
     log.info(
-        "google_sheets: replaced spreadsheet=%s sheet=%r rows=%s cols_max=%s",
-        spreadsheet_id,
-        title,
+        "google_sheets: replaced configured sheet rows=%s cols_max=%s",
         row_count,
         max((len(r) for r in values), default=0),
     )
@@ -152,7 +152,7 @@ def copy_sheet_to_spreadsheet(
     meta = service.spreadsheets().get(spreadsheetId=source_spreadsheet_id).execute()
     src_props = _sheet_props_by_gid(meta=meta, sheet_gid=source_sheet_gid)
     if not src_props:
-        raise ValueError(f"源 sheet gid={source_sheet_gid} 不存在")
+        raise ValueError("configured source sheet does not exist")
     src_id = int(src_props["sheetId"])
     resp = (
         service.spreadsheets()
@@ -181,13 +181,7 @@ def copy_sheet_to_spreadsheet(
             },
         ).execute()
         dst_title = new_title.strip()
-    log.info(
-        "google_sheets: copied sheet gid=%s -> spreadsheet=%s new_gid=%s title=%r",
-        source_sheet_gid,
-        destination_spreadsheet_id,
-        dst_id,
-        dst_title,
-    )
+    log.info("google_sheets: copied configured sheet")
     return dst_id, dst_title
 
 
@@ -207,7 +201,7 @@ def delete_sheet_by_title(
         spreadsheetId=spreadsheet_id,
         body={"requests": [{"deleteSheet": {"sheetId": sid}}]},
     ).execute()
-    log.info("google_sheets: deleted sheet %r from %s", sheet_title, spreadsheet_id)
+    log.info("google_sheets: deleted configured sheet")
     return True
 
 

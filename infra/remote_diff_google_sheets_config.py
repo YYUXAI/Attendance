@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -33,11 +32,8 @@ def load_remote_diff_google_sheets_config() -> RemoteDiffGoogleSheetsConfig:
     creds = (
         os.getenv("REMOTE_DIFF_GOOGLE_SHEETS_CREDENTIALS_JSON")
         or os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON")
-        or "secrets/google_service_account.json"
+        or ""
     ).strip()
-    if creds and not os.path.isabs(creds):
-        root = Path(__file__).resolve().parents[1]
-        creds = str((root / creds).resolve())
     tz = (os.getenv("REMOTE_DIFF_GOOGLE_SHEETS_TIMEZONE") or "Asia/Shanghai").strip()
     return RemoteDiffGoogleSheetsConfig(
         enabled=enabled,
