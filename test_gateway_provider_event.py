@@ -60,6 +60,54 @@ def _default_group_policy(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_group_policy(monkeypatch)
 
 
+
+
+def _insert_admin_export_scope(
+    cursor,
+    *,
+    employee_id: str,
+    chat_id: int,
+) -> None:
+    cursor.execute(
+        """
+        INSERT INTO public.attendance_business_facts (
+            fact_kind, subject_key, value_text
+        ) VALUES (%s, %s, %s)
+        ON CONFLICT (fact_kind, subject_key) DO UPDATE
+        SET value_text = EXCLUDED.value_text,
+            updated_at = clock_timestamp()
+        """,
+        ("admin_export_chat_scope", str(employee_id), str(int(chat_id))),
+    )
+
+
+def _seed_admin_with_export_scope(
+    cursor,
+    *,
+    employee_id: str = "74808",
+    english_name: str = "GRANDFOR",
+    tg_id: int = 81002,
+    registered_chat_id: int = 81002,
+    export_chat_id: int = -10081002,
+) -> None:
+    cursor.execute(
+        """
+        INSERT INTO registrations (
+            employee_id, english_name, tg_id, registered_chat_id
+        ) VALUES (%s, %s, %s, %s)
+        """,
+        (employee_id, english_name, tg_id, registered_chat_id),
+    )
+    cursor.execute(
+        "INSERT INTO admin_list (admin_employee_id) VALUES (%s)",
+        (employee_id,),
+    )
+    _insert_admin_export_scope(
+        cursor,
+        employee_id=employee_id,
+        chat_id=export_chat_id,
+    )
+
 def _database_url() -> str:
     value = (os.environ.get("ATTENDANCE_TEST_DATABASE_URL") or "").strip()
     if not value:
@@ -89,6 +137,11 @@ def _apply_gateway_provider_migration() -> None:
             for migration in migrations:
                 cursor.execute(migration)
             cursor.execute("DELETE FROM attendance_admin_export_sessions")
+            cursor.execute(
+                "DELETE FROM attendance_business_facts "
+                "WHERE fact_kind = %s",
+                ("admin_export_chat_scope",),
+            )
             cursor.execute("DELETE FROM attendance_registration_sessions")
             cursor.execute(
                 "DELETE FROM temporary_leave_records WHERE tg_id IN (%s, %s)",
@@ -2347,18 +2400,7 @@ def test_admin_export_callback_returns_deterministic_gateway_document_bytes() ->
     _apply_gateway_provider_migration()
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO registrations (
-                    employee_id, english_name, tg_id, registered_chat_id
-                ) VALUES (%s, %s, %s, %s)
-                """,
-                ("74808", "GRANDFOR", 81002, 81002),
-            )
-            cursor.execute(
-                "INSERT INTO admin_list (admin_employee_id) VALUES (%s)",
-                ("74808",),
-            )
+            _seed_admin_with_export_scope(cursor)
     client = _provider_client()
     headers = {"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"}
 
@@ -2440,18 +2482,7 @@ def test_admin_export_preserves_old_progress_document_delete_trace() -> None:
     _apply_gateway_provider_migration()
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO registrations (
-                    employee_id, english_name, tg_id, registered_chat_id
-                ) VALUES (%s, %s, %s, %s)
-                """,
-                ("74808", "GRANDFOR", 81002, 81002),
-            )
-            cursor.execute(
-                "INSERT INTO admin_list (admin_employee_id) VALUES (%s)",
-                ("74808",),
-            )
+            _seed_admin_with_export_scope(cursor)
 
     response = _provider_client().post(
         "/integration/gateway/v1/events",
@@ -2525,18 +2556,7 @@ def test_terminal_progress_receipt_fails_deferred_run_without_business_work(
     _apply_gateway_provider_migration()
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO registrations (
-                    employee_id, english_name, tg_id, registered_chat_id
-                ) VALUES (%s, %s, %s, %s)
-                """,
-                ("74808", "GRANDFOR", 81002, 81002),
-            )
-            cursor.execute(
-                "INSERT INTO admin_list (admin_employee_id) VALUES (%s)",
-                ("74808",),
-            )
+            _seed_admin_with_export_scope(cursor)
     event_number = {
         "PERMANENTLY_FAILED": 1510,
         "UNCERTAIN": 1511,
@@ -2556,7 +2576,7 @@ def test_terminal_progress_receipt_fails_deferred_run_without_business_work(
 
     monkeypatch.setattr(
         gateway_export_module.attendance_export_service,
-        "collect_rows_for_range",
+        "collect_rows_for_single_group",
         must_not_collect,
     )
     _record_event_action_terminal(
@@ -2607,25 +2627,14 @@ def test_admin_export_failure_preserves_old_error_and_progress_cleanup(
     _apply_gateway_provider_migration()
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO registrations (
-                    employee_id, english_name, tg_id, registered_chat_id
-                ) VALUES (%s, %s, %s, %s)
-                """,
-                ("74808", "GRANDFOR", 81002, 81002),
-            )
-            cursor.execute(
-                "INSERT INTO admin_list (admin_employee_id) VALUES (%s)",
-                ("74808",),
-            )
+            _seed_admin_with_export_scope(cursor)
 
     async def fail_export(**_kwargs: object) -> list[object]:
         raise RuntimeError("deterministic export failure")
 
     monkeypatch.setattr(
         gateway_export_module.attendance_export_service,
-        "collect_rows_for_range",
+        "collect_rows_for_single_group",
         fail_export,
     )
     response = _provider_client().post(

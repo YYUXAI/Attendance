@@ -26,6 +26,7 @@ from gateway_provider.contracts import (
     ReleaseSessionDirective,
     UnchangedSessionDirective,
 )
+from infra.admin_export_scope_config import admin_export_chat_id_for_employee
 from repositories import worker_schedule_repo
 from services import attendance_export_service
 
@@ -44,6 +45,27 @@ _XLSX_MIME_TYPE = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
+MSG_NO_EXPORT_SCOPE = "未配置导出范围，请联系管理员。"
+
+
+def admin_employee_id(cursor: Cursor, *, tg_id: int) -> str | None:
+    cursor.execute(
+        "SELECT employee_id FROM public.registrations WHERE tg_id = %s",
+        (int(tg_id),),
+    )
+    row = cursor.fetchone()
+    if not row or row[0] is None:
+        return None
+    return str(row[0]).strip() or None
+
+
+def resolve_admin_export_chat_id(cursor: Cursor, *, tg_id: int) -> int | None:
+    employee_id = admin_employee_id(cursor, tg_id=tg_id)
+    if employee_id is None:
+        return None
+    return admin_export_chat_id_for_employee(employee_id=employee_id)
+
+
 
 def process_export_callback(
     request: GatewayEventRequest,
@@ -58,6 +80,9 @@ def process_export_callback(
         return _callback_reply(request, update, text="导出仅支持私聊中使用。")
     if not is_admin(cursor, tg_id=callback.sender.id):
         return _callback_reply(request, update, text="无权限操作")
+    export_chat_id = resolve_admin_export_chat_id(cursor, tg_id=callback.sender.id)
+    if export_chat_id is None:
+        return _callback_reply(request, update, text=MSG_NO_EXPORT_SCOPE)
     if callback.data == "att:export":
         return _callback_reply(
             request,
@@ -123,10 +148,10 @@ def process_export_callback(
         )
     try:
         rows = asyncio.run(
-            attendance_export_service.collect_rows_for_range(
+            attendance_export_service.collect_rows_for_single_group(
+                chat_id=export_chat_id,
                 start=start,
                 end=end,
-                export_tg_id=callback.sender.id,
             )
         )
         pivot, overview, dates = attendance_export_service.build_pivot_and_overview(
@@ -200,6 +225,9 @@ def process_export_message(
         reply_markup = None
     elif not is_admin(cursor, tg_id=sender.id):
         text = "无权限操作"
+        reply_markup = None
+    elif resolve_admin_export_chat_id(cursor, tg_id=sender.id) is None:
+        text = MSG_NO_EXPORT_SCOPE
         reply_markup = None
     else:
         text = "请选择导出范围："
