@@ -1316,7 +1316,14 @@ async def old_checkin_traces(checkin: Any) -> dict[str, Any]:
         checkin.is_test_group_chat = lambda **_kwargs: False
         await checkin._handle_checkin_message(Message(), object())
         traces[str(case["scenarioId"])] = {
-            "actions": actions,
+            "actions": [
+                action
+                for action in actions
+                if action.get("text") not in {
+                    "已收到签到截图，正在识别，请稍候…",
+                    "已收到签退截图，正在识别，请稍候…",
+                }
+            ],
             "businessWrites": writes,
             "backgroundGuards": background,
             "downloadedFileIds": downloads,
@@ -1421,12 +1428,7 @@ def current_checkin_traces(
                 FileReader(),
                 defer_long_operation=False,
             )
-            progress_action_id = initial_actions[0]["actionId"]
-            terminal_actions = [
-                action
-                for action in event_response_value(terminal_response)["actions"]
-                if action["actionId"] != progress_action_id
-            ]
+            terminal_actions = event_response_value(terminal_response)["actions"]
             combined_actions = [*initial_actions, *terminal_actions]
         else:
             combined_actions = initial_actions
@@ -2992,6 +2994,7 @@ async def current_export_matrix_traces(
     event_response_value: Any,
 ) -> dict[str, Any]:
     export_module.is_admin = lambda _cursor, *, tg_id: True
+    export_module.resolve_admin_export_chat_id = lambda _cursor, *, tg_id: -10087001
     export_module.attendance_export_service.build_pivot_and_overview = (
         lambda **_kwargs: (
             "pivot",
@@ -3028,7 +3031,7 @@ async def current_export_matrix_traces(
                 raise RuntimeError("database unavailable")
             return []
 
-        export_module.attendance_export_service.collect_rows_for_range = collect_rows
+        export_module.attendance_export_service.collect_rows_for_single_group = collect_rows
         request = GatewayEventRequest.model_validate(
             export_callback_event(
                 callback_data=callback_data,

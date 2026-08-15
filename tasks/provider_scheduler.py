@@ -267,35 +267,39 @@ def run_deferred_interaction_cycle(
         for pending in due:
             event_payload = pending.payload.get("event")
             progress_action_id = pending.payload.get("progressActionId")
-            if not isinstance(event_payload, dict) or not isinstance(
-                progress_action_id, str
-            ):
+            if not isinstance(event_payload, dict):
+                raise RuntimeError("invalid deferred interaction payload")
+            if progress_action_id is not None and not isinstance(progress_action_id, str):
                 raise RuntimeError("invalid deferred interaction payload")
             event = GatewayEventRequest.model_validate(event_payload, strict=True)
-            progress_status = worker_schedule_repo.event_action_delivery_status(
-                database_url=config.database_url,
-                event_id=event.eventId,
-                action_id=progress_action_id,
-            )
-            if progress_status is None:
-                continue
-            if progress_status != "DELIVERED":
-                failed = worker_schedule_repo.fail_waiting_run(
-                    database_url=config.database_url,
-                    run_key=pending.run_key,
-                    job_kind=job_kind,
-                    error_code=f"PROGRESS_ACTION_{progress_status}",
-                    now=current,
-                )
-                claimed += int(failed)
-                continue
-            progress_message_id = (
-                worker_schedule_repo.event_action_delivered_message_id(
+            progress_message_id = None
+            if isinstance(progress_action_id, str) and progress_action_id:
+                progress_status = worker_schedule_repo.event_action_delivery_status(
                     database_url=config.database_url,
                     event_id=event.eventId,
                     action_id=progress_action_id,
                 )
-            )
+                if progress_status is None:
+                    continue
+                if progress_status != "DELIVERED":
+                    failed = worker_schedule_repo.fail_waiting_run(
+                        database_url=config.database_url,
+                        run_key=pending.run_key,
+                        job_kind=job_kind,
+                        error_code=f"PROGRESS_ACTION_{progress_status}",
+                        now=current,
+                    )
+                    claimed += int(failed)
+                    continue
+                progress_message_id = (
+                    worker_schedule_repo.event_action_delivered_message_id(
+                        database_url=config.database_url,
+                        event_id=event.eventId,
+                        action_id=progress_action_id,
+                    )
+                )
+            else:
+                progress_action_id = ""
             result = _run_once(
                 config,
                 worker_id=worker_id,
@@ -328,7 +332,7 @@ def _complete_deferred_interaction(
     created_at: datetime,
     file_reader: GatewayFileReader | None,
 ) -> int:
-    if progress_message_id is None:
+    if progress_action_id and progress_message_id is None:
         raise RuntimeError("delivered progress action has no Telegram message id")
     owner_prefix = f"deferred-event:{event.eventId}:"
     with psycopg2.connect(config.database_url) as connection:
@@ -379,7 +383,9 @@ def _complete_deferred_interaction(
             predecessor_action_id: str | None = None
             for index, action in enumerate(terminal_actions, start=1):
                 if (
-                    isinstance(action, DeleteMessageAction)
+                    progress_action_id
+                    and progress_message_id is not None
+                    and isinstance(action, DeleteMessageAction)
                     and action.messageIdSourceActionId == progress_action_id
                 ):
                     action = DeleteMessageAction(

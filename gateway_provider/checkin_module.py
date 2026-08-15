@@ -105,7 +105,6 @@ def process_group_checkin(
     ):
         return _reply(request, update, "该打卡消息已处理，本次未重复记账。")
 
-    progress_text = f"已收到{matter}截图，正在识别，请稍候…"
     if defer_long_operation:
         worker_schedule_repo.enqueue_run_cur(
             cursor,
@@ -117,15 +116,11 @@ def process_group_checkin(
                     by_alias=True,
                     exclude_none=True,
                 ),
-                "progressActionId": f"{request.eventId}.progress",
             },
             now=sent_at_utc,
         )
-        return _progress_response(
-            request,
-            update,
-            progress_text=progress_text,
-        )
+        return _silent_accepted_response(request)
+    progress_text = ""
     try:
         image_bytes = file_reader.read(
             file_ref=attachment.fileRef,
@@ -371,52 +366,18 @@ def _reply_after_progress(
     progress_text: str,
     final_text: str,
 ) -> GatewayEventResponse:
-    message = _checkin_message(update)
+    del progress_text  # call-site compat; waiting reply removed
+    return _reply(request, update, final_text)
+
+
+def _silent_accepted_response(request: GatewayEventRequest) -> GatewayEventResponse:
+    """Enqueue deferred check-in without a user-visible waiting message."""
     return GatewayEventResponse(
         protocolVersion="1.0",
         eventId=request.eventId,
         result="PROCESSED",
         session=UnchangedSessionDirective(directive="UNCHANGED"),
-        actions=[
-            SendMessageAction(
-                actionId=f"{request.eventId}.progress",
-                type="SEND_MESSAGE",
-                chatId=message.chat.id,
-                replyToMessageId=message.message_id,
-                text=progress_text,
-            ),
-            SendMessageAction(
-                actionId=f"{request.eventId}.reply",
-                type="SEND_MESSAGE",
-                chatId=message.chat.id,
-                replyToMessageId=message.message_id,
-                text=final_text,
-            ),
-        ],
-    )
-
-
-def _progress_response(
-    request: GatewayEventRequest,
-    update: TelegramMessageUpdate | TelegramEditedMessageUpdate,
-    *,
-    progress_text: str,
-) -> GatewayEventResponse:
-    message = _checkin_message(update)
-    return GatewayEventResponse(
-        protocolVersion="1.0",
-        eventId=request.eventId,
-        result="PROCESSED",
-        session=UnchangedSessionDirective(directive="UNCHANGED"),
-        actions=[
-            SendMessageAction(
-                actionId=f"{request.eventId}.progress",
-                type="SEND_MESSAGE",
-                chatId=message.chat.id,
-                replyToMessageId=message.message_id,
-                text=progress_text,
-            )
-        ],
+        actions=[],
     )
 
 

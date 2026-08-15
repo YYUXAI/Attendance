@@ -3324,21 +3324,8 @@ def test_group_photo_checkin_reads_gateway_file_and_persists_once(
         assert authorizations == []
         assert run_deferred_interaction_cycle(
             _deferred_scheduler_config(),
-            worker_id="checkin-before-progress-receipt",
+            worker_id="silent-checkin",
             now=datetime(2026, 8, 8, 8, 0, 1, tzinfo=timezone.utc),
-            file_reader=GatewayFileReader(
-                base_url=gateway_base_url,
-                bearer_token=_TEST_ATTENDANCE_TO_GATEWAY_CREDENTIAL,
-            ),
-        ) == (0, 0)
-        _record_event_action_delivered(
-            event_id="evt-attendance-checkin-1401",
-            action_id="evt-attendance-checkin-1401.progress",
-        )
-        assert run_deferred_interaction_cycle(
-            _deferred_scheduler_config(),
-            worker_id="checkin-after-progress-receipt",
-            now=datetime(2026, 8, 8, 8, 0, 2, tzinfo=timezone.utc),
             file_reader=GatewayFileReader(
                 base_url=gateway_base_url,
                 bearer_token=_TEST_ATTENDANCE_TO_GATEWAY_CREDENTIAL,
@@ -3355,8 +3342,8 @@ def test_group_photo_checkin_reads_gateway_file_and_persists_once(
                     WHERE run_key = %s
                     """,
                     (
-                        datetime(2026, 8, 8, 8, 0, 2, tzinfo=timezone.utc),
-                        datetime(2026, 8, 8, 8, 0, 2, tzinfo=timezone.utc),
+                        datetime(2026, 8, 8, 8, 0, 1, tzinfo=timezone.utc),
+                        datetime(2026, 8, 8, 8, 0, 1, tzinfo=timezone.utc),
                         "deferred-checkin:evt-attendance-checkin-1401",
                     ),
                 )
@@ -3371,15 +3358,7 @@ def test_group_photo_checkin_reads_gateway_file_and_persists_once(
         ) == (1, 0)
 
     assert response.status_code == 200, response.text
-    assert response.json()["actions"] == [
-        {
-            "actionId": "evt-attendance-checkin-1401.progress",
-            "type": "SEND_MESSAGE",
-            "chatId": -10081002,
-            "replyToMessageId": 1401,
-            "text": "已收到签到截图，正在识别，请稍候…",
-        }
-    ]
+    assert response.json()["actions"] == []
     assert duplicate.json() == {**response.json(), "result": "DUPLICATE"}
     assert authorizations == [
         f"Bearer {_TEST_ATTENDANCE_TO_GATEWAY_CREDENTIAL}"

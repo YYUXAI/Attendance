@@ -241,6 +241,35 @@ def bind_tg_to_registration_cur(
     return int(cur.rowcount or 0) > 0
 
 
+def insert_bound_registration_cur(
+    cur: Cursor,
+    *,
+    employee_id: str,
+    tg_id: int,
+    english_name: str,
+    registered_at_utc,
+    registered_chat_id: int,
+    tg_username: Optional[str],
+) -> None:
+    """Open registration: create employee row already bound to this Telegram account."""
+    cur.execute(
+        """
+        INSERT INTO public.registrations
+            (employee_id, tg_id, english_name, registered_at, registered_chat_id, tg_username)
+        VALUES
+            (%s, %s, %s, %s, %s, %s)
+        """,
+        (
+            str(employee_id).strip(),
+            int(tg_id),
+            english_name,
+            registered_at_utc,
+            int(registered_chat_id),
+            tg_username,
+        ),
+    )
+
+
 def list_by_shift_id_cur(cur: Cursor, *, shift_id: int) -> List[RegistrationRow]:
     """
     一期审计对象口径：registrations.shift_id == 当前班次的员工。

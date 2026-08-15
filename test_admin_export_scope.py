@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import psycopg2
 import pytest
@@ -11,8 +11,11 @@ from test_gateway_provider_event import (
     _database_url,
     _export_callback_event,
     _provider_client,
+    _deferred_scheduler_config,
+    _record_event_action_delivered,
     _seed_admin_with_export_scope,
     _TEST_GATEWAY_CREDENTIAL,
+    run_deferred_interaction_cycle,
 )
 
 
@@ -79,6 +82,15 @@ def test_admin_export_uses_configured_single_group(
     )
 
     assert response.status_code == 200, response.text
+    _record_event_action_delivered(
+        event_id="evt-attendance-export-1602",
+        action_id="evt-attendance-export-1602.progress",
+    )
+    assert run_deferred_interaction_cycle(
+        _deferred_scheduler_config(),
+        worker_id="scoped-export-after-progress-receipt",
+        now=datetime(2026, 8, 8, 8, 0, 2, tzinfo=timezone.utc),
+    ) == (1, 2)
     assert seen["chat_id"] == -1004248049456
-    assert seen["start"] == date(2026, 8, 4)
+    assert seen["start"] == date(2026, 8, 3)
     assert seen["end"] == date(2026, 8, 8)

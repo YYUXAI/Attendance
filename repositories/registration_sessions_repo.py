@@ -305,21 +305,35 @@ def confirm_and_bind(
         cursor,
         employee_id=str(employee_id),
     )
+    display_name = str(english_name).strip()
     if existing is None:
+        try:
+            registrations_repo.insert_bound_registration_cur(
+                cursor,
+                employee_id=str(employee_id),
+                tg_id=int(tg_id),
+                english_name=display_name,
+                registered_at_utc=now,
+                registered_chat_id=int(private_chat_id),
+                tg_username=tg_username,
+            )
+        except Exception as error:
+            pgcode = getattr(error, "pgcode", None)
+            if pgcode != "23505" and "UniqueViolation" not in type(error).__name__:
+                raise
+            _delete_session(cursor, tg_id=tg_id)
+            return ConfirmResult(code="employee_already_bound")
         _delete_session(cursor, tg_id=tg_id)
-        return ConfirmResult(code="employee_not_pre_registered")
+        return ConfirmResult(code="ok")
     if existing.tg_id is not None:
         _delete_session(cursor, tg_id=tg_id)
         return ConfirmResult(code="employee_already_bound")
-    if not _english_name_matches(existing.english_name, str(english_name)):
-        _delete_session(cursor, tg_id=tg_id)
-        return ConfirmResult(code="employee_name_mismatch")
 
     bound = registrations_repo.bind_tg_to_registration_cur(
         cursor,
         employee_id=str(employee_id),
         tg_id=int(tg_id),
-        english_name=existing.english_name or str(english_name),
+        english_name=display_name or (existing.english_name or str(employee_id)),
         registered_at_utc=now,
         registered_chat_id=int(private_chat_id),
         tg_username=tg_username,
