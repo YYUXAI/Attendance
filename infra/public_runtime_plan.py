@@ -48,6 +48,10 @@ def derive_attendance_public_runtime_plan(
         _compact_json(config).encode("utf-8")
     ).hexdigest()
     sheet_profiles = sheets["profiles"]
+    ai_key_required = ai["enabled"] and ai["extractBackend"] in {"zhipu", "ocr_text_llm"}
+    sheets_credentials_required = sheets["enabled"] or any(
+        profile["enabled"] for profile in sheet_profiles.values()
+    )
     daily_report_hour, daily_report_minute = str(scheduler["dailyReportTime"]).split(":")
 
     return AttendancePublicRuntimePlan(
@@ -59,6 +63,7 @@ def derive_attendance_public_runtime_plan(
             "SHIFT_WEB_TIMEZONE": str(webapp["timezone"]),
             "SHIFT_WEB_BROWSER_DEV": _enabled(webapp["browserDev"]),
             "CHECKIN_AI_ENABLED": _enabled(ai["enabled"]),
+            "CHECKIN_AI_API_KEY_REQUIRED": _enabled(ai_key_required),
             "CHECKIN_AI_EXTRACT_BACKEND": str(ai["extractBackend"]),
             "CHECKIN_AI_BASE_URL": str(ai["apiBaseUrl"]),
             "CHECKIN_AI_MODEL": str(ai["model"]),
@@ -77,11 +82,16 @@ def derive_attendance_public_runtime_plan(
             "CHECKIN_AI_EASYOCR_GPU": _enabled(ai["ocr"]["easyOcrGpu"]),
             "CHECKIN_AI_OCR_MAX_CONCURRENT": str(ai["ocr"]["maxConcurrent"]),
             "CHECKIN_AI_PREMIUM_ENABLED": _enabled(ai["premium"]["enabled"]),
+            "CHECKIN_AI_PREMIUM_API_KEY_REQUIRED": _enabled(
+                ai["enabled"] and ai["premium"]["enabled"]
+            ),
             "CHECKIN_AI_PREMIUM_BASE_URL": str(ai["premium"]["apiBaseUrl"]),
             "CHECKIN_AI_PREMIUM_MODEL": str(ai["premium"]["model"]),
             "GOOGLE_SHEETS_ENABLED": _enabled(sheets["enabled"]),
+            "GOOGLE_SHEETS_CREDENTIALS_REQUIRED": _enabled(sheets_credentials_required),
             "GOOGLE_SHEETS_SYNC_INTERVAL_SECONDS": str(sheets["syncIntervalSeconds"]),
             "GOOGLE_SHEETS_YEAR_MONTH": str(sheets["yearMonth"]),
+            **_sheet_object_environment(sheets),
             "REMOTE_DIFF_GOOGLE_SHEETS_ENABLED": _enabled(
                 sheet_profiles["remoteDiff"]["enabled"]
             ),
@@ -152,13 +162,13 @@ def derive_attendance_public_runtime_plan(
             _secret(
                 "attendance_webapp_session_signing",
                 ("webapp",),
-                "webapp.enabled",
+                "always",
                 "GATEWAY_WEBAPP_SESSION_SIGNING_SECRET_FILE",
             ),
             _secret(
                 "attendance_ai_api_key",
                 ("provider", "scheduler"),
-                "ai.enabled",
+                "ai.enabled and extractBackend in {zhipu,ocr_text_llm}",
                 "CHECKIN_AI_API_KEY_FILE",
                 "ZAI_API_KEY_FILE",
                 "ZHIPU_API_KEY_FILE",
@@ -166,14 +176,14 @@ def derive_attendance_public_runtime_plan(
             _secret(
                 "attendance_premium_ai_api_key",
                 ("provider", "scheduler"),
-                "ai.premium.enabled",
+                "ai.enabled and ai.premium.enabled",
                 "CHECKIN_AI_PREMIUM_API_KEY_FILE",
                 "ZHIPU_PREMIUM_API_KEY_FILE",
             ),
             _secret(
                 "attendance_google_service_account",
                 ("scheduler",),
-                "sheets.enabled",
+                "sheets.enabled or any sheets profile enabled",
                 "GOOGLE_SHEETS_CREDENTIALS_JSON_FILE",
                 "GOOGLE_SHEETS_ALT_CREDENTIALS_JSON_FILE",
                 "REMOTE_DIFF_GOOGLE_SHEETS_CREDENTIALS_JSON_FILE",
@@ -181,28 +191,7 @@ def derive_attendance_public_runtime_plan(
                 "BBQ_GOOGLE_SHEETS_CREDENTIALS_JSON_FILE",
             ),
         ),
-        derived_private_files=(
-            {
-                "bindingRef": "attendance_google_sheet_objects",
-                "targetFileVariables": [
-                    "GOOGLE_SHEETS_SPREADSHEET_ID_FILE",
-                    "GOOGLE_SHEETS_SHEET_GID_FILE",
-                    "GOOGLE_SHEETS_ALT_SPREADSHEET_ID_FILE",
-                    "GOOGLE_SHEETS_ALT_SHEET_GID_FILE",
-                    "REMOTE_DIFF_GOOGLE_SHEETS_SPREADSHEET_ID_FILE",
-                    "REMOTE_DIFF_GOOGLE_SHEETS_SHEET_GID_FILE",
-                    "TEST_GROUP_ATTENDANCE_SPREADSHEET_ID_FILE",
-                    "TEST_GROUP_ATTENDANCE_SHEET_GID_FILE",
-                    "TEST_GROUP_ATTENDANCE_SHEET_TITLE_FILE",
-                    "TEST_GROUP_SHIFT_SPREADSHEET_ID_FILE",
-                    "TEST_GROUP_SHIFT_SHEET_GID_FILE",
-                    "BBQ_GOOGLE_SHEETS_SPREADSHEET_ID_FILE",
-                    "BBQ_GOOGLE_SHEETS_SHEET_TITLE_FILE",
-                ],
-                "publicContext": {"enabled": sheets["enabled"]},
-                "components": ["scheduler"],
-            },
-        ),
+        derived_private_files=(),
     )
 
 
@@ -214,6 +203,26 @@ def _compact_json(value: object) -> str:
     import json
 
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _sheet_object_environment(sheets: dict[str, Any]) -> dict[str, str]:
+    profiles = sheets["profiles"]
+    mappings = (
+        (sheets["primary"], "spreadsheetId", "GOOGLE_SHEETS_SPREADSHEET_ID"),
+        (sheets["primary"], "sheetGid", "GOOGLE_SHEETS_SHEET_GID"),
+        (sheets["alternate"], "spreadsheetId", "GOOGLE_SHEETS_ALT_SPREADSHEET_ID"),
+        (sheets["alternate"], "sheetGid", "GOOGLE_SHEETS_ALT_SHEET_GID"),
+        (profiles["remoteDiff"], "spreadsheetId", "REMOTE_DIFF_GOOGLE_SHEETS_SPREADSHEET_ID"),
+        (profiles["remoteDiff"], "sheetGid", "REMOTE_DIFF_GOOGLE_SHEETS_SHEET_GID"),
+        (profiles["testGroup"], "attendanceSpreadsheetId", "TEST_GROUP_ATTENDANCE_SPREADSHEET_ID"),
+        (profiles["testGroup"], "attendanceSheetGid", "TEST_GROUP_ATTENDANCE_SHEET_GID"),
+        (profiles["testGroup"], "attendanceSheetTitle", "TEST_GROUP_ATTENDANCE_SHEET_TITLE"),
+        (profiles["testGroup"], "shiftSpreadsheetId", "TEST_GROUP_SHIFT_SPREADSHEET_ID"),
+        (profiles["testGroup"], "shiftSheetGid", "TEST_GROUP_SHIFT_SHEET_GID"),
+        (profiles["bbq"], "spreadsheetId", "BBQ_GOOGLE_SHEETS_SPREADSHEET_ID"),
+        (profiles["bbq"], "sheetTitle", "BBQ_GOOGLE_SHEETS_SHEET_TITLE"),
+    )
+    return {environment: str(source[key]) for source, key, environment in mappings if key in source}
 
 
 def _secret(

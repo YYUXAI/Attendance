@@ -38,7 +38,7 @@ def test_private_and_business_truth_never_appear_in_public_category() -> None:
     assert all("BEARER_TOKEN" not in name for name in public)
     assert all("SIGNING_SECRET" not in name for name in public)
     assert all("CHAT_ID" not in name for name in public)
-    assert all("SPREADSHEET_ID" not in name for name in public)
+    assert {"GOOGLE_SHEETS_SPREADSHEET_ID", "GOOGLE_SHEETS_SHEET_GID"} <= public
 
 
 def _inventory() -> dict[str, object]:

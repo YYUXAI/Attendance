@@ -74,3 +74,25 @@ def test_database_password_file_builds_url_without_retaining_password_variable(
         "postgresql://ux_attendance_app:fake%20password@postgres:5432/"
     )
     assert "ATTENDANCE_DATABASE_PASSWORD" not in os.environ
+
+
+def test_disabled_optional_binding_does_not_require_a_secret_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GOOGLE_SHEETS_CREDENTIALS_REQUIRED", "false")
+    monkeypatch.setenv("GOOGLE_SHEETS_CREDENTIALS_JSON_FILE", "/missing")
+
+    ENTRYPOINT._read_file_variables()
+
+    assert "GOOGLE_SHEETS_CREDENTIALS_JSON_FILE" not in os.environ
+    assert "GOOGLE_SHEETS_CREDENTIALS_JSON" not in os.environ
+
+
+def test_enabled_subprofile_requires_the_shared_google_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GOOGLE_SHEETS_CREDENTIALS_REQUIRED", "true")
+    monkeypatch.setenv("GOOGLE_SHEETS_CREDENTIALS_JSON_FILE", "/missing")
+
+    with pytest.raises(RuntimeError, match="is unreadable"):
+        ENTRYPOINT._read_file_variables()

@@ -9,6 +9,17 @@ from pathlib import Path
 from urllib.parse import quote
 
 
+OPTIONAL_FILE_FLAGS = {
+    "CHECKIN_AI_API_KEY_FILE": "CHECKIN_AI_API_KEY_REQUIRED",
+    "CHECKIN_AI_PREMIUM_API_KEY_FILE": "CHECKIN_AI_PREMIUM_API_KEY_REQUIRED",
+    "GOOGLE_SHEETS_CREDENTIALS_JSON_FILE": "GOOGLE_SHEETS_CREDENTIALS_REQUIRED",
+    "GOOGLE_SHEETS_ALT_CREDENTIALS_JSON_FILE": "GOOGLE_SHEETS_CREDENTIALS_REQUIRED",
+    "REMOTE_DIFF_GOOGLE_SHEETS_CREDENTIALS_JSON_FILE": "GOOGLE_SHEETS_CREDENTIALS_REQUIRED",
+    "TEST_GROUP_GOOGLE_SHEETS_CREDENTIALS_JSON_FILE": "GOOGLE_SHEETS_CREDENTIALS_REQUIRED",
+    "BBQ_GOOGLE_SHEETS_CREDENTIALS_JSON_FILE": "GOOGLE_SHEETS_CREDENTIALS_REQUIRED",
+}
+
+
 def _fail(name: str, reason: str) -> None:
     raise RuntimeError(f"{name} {reason}")
 
@@ -63,11 +74,19 @@ def _build_attendance_database_url() -> None:
     del os.environ[password_variable]
 
 
+def _read_file_variables() -> None:
+    for file_variable in sorted(name for name in os.environ if name.endswith("_FILE")):
+        flag = OPTIONAL_FILE_FLAGS.get(file_variable)
+        if flag and os.environ.get(flag, "false").lower() not in {"1", "true"}:
+            del os.environ[file_variable]
+            continue
+        _read_file_variable(file_variable)
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         raise RuntimeError("runtime command is required")
-    for file_variable in sorted(name for name in os.environ if name.endswith("_FILE")):
-        _read_file_variable(file_variable)
+    _read_file_variables()
     _build_attendance_database_url()
     os.execvp(sys.argv[1], sys.argv[1:])
     return 127

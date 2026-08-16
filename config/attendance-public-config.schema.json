@@ -128,19 +128,30 @@
     "sheets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "syncIntervalSeconds", "timezone", "yearMonth", "profiles", "credentialsSecretRef", "objectBindingsIdentifierRef"],
+      "required": ["enabled", "syncIntervalSeconds", "timezone", "yearMonth", "primary", "alternate", "profiles", "credentialsSecretRef"],
       "properties": {
         "enabled": { "type": "boolean" },
         "syncIntervalSeconds": { "type": "integer", "minimum": 60, "maximum": 604800 },
         "timezone": { "$ref": "#/$defs/timezone" },
         "yearMonth": { "type": "string", "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])$" },
+        "primary": { "$ref": "#/$defs/sheetObject" },
+        "alternate": { "$ref": "#/$defs/sheetObject" },
         "profiles": {
           "type": "object",
           "additionalProperties": false,
           "required": ["remoteDiff", "testGroup", "bbq"],
           "properties": {
             "remoteDiff": {
-              "allOf": [{ "$ref": "#/$defs/sheetProfile" }],
+              "allOf": [
+                { "$ref": "#/$defs/sheetProfile" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "spreadsheetId": { "$ref": "#/$defs/spreadsheetId" },
+                    "sheetGid": { "$ref": "#/$defs/sheetGid" }
+                  }
+                }
+              ],
               "unevaluatedProperties": false
             },
             "testGroup": {
@@ -150,21 +161,58 @@
                   "type": "object",
                   "required": ["slackCheckin"],
                   "properties": {
-                    "slackCheckin": { "type": "boolean" }
+                    "slackCheckin": { "type": "boolean" },
+                    "shiftSpreadsheetId": { "$ref": "#/$defs/spreadsheetId" },
+                    "shiftSheetGid": { "$ref": "#/$defs/sheetGid" },
+                    "attendanceSpreadsheetId": { "$ref": "#/$defs/spreadsheetId" },
+                    "attendanceSheetGid": { "$ref": "#/$defs/sheetGid" },
+                    "attendanceSheetTitle": { "$ref": "#/$defs/sheetTitle" }
                   }
                 }
               ],
               "unevaluatedProperties": false
             },
             "bbq": {
-              "$ref": "#/$defs/sheetProfile",
+              "allOf": [
+                { "$ref": "#/$defs/sheetProfile" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "spreadsheetId": { "$ref": "#/$defs/spreadsheetId" },
+                    "sheetTitle": { "$ref": "#/$defs/sheetTitle" }
+                  }
+                }
+              ],
               "unevaluatedProperties": false
             }
           }
         },
-        "credentialsSecretRef": { "const": "attendance_google_service_account" },
-        "objectBindingsIdentifierRef": { "const": "attendance_google_sheet_objects" }
+        "credentialsSecretRef": { "const": "attendance_google_service_account" }
       },
+      "allOf": [
+        {
+          "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+          "then": { "properties": { "primary": { "required": ["spreadsheetId"] } } }
+        },
+        {
+          "if": {
+            "properties": { "profiles": { "properties": { "remoteDiff": { "properties": { "enabled": { "const": true } } } } } }
+          },
+          "then": { "properties": { "profiles": { "properties": { "remoteDiff": { "required": ["spreadsheetId"] } } } } }
+        },
+        {
+          "if": {
+            "properties": { "profiles": { "properties": { "testGroup": { "properties": { "enabled": { "const": true } } } } } }
+          },
+          "then": { "properties": { "profiles": { "properties": { "testGroup": { "required": ["shiftSpreadsheetId", "attendanceSpreadsheetId", "attendanceSheetTitle"] } } } } }
+        },
+        {
+          "if": {
+            "properties": { "profiles": { "properties": { "bbq": { "properties": { "enabled": { "const": true } } } } } }
+          },
+          "then": { "properties": { "profiles": { "properties": { "bbq": { "required": ["spreadsheetId", "sheetTitle"] } } } } }
+        }
+      ],
       "x-ownerComponent": "attendance",
       "x-restartComponents": ["attendance"]
     },
@@ -261,6 +309,27 @@
         "enabled": { "type": "boolean" },
         "timezone": { "$ref": "#/$defs/timezone" }
       }
+    },
+    "sheetObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "spreadsheetId": { "$ref": "#/$defs/spreadsheetId" },
+        "sheetGid": { "$ref": "#/$defs/sheetGid" }
+      }
+    },
+    "spreadsheetId": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "sheetGid": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    "sheetTitle": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^\\S(?:.*\\S)?$"
     },
     "httpUrl": {
       "type": "string",

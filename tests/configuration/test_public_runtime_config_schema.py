@@ -52,7 +52,7 @@ def test_attendance_public_config_has_only_logical_private_references() -> None:
         config["credentials"]["attendanceToGatewayBearerRef"]
     )
     assert config["webapp"]["signingSecretRef"] == "attendance_webapp_session_signing"
-    assert config["sheets"]["objectBindingsIdentifierRef"] == "attendance_google_sheet_objects"
+    assert config["sheets"]["primary"]["spreadsheetId"] == "primary-sheet-id"
 
 
 def test_attendance_runtime_plan_contains_only_public_env_and_file_mappings() -> None:
@@ -75,18 +75,33 @@ def test_attendance_runtime_plan_contains_only_public_env_and_file_mappings() ->
     assert "ATTENDANCE_DATABASE_URL" not in plan.public_environment
     assert plan.public_environment["ATTENDANCE_DATABASE_NAME"] == "attendance_v1"
     assert "GATEWAY_TO_ATTENDANCE_BEARER_TOKEN" not in plan.public_environment
+    assert plan.public_environment["GOOGLE_SHEETS_SPREADSHEET_ID"] == "primary-sheet-id"
+    assert plan.public_environment["GOOGLE_SHEETS_SHEET_GID"] == "757170338"
+    assert plan.public_environment["CHECKIN_AI_API_KEY_REQUIRED"] == "true"
+    assert plan.public_environment["GOOGLE_SHEETS_CREDENTIALS_REQUIRED"] == "false"
+    assert plan.public_environment["TEST_GROUP_ATTENDANCE_SHEET_TITLE"] == "Attendance"
     assert all(
         target.endswith("_FILE")
         for binding in plan.file_bindings
         for target in binding.target_file_variables
     )
-    assert plan.derived_private_files[0]["bindingRef"] == "attendance_google_sheet_objects"
-    assert plan.derived_private_files[0]["components"] == ["scheduler"]
+    assert plan.derived_private_files == ()
     bindings = {binding.binding_ref: binding for binding in plan.file_bindings}
     assert bindings["attendance_ai_api_key"].components == ("provider", "scheduler")
     assert bindings["attendance_webapp_session_signing"].components == ("webapp",)
     rendered = repr(plan)
     assert "postgresql://" not in rendered
+
+
+def test_disabled_ai_does_not_require_premium_key_and_webapp_signing_is_always_required() -> None:
+    config = _fixture()
+    config["ai"]["enabled"] = False
+    config["ai"]["mode"] = "assist"
+    plan = derive_attendance_public_runtime_plan(config)
+    bindings = {binding.binding_ref: binding for binding in plan.file_bindings}
+
+    assert plan.public_environment["CHECKIN_AI_PREMIUM_API_KEY_REQUIRED"] == "false"
+    assert bindings["attendance_webapp_session_signing"].required_when == "always"
 
 
 def test_group_policy_supports_zero_one_or_many_and_standard_default() -> None:
@@ -213,19 +228,32 @@ def _fixture() -> dict[str, object]:
             "timezone": "Asia/Shanghai",
             "yearMonth": "2026-08",
             "profiles": {
-                "remoteDiff": {"enabled": False, "timezone": "Asia/Shanghai"},
+                "remoteDiff": {
+                    "enabled": False,
+                    "timezone": "Asia/Shanghai",
+                    "spreadsheetId": "remote-sheet-id",
+                    "sheetGid": 2,
+                },
                 "testGroup": {
                     "enabled": False,
                     "timezone": "Asia/Shanghai",
                     "slackCheckin": True,
+                    "shiftSpreadsheetId": "shift-sheet-id",
+                    "shiftSheetGid": 3,
+                    "attendanceSpreadsheetId": "attendance-sheet-id",
+                    "attendanceSheetGid": 4,
+                    "attendanceSheetTitle": "Attendance",
                 },
                 "bbq": {
                     "enabled": False,
                     "timezone": "Asia/Shanghai",
+                    "spreadsheetId": "bbq-sheet-id",
+                    "sheetTitle": "BBQ",
                 },
             },
+            "primary": {"spreadsheetId": "primary-sheet-id", "sheetGid": 757170338},
+            "alternate": {"spreadsheetId": "alternate-sheet-id", "sheetGid": 1},
             "credentialsSecretRef": "attendance_google_service_account",
-            "objectBindingsIdentifierRef": "attendance_google_sheet_objects",
         },
         "scheduler": {
             "enabled": True,

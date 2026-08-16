@@ -25,7 +25,8 @@ Gateway 文件只通过 `GET /internal/v1/telegram-files/{fileRef}` 读取。Att
 - **Group capability**：群级行为开关；缺省为空时规范化为 `standard-checkin`，未知、重复或冲突组合 fail closed。
 - **Observed group binding**：Gateway 事件携带的 chat ID、routeRef 与 title；Provider 仅在 title 命中 active policy 后按配置指纹写入 `attendance_runtime_group_policies`。
 - **Business fact**：员工例外、镜像与统计排除等 Attendance 数据库事实，不属于环境变量。
-- **Private binding**：数据库、service credential、AI key、Google Service Account 与 Sheet 对象标识；仅由 root-only 文件向需要的组件投影。
+- **Public Sheets binding**：Spreadsheet ID、GID 与 Sheet title 位于统一 public manifest，`%ux` 可直接 CRUD。
+- **Application credential**：数据库角色密码、service credential、AI key 与 Google Service Account 位于 `%ux` 可完整 CRUD 的 test-only managed secret 目录；仅向需要的组件投影。
 - **Public config fingerprint**：整个 Attendance public 配置的确定性 SHA-256。Provider、WebApp、scheduler、worker 各自写 heartbeat；任一缺失或不匹配使 runtime drift fail closed。
 
 ## Security boundaries
