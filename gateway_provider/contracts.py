@@ -15,7 +15,7 @@ from pydantic import (
 )
 
 GATEWAY_PROTOCOL_FINGERPRINT = (
-    "sha256:3a90c0f00bae06f7fb14ddafc969acfff076de116324eb1745532393a2930061"
+    "sha256:1871b9f7c06ec77cf538f4be95b5a8aa0f1ab6f356873ddfdb355c607ae5c19d"
 )
 
 
@@ -411,6 +411,14 @@ class AnswerInlineQueryAction(BaseModel):
     isPersonal: bool | None = None
 
 
+class RegistrationFollowUp(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    type: Literal["REQUEST_OMNI_REGISTRATION"]
+    businessUsername: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+    employeeId: Annotated[str, StringConstraints(pattern=r"^[0-9]{3,8}$")]
+
+
 class GatewayEventResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -428,6 +436,7 @@ class GatewayEventResponse(BaseModel):
         ],
         Field(max_length=100),
     ]
+    followUp: RegistrationFollowUp | None = None
 
 
 class GatewayAsyncActionRequest(BaseModel):

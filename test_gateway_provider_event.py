@@ -31,6 +31,7 @@ from tasks.provider_scheduler import (
     run_deferred_interaction_cycle,
 )
 from gateway_provider.gateway_file_client import GatewayFileReader
+from gateway_provider.contracts import GATEWAY_PROTOCOL_FINGERPRINT
 from infra.attendance_group_policy import group_policy_fingerprint, normalize_group_policies
 
 
@@ -323,9 +324,7 @@ def test_provider_health_and_readiness_verify_owned_database() -> None:
     assert readiness.status_code == 200
     assert readiness.json() == {
         "ok": True,
-        "gatewayProtocolFingerprint": (
-            "sha256:3a90c0f00bae06f7fb14ddafc969acfff076de116324eb1745532393a2930061"
-        ),
+        "gatewayProtocolFingerprint": GATEWAY_PROTOCOL_FINGERPRINT,
         "status": "READY",
         "database": True,
         "requiredTables": {
@@ -570,9 +569,7 @@ def test_provider_health_fails_closed_when_database_is_unavailable() -> None:
     assert readiness.status_code == 503
     assert readiness.json() == {
         "ok": False,
-        "gatewayProtocolFingerprint": (
-            "sha256:3a90c0f00bae06f7fb14ddafc969acfff076de116324eb1745532393a2930061"
-        ),
+        "gatewayProtocolFingerprint": GATEWAY_PROTOCOL_FINGERPRINT,
         "status": "NOT_READY",
         "database": False,
         "requiredTables": {
@@ -1622,6 +1619,7 @@ def test_registration_callback_acquires_a_conversation_session() -> None:
     [
         "注册",
         "绑定考勤资料",
+        "/start",
         "/attendance_register",
         "/attendance_register@uxassistant_bot",
     ],
@@ -3526,6 +3524,11 @@ def test_registration_confirmation_binds_the_pre_registered_employee() -> None:
             "text": "您成功注册",
         },
     ]
+    assert payload["followUp"] == {
+        "type": "REQUEST_OMNI_REGISTRATION",
+        "businessUsername": "GRANDFOR",
+        "employeeId": "74808",
+    }
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:
             cursor.execute(

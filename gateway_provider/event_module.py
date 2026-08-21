@@ -21,6 +21,7 @@ from gateway_provider.contracts import (
     ReplyKeyboardButton,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemoveMarkup,
+    RegistrationFollowUp,
     ReleaseSessionDirective,
     SendMessageAction,
     TelegramCallbackUpdate,
@@ -722,6 +723,12 @@ def _finish_registration(
     if message.chat.type != "private":
         raise GatewayRouteOwnershipMismatchError()
 
+    preview = register_service.get_preview(
+        cursor,
+        token=token,
+        tg_id=callback.sender.id,
+        private_chat_id=message.chat.id,
+    ) if operation == "confirm" else None
     if operation == "confirm":
         result = register_service.confirm_register(
             cursor,
@@ -759,6 +766,15 @@ def _finish_registration(
                 text=result.message,
             ),
         ],
+        followUp=(
+            RegistrationFollowUp(
+                type="REQUEST_OMNI_REGISTRATION",
+                businessUsername=preview.english_name,
+                employeeId=preview.employee_id,
+            )
+            if operation == "confirm" and result.ok and preview is not None
+            else None
+        ),
     )
 
 
@@ -1420,5 +1436,5 @@ def _command_name(text: str | None) -> str | None:
 def _is_registration_begin_text(text: str | None) -> bool:
     normalized = (text or "").strip()
     return normalized in {"注册", "绑定考勤资料"} or (
-        _command_name(normalized) == "/attendance_register"
+        _command_name(normalized) in {"/start", "/attendance_register"}
     )
