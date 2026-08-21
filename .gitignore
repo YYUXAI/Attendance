@@ -33,3 +33,4 @@ replay_bbq_july_all.py
 shift_web_http.py
 sync_remote_diff_google_sheets.py
 .gitnexus
+.local/

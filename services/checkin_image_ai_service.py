@@ -2244,6 +2244,41 @@ async def extract_checkin_from_image(
     if not image_bytes:
         return None, CheckinAiExtractError("AI_EMPTY_IMAGE", "打卡失败，图片为空")
 
+    from infra.checkin_ocrspace_config import is_ocrspace_extract_chat
+
+    if is_ocrspace_extract_chat(chat_id=chat_id, chat_title=chat_title):
+        from services.checkin_ocrspace_service import (
+            extract_checkin_from_ocrspace,
+            is_ocrspace_infra_failure,
+        )
+
+        log.info(
+            "checkin_ai: extract_backend=ocrspace(extract) chat_id=%s title=%r",
+            chat_id,
+            (chat_title or "")[:40],
+        )
+        ocr_ext, ocr_err = await extract_checkin_from_ocrspace(
+            image_bytes=image_bytes,
+            config=config,
+            expected_tg_username=expected_tg_username,
+            expected_english_name=expected_english_name,
+            reference_utc=reference_utc,
+            shift_timezone=shift_timezone,
+        )
+        if ocr_err is None or not is_ocrspace_infra_failure(ocr_err):
+            return ocr_ext, ocr_err
+        if not config.zhipu:
+            log.warning(
+                "checkin_ai: ocrspace infra fail code=%s but zhipu disabled",
+                ocr_err.error_code,
+            )
+            return ocr_ext, ocr_err
+        log.warning(
+            "checkin_ai: ocrspace infra fail code=%s -> fallback zhipu chat_id=%s",
+            ocr_err.error_code,
+            chat_id,
+        )
+
     if config.zhipu:
         from infra.checkin_ai_config import resolve_checkin_ai_config_for_chat
         from services.checkin_zhipu_vision_service import extract_checkin_from_zhipu_vision

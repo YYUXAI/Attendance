@@ -13,3 +13,5 @@ class CheckinImageExtraction:
     timezone_iana: Optional[str]
     confidence: Optional[float]
     clock_skew_rejected: bool = False
+    # OCR.space 调试原文（默认空，正式展示可不使用）
+    ocr_debug_text: Optional[str] = None
