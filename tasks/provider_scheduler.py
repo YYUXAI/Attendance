@@ -33,6 +33,7 @@ from gateway_provider.group_route_client import (
 )
 from gateway_provider.runtime_security import assert_no_telegram_owner_credentials
 from infra.db import database_url_scope
+from infra.logger import configure_logging
 from infra.google_sheets_config import load_google_sheets_config
 from infra.shift_web_config import load_shift_web_config
 from infra.runtime_config_validation import validate_attendance_process_environment
@@ -762,6 +763,7 @@ def load_scheduler_config(environment: dict[str, str]) -> ProviderSchedulerConfi
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
+    configure_logging()
     assert_no_telegram_owner_credentials(os.environ)
     validate_attendance_process_environment("scheduler", os.environ)
     args = list(arguments if arguments is not None else sys.argv[1:])

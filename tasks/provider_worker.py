@@ -16,6 +16,7 @@ import httpx
 from gateway_provider.contracts import GatewayAsyncActionAcceptanceResponse
 from gateway_provider.runtime_security import assert_no_telegram_owner_credentials
 from infra.runtime_config_validation import validate_attendance_process_environment
+from infra.logger import configure_logging
 from repositories import runtime_component_repo, worker_action_repo
 
 
@@ -214,6 +215,7 @@ def load_durable_worker_config(environment: dict[str, str]) -> DurableProviderWo
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
+    configure_logging()
     assert_no_telegram_owner_credentials(os.environ)
     validate_attendance_process_environment("worker", os.environ)
     args = list(arguments if arguments is not None else sys.argv[1:])
