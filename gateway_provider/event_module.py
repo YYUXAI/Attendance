@@ -348,7 +348,26 @@ def _process_attendance_event(
     if _is_registration_begin_text(message.text):
         return _begin_registration_message(request, cursor, update)
 
-    if _command_name(message.text) != "/attendance":
+    normalized_private = (message.text or "").strip()
+    if normalized_private in {"我的考勤", "个人", "我的信息"}:
+        return _show_profile_message(request, cursor, update)
+    if normalized_private == "导出":
+        return process_export_message(request, cursor, update)
+    if normalized_private in {"班表", "班次"}:
+        return _show_shift_message(
+            request,
+            cursor,
+            update,
+            shift_web_app_url=_shift_web_app_url(
+                request,
+                shift_web_app_public_url,
+            ),
+        )
+
+    if (
+        _command_name(message.text) != "/attendance"
+        and normalized_private not in {"⌨️ 考勤菜单", "考勤菜单"}
+    ):
         raise GatewayRouteOwnershipMismatchError()
 
     return _private_menu_response(
@@ -375,30 +394,16 @@ def _private_menu_response(
     callback_id: str | None = None,
 ) -> GatewayEventResponse:
     register_service.clear_waiting_register_input(cursor, tg_id=actor_id)
+    shift_button = (
+        InlineKeyboardButton(text="班表", webAppUrl=shift_web_app_url)
+        if shift_web_app_url is not None
+        else InlineKeyboardButton(text="班表", callbackData="att:shift")
+    )
     menu_rows = [
-        [
-            InlineKeyboardButton(
-                text="注册",
-                callbackData="att:register",
-            ),
-            InlineKeyboardButton(
-                text="个人",
-                callbackData="att:profile",
-            ),
-        ]
+        [InlineKeyboardButton(text="我的考勤", callbackData="att:profile")],
+        [InlineKeyboardButton(text="导出", callbackData="att:export")],
+        [shift_button],
     ]
-    if is_admin(cursor, tg_id=actor_id):
-        shift_button = (
-            InlineKeyboardButton(text="班表", webAppUrl=shift_web_app_url)
-            if shift_web_app_url is not None
-            else InlineKeyboardButton(text="班表", callbackData="att:shift")
-        )
-        menu_rows.append(
-            [
-                InlineKeyboardButton(text="导出", callbackData="att:export"),
-                shift_button,
-            ]
-        )
     callback_actions = [] if callback_id is None else [
         AnswerCallbackAction(
             actionId=f"{request.eventId}.callback",
@@ -414,21 +419,13 @@ def _private_menu_response(
         actions=[
             *callback_actions,
             SendMessageAction(
-                actionId=f"{request.eventId}.menu-remove",
-                type="SEND_MESSAGE",
-                chatId=chat_id,
-                replyToMessageId=reply_to_message_id,
-                text="旧版底部菜单已收起。",
-                replyMarkup=ReplyKeyboardRemoveMarkup(removeKeyboard=True),
-            ),
-            SendMessageAction(
                 actionId=f"{request.eventId}.menu",
                 type="SEND_MESSAGE",
                 chatId=chat_id,
                 replyToMessageId=reply_to_message_id,
-                text="请选择功能（使用输入框下方按钮；输入 / 可打开命令）：",
+                text="请选择功能：",
                 replyMarkup=InlineKeyboardMarkup(inlineKeyboard=menu_rows),
-            )
+            ),
         ],
     )
 
@@ -507,9 +504,9 @@ def _process_registration_text(
     if message.chat.type != "private" or sender is None or message.text is None:
         raise GatewayRouteOwnershipMismatchError()
     normalized_text = message.text.strip()
-    if normalized_text in {"个人", "我的信息", "导出", "班表", "班次"}:
+    if normalized_text in {"我的考勤", "个人", "我的信息", "导出", "班表", "班次"}:
         register_service.clear_waiting_register_input(cursor, tg_id=sender.id)
-        if normalized_text in {"个人", "我的信息"}:
+        if normalized_text in {"我的考勤", "个人", "我的信息"}:
             return _show_profile_message(request, cursor, update)
         if normalized_text == "导出":
             return process_export_message(request, cursor, update)

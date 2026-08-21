@@ -1456,12 +1456,7 @@ def test_attendance_summary_owns_its_shell_copy_and_actions() -> None:
                 {"order": 200, "text": "组织归属：Gateway Contract Department"},
                 {"order": 300, "text": "考勤资料：已绑定"},
             ],
-            "actionRows": [
-                {
-                    "order": 100,
-                    "buttons": [{"text": "考勤菜单", "callbackData": "att:menu"}],
-                }
-            ],
+            "actionRows": [],
         },
     }
     assert unregistered.status_code == 200, unregistered.text
@@ -1474,10 +1469,6 @@ def test_attendance_summary_owns_its_shell_copy_and_actions() -> None:
                 {"order": 300, "text": "考勤资料：未绑定"},
             ],
             "actionRows": [
-                {
-                    "order": 100,
-                    "buttons": [{"text": "考勤菜单", "callbackData": "att:menu"}],
-                },
                 {
                     "order": 300,
                     "buttons": [

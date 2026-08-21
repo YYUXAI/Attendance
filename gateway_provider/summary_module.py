@@ -29,7 +29,7 @@ class ProviderShellPresentation(BaseModel):
     lines: Annotated[list[ShellPresentationLine], Field(min_length=2, max_length=10)]
     actionRows: Annotated[
         list[ShellPresentationActionRow],
-        Field(min_length=1, max_length=10),
+        Field(min_length=0, max_length=10),
     ]
 
 
@@ -73,12 +73,7 @@ def _attendance_summary(
     profile_label: str,
     registration_status: Literal["BOUND", "UNBOUND"],
 ) -> AttendanceSummaryResponse:
-    action_rows = [
-        ShellPresentationActionRow(
-            order=100,
-            buttons=[InlineKeyboardButton(text="考勤菜单", callbackData="att:menu")],
-        )
-    ]
+    action_rows: list[ShellPresentationActionRow] = []
     if registration_status == "UNBOUND":
         action_rows.append(
             ShellPresentationActionRow(
