@@ -21,3 +21,4 @@ backup/
 !migrations/*.sql
 *.log
 .pytest_cache/
+.local/

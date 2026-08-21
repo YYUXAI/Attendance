@@ -54,7 +54,6 @@ def _raw_api_keys_text() -> str:
         (
             "/run/secrets/ocrspace_api_keys",
             "/run/secrets/ocrspace_api_key",
-            "/app/.local/ocrspace_api_keys",
         )
     )
     for candidate in candidates:
