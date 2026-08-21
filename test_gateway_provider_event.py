@@ -1450,6 +1450,7 @@ def test_attendance_summary_owns_its_shell_copy_and_actions() -> None:
     assert authorized.status_code == 200, authorized.text
     assert authorized.json() == {
         "protocolVersion": "1.0",
+        "registration": {"status": "BOUND"},
         "shellPresentation": {
             "lines": [
                 {"order": 200, "text": "组织归属：Gateway Contract Department"},
@@ -1466,6 +1467,7 @@ def test_attendance_summary_owns_its_shell_copy_and_actions() -> None:
     assert unregistered.status_code == 200, unregistered.text
     assert unregistered.json() == {
         "protocolVersion": "1.0",
+        "registration": {"status": "UNBOUND"},
         "shellPresentation": {
             "lines": [
                 {"order": 200, "text": "组织归属：未设置"},
@@ -3524,10 +3526,11 @@ def test_registration_confirmation_binds_the_pre_registered_employee() -> None:
             "text": "您成功注册",
         },
     ]
-    assert payload["followUp"] == {
-        "type": "REQUEST_OMNI_REGISTRATION",
+    assert payload["attendanceRegistration"] == {
+        "status": "BOUND",
         "businessUsername": "GRANDFOR",
         "employeeId": "74808",
+        "replyActionId": "evt-attendance-register-1004.reply",
     }
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:

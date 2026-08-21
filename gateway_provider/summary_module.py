@@ -33,10 +33,17 @@ class ProviderShellPresentation(BaseModel):
     ]
 
 
+class AttendanceRegistrationStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    status: Literal["BOUND", "UNBOUND"]
+
+
 class AttendanceSummaryResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     protocolVersion: Literal["1.0"]
+    registration: AttendanceRegistrationStatus
     shellPresentation: ProviderShellPresentation
 
 
@@ -51,12 +58,12 @@ def read_attendance_summary(
         return _attendance_summary(
             organization_label="未设置",
             profile_label="未绑定",
-            include_registration=True,
+            registration_status="UNBOUND",
         )
     return _attendance_summary(
         organization_label=(profile.department_name or "").strip() or "未设置",
         profile_label="已绑定",
-        include_registration=False,
+        registration_status="BOUND",
     )
 
 
@@ -64,7 +71,7 @@ def _attendance_summary(
     *,
     organization_label: str,
     profile_label: str,
-    include_registration: bool,
+    registration_status: Literal["BOUND", "UNBOUND"],
 ) -> AttendanceSummaryResponse:
     action_rows = [
         ShellPresentationActionRow(
@@ -72,7 +79,7 @@ def _attendance_summary(
             buttons=[InlineKeyboardButton(text="考勤菜单", callbackData="att:menu")],
         )
     ]
-    if include_registration:
+    if registration_status == "UNBOUND":
         action_rows.append(
             ShellPresentationActionRow(
                 order=300,
@@ -86,6 +93,7 @@ def _attendance_summary(
         )
     return AttendanceSummaryResponse(
         protocolVersion="1.0",
+        registration=AttendanceRegistrationStatus(status=registration_status),
         shellPresentation=ProviderShellPresentation(
             lines=[
                 ShellPresentationLine(

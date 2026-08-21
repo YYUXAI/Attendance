@@ -14,6 +14,7 @@ from gateway_provider.contracts import (
     AcquireSessionDirective,
     AnswerCallbackAction,
     AnswerInlineQueryAction,
+    AttendanceRegistrationCompletion,
     GatewayEventRequest,
     GatewayEventResponse,
     InlineKeyboardButton,
@@ -21,7 +22,6 @@ from gateway_provider.contracts import (
     ReplyKeyboardButton,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemoveMarkup,
-    RegistrationFollowUp,
     ReleaseSessionDirective,
     SendMessageAction,
     TelegramCallbackUpdate,
@@ -747,6 +747,7 @@ def _finish_registration(
     else:
         raise GatewayRouteOwnershipMismatchError()
 
+    reply_action_id = f"{request.eventId}.reply"
     return GatewayEventResponse(
         protocolVersion="1.0",
         eventId=request.eventId,
@@ -759,18 +760,19 @@ def _finish_registration(
                 callbackQueryId=callback.id,
             ),
             SendMessageAction(
-                actionId=f"{request.eventId}.reply",
+                actionId=reply_action_id,
                 type="SEND_MESSAGE",
                 chatId=message.chat.id,
                 replyToMessageId=message.message_id,
                 text=result.message,
             ),
         ],
-        followUp=(
-            RegistrationFollowUp(
-                type="REQUEST_OMNI_REGISTRATION",
+        attendanceRegistration=(
+            AttendanceRegistrationCompletion(
+                status="BOUND",
                 businessUsername=preview.english_name,
                 employeeId=preview.employee_id,
+                replyActionId=reply_action_id,
             )
             if operation == "confirm" and result.ok and preview is not None
             else None

@@ -14,6 +14,8 @@ Gateway 文件只通过 `GET /internal/v1/telegram-files/{fileRef}` 读取。Att
 
 当前 V1 拥有注册、个人统计、群签到/签退、群离岗/返岗、考勤导出、班表与 Google Sheets 同步规则。已停用的 leave application、temporary leave approval、QC 与 legacy notification 不属于当前产品，代码已删除；历史内容只从 git 恢复。
 
+考勤注册由用户手填英文名和工号并在私聊确认。确认成功立即写入 Attendance 自有绑定并可使用考勤，不等待 OmniAI2 审批。事件响应只发布 Attendance 自己的结构化 `attendanceRegistration.status=BOUND` 完成事实、手填资料和对应回复 action；它不命令或调用 OmniAI2。Gateway 可用该事实调用独立 registration-intake Interface。Attendance 摘要另发布只读 `registration.status` 供 `/start` 路由，Gateway 不得从中文文案或按钮反推绑定状态。
+
 ## Database ownership
 
 `migrations/0003_gateway_provider.sql` 到 `migrations/0012_attendance_group_policy_and_business_facts.sql` 定义空库可重复执行的 Provider schema、注册状态、WebApp session、terminal delivery receipt、Provider action worker、durable scheduler、打卡后 Sheets outbox、动态群绑定、业务事实和运行组件配置指纹。迁移使用 immutable checksum 与 advisory lock；重复执行为 no-op，已应用 SQL 变化时 fail closed。Attendance 只连接 `ATTENDANCE_DATABASE_URL`；Provider 请求、WebApp 请求与后台 worker 均在该数据库作用域内执行。禁止跨库读取和运行时 fallback。
