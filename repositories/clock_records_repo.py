@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, List
 
+import psycopg2.errors
 from psycopg2.extensions import cursor as Cursor
 
 from infra.db import get_cursor
@@ -35,7 +36,18 @@ def has_telegram_source_cur(
     return cursor.fetchone() is not None
 
 
-def insert_gateway_clock_record_cur(
+def _sync_clock_records_id_sequence_cur(cursor: Cursor) -> None:
+    cursor.execute(
+        """
+        SELECT setval(
+            pg_get_serial_sequence('public.clock_records', 'id'),
+            COALESCE((SELECT MAX(id) FROM public.clock_records), 1)
+        )
+        """
+    )
+
+
+def _insert_gateway_clock_record_once_cur(
     cursor: Cursor,
     *,
     source_chat_id: int,
@@ -73,6 +85,48 @@ def insert_gateway_clock_record_cur(
         ),
     )
     return cursor.fetchone() is not None
+
+
+def insert_gateway_clock_record_cur(
+    cursor: Cursor,
+    *,
+    source_chat_id: int,
+    source_message_id: int,
+    file_ref: str,
+    tg_id: int,
+    employee_id: str,
+    shift_id: int | None,
+    clock_time_utc: Any,
+    clock_action: str,
+) -> bool:
+    try:
+        return _insert_gateway_clock_record_once_cur(
+            cursor,
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
+            file_ref=file_ref,
+            tg_id=tg_id,
+            employee_id=employee_id,
+            shift_id=shift_id,
+            clock_time_utc=clock_time_utc,
+            clock_action=clock_action,
+        )
+    except psycopg2.errors.UniqueViolation as error:
+        # Imported/migrated rows can leave clock_records_id_seq far behind MAX(id).
+        if getattr(error.diag, "constraint_name", None) != "clock_records_pkey":
+            raise
+        _sync_clock_records_id_sequence_cur(cursor)
+        return _insert_gateway_clock_record_once_cur(
+            cursor,
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
+            file_ref=file_ref,
+            tg_id=tg_id,
+            employee_id=employee_id,
+            shift_id=shift_id,
+            clock_time_utc=clock_time_utc,
+            clock_action=clock_action,
+        )
 
 
 def ensure_clock_action_column() -> None:
