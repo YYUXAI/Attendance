@@ -158,7 +158,10 @@ def confirm_register(
         now=_resolved_now(now),
     )
     if result.code == "ok":
-        return ServiceResult(ok=True, message="您成功注册")
+        return ServiceResult(
+            ok=True,
+            message="考勤资料绑定成功，可以立即使用考勤。",
+        )
     if result.code == "owner_mismatch":
         return ServiceResult(
             ok=False,

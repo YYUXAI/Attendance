@@ -15,7 +15,7 @@ from pydantic import (
 )
 
 GATEWAY_PROTOCOL_FINGERPRINT = (
-    "sha256:f8ee2aeb8522c35027ebeec83339d1183a62fb768c232c550bcb17cc27a9153d"
+    "sha256:e684fd36159e2ce4b1da4f3282a6cd70a3a2cf997c8fd4be71f92279a1fdedeb"
 )
 
 

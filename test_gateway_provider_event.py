@@ -1452,10 +1452,7 @@ def test_attendance_summary_owns_its_shell_copy_and_actions() -> None:
         "protocolVersion": "1.0",
         "registration": {"status": "BOUND"},
         "shellPresentation": {
-            "lines": [
-                {"order": 200, "text": "组织归属：Gateway Contract Department"},
-                {"order": 300, "text": "考勤资料：已绑定"},
-            ],
+            "lines": [{"order": 200, "text": "考勤资料：已绑定"}],
             "actionRows": [],
         },
     }
@@ -1464,10 +1461,7 @@ def test_attendance_summary_owns_its_shell_copy_and_actions() -> None:
         "protocolVersion": "1.0",
         "registration": {"status": "UNBOUND"},
         "shellPresentation": {
-            "lines": [
-                {"order": 200, "text": "组织归属：未设置"},
-                {"order": 300, "text": "考勤资料：未绑定"},
-            ],
+            "lines": [{"order": 200, "text": "考勤资料：未绑定"}],
             "actionRows": [
                 {
                     "order": 300,
@@ -3514,7 +3508,7 @@ def test_registration_confirmation_binds_the_pre_registered_employee() -> None:
             "type": "SEND_MESSAGE",
             "chatId": 81002,
             "replyToMessageId": 504,
-            "text": "您成功注册",
+            "text": "考勤资料绑定成功，可以立即使用考勤。",
         },
     ]
     assert payload["attendanceRegistration"] == {

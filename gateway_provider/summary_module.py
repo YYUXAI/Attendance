@@ -26,7 +26,7 @@ class ShellPresentationActionRow(BaseModel):
 class ProviderShellPresentation(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    lines: Annotated[list[ShellPresentationLine], Field(min_length=2, max_length=10)]
+    lines: Annotated[list[ShellPresentationLine], Field(min_length=1, max_length=10)]
     actionRows: Annotated[
         list[ShellPresentationActionRow],
         Field(min_length=0, max_length=10),
@@ -56,12 +56,10 @@ def read_attendance_summary(
         profile = get_registration_profile_by_tg_id(tg_id=telegram_user_id)
     if profile is None:
         return _attendance_summary(
-            organization_label="未设置",
             profile_label="未绑定",
             registration_status="UNBOUND",
         )
     return _attendance_summary(
-        organization_label=(profile.department_name or "").strip() or "未设置",
         profile_label="已绑定",
         registration_status="BOUND",
     )
@@ -69,7 +67,6 @@ def read_attendance_summary(
 
 def _attendance_summary(
     *,
-    organization_label: str,
     profile_label: str,
     registration_status: Literal["BOUND", "UNBOUND"],
 ) -> AttendanceSummaryResponse:
@@ -91,11 +88,7 @@ def _attendance_summary(
         registration=AttendanceRegistrationStatus(status=registration_status),
         shellPresentation=ProviderShellPresentation(
             lines=[
-                ShellPresentationLine(
-                    order=200,
-                    text=f"组织归属：{organization_label}",
-                ),
-                ShellPresentationLine(order=300, text=f"考勤资料：{profile_label}"),
+                ShellPresentationLine(order=200, text=f"考勤资料：{profile_label}"),
             ],
             actionRows=action_rows,
         ),
