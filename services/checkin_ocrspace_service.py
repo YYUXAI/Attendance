@@ -34,6 +34,7 @@ from services.checkin_image_ai_service import (
     _fallback_extraction_from_text,
     _prepare_image_bytes,
     normalize_ocr_dot_clocks,
+    normalize_ocr_glued_clocks,
 )
 from services.checkin_ocr_text_llm_service import _clock_from_ocr_text
 from services.checkin_service import ALLOWED_TIMEZONES
@@ -403,7 +404,7 @@ async def extract_checkin_from_ocrspace(
         expected_date = ref_utc.astimezone(ZoneInfo(tz_name)).strftime("%Y-%m-%d")
 
         probe_text = normalize_ocr_date_text(
-            normalize_ocr_dot_clocks(_normalize_ocr_colon_lookalikes(ocr_text)),
+            normalize_ocr_glued_clocks(normalize_ocr_dot_clocks(_normalize_ocr_colon_lookalikes(ocr_text))),
             expected_date=expected_date,
         )
         probe_ext = _fallback_extraction_from_text(
@@ -461,7 +462,7 @@ async def extract_checkin_from_ocrspace(
     expected_date = ref_utc.astimezone(ZoneInfo(tz_name)).strftime("%Y-%m-%d")
 
     ocr_text = normalize_ocr_date_text(
-        normalize_ocr_dot_clocks(ocr_text),
+        normalize_ocr_glued_clocks(normalize_ocr_dot_clocks(ocr_text)),
         expected_date=expected_date,
     )
 
@@ -494,8 +495,16 @@ async def extract_checkin_from_ocrspace(
         log.info("ocrspace: use clock_date %s (was %s)", ocr_date, extraction.clock_date)
         extraction = replace(extraction, clock_date=ocr_date)
 
-    if not extraction.clock_time and inclusion_pick:
-        log.info("ocrspace: use inclusion clock %s", inclusion_pick)
+    # 图中只要有与「现在」偏差在窗内的时间就采用（覆盖兜底里误选的过期 HH:MM:SS）
+    if inclusion_pick:
+        if extraction.clock_time and extraction.clock_time != inclusion_pick:
+            log.info(
+                "ocrspace: prefer inclusion clock %s (was %s)",
+                inclusion_pick,
+                extraction.clock_time,
+            )
+        elif not extraction.clock_time:
+            log.info("ocrspace: use inclusion clock %s", inclusion_pick)
         extraction = replace(extraction, clock_time=inclusion_pick)
 
     if skew_rejected and not extraction.clock_time:

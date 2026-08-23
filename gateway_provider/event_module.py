@@ -394,16 +394,22 @@ def _private_menu_response(
     callback_id: str | None = None,
 ) -> GatewayEventResponse:
     register_service.clear_waiting_register_input(cursor, tg_id=actor_id)
-    shift_button = (
-        InlineKeyboardButton(text="班表", webAppUrl=shift_web_app_url)
-        if shift_web_app_url is not None
-        else InlineKeyboardButton(text="班表", callbackData="att:shift")
-    )
     menu_rows = [
         [InlineKeyboardButton(text="我的考勤", callbackData="att:profile")],
-        [InlineKeyboardButton(text="导出", callbackData="att:export")],
-        [shift_button],
     ]
+    # 非管理员只展示「我的考勤」；导出 / 班表仅管理员可见
+    if is_admin(cursor, tg_id=actor_id):
+        shift_button = (
+            InlineKeyboardButton(text="班表", webAppUrl=shift_web_app_url)
+            if shift_web_app_url is not None
+            else InlineKeyboardButton(text="班表", callbackData="att:shift")
+        )
+        menu_rows.extend(
+            [
+                [InlineKeyboardButton(text="导出", callbackData="att:export")],
+                [shift_button],
+            ]
+        )
     callback_actions = [] if callback_id is None else [
         AnswerCallbackAction(
             actionId=f"{request.eventId}.callback",
@@ -745,25 +751,42 @@ def _finish_registration(
         raise GatewayRouteOwnershipMismatchError()
 
     reply_action_id = f"{request.eventId}.reply"
+    actions: list = [
+        AnswerCallbackAction(
+            actionId=f"{request.eventId}.callback",
+            type="ANSWER_CALLBACK",
+            callbackQueryId=callback.id,
+        ),
+        SendMessageAction(
+            actionId=reply_action_id,
+            type="SEND_MESSAGE",
+            chatId=message.chat.id,
+            replyToMessageId=message.message_id,
+            text=result.message,
+        ),
+    ]
+    # 注册成功后再挂底部考勤菜单（未绑定的 /start 不会提前挂）
+    if operation == "confirm" and result.ok:
+        actions.append(
+            SendMessageAction(
+                actionId=f"{request.eventId}.attendance-reply-keyboard",
+                type="SEND_MESSAGE",
+                chatId=message.chat.id,
+                text="⌨️ 考勤菜单已就绪",
+                replyMarkup=ReplyKeyboardMarkup(
+                    keyboard=[[ReplyKeyboardButton(text="⌨️ 考勤菜单")]],
+                    resizeKeyboard=True,
+                    isPersistent=True,
+                    inputFieldPlaceholder="点下方考勤菜单，或直接输入消息",
+                ),
+            )
+        )
     return GatewayEventResponse(
         protocolVersion="1.0",
         eventId=request.eventId,
         result="PROCESSED",
         session=ReleaseSessionDirective(directive="RELEASE"),
-        actions=[
-            AnswerCallbackAction(
-                actionId=f"{request.eventId}.callback",
-                type="ANSWER_CALLBACK",
-                callbackQueryId=callback.id,
-            ),
-            SendMessageAction(
-                actionId=reply_action_id,
-                type="SEND_MESSAGE",
-                chatId=message.chat.id,
-                replyToMessageId=message.message_id,
-                text=result.message,
-            ),
-        ],
+        actions=actions,
         attendanceRegistration=(
             AttendanceRegistrationCompletion(
                 status="BOUND",

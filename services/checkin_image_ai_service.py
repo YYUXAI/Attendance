@@ -1051,6 +1051,14 @@ async def _call_openai_vision(
 _CLOCK_IN_TEXT_RE = re.compile(r"(?<![0-9])(\d{1,2}):(\d{2})(?::(\d{2}))?(?![0-9])")
 # EasyOCR 常把 TIME.IS 大钟读成 13.29 / 13.31（点号），规范为冒号后再抽时间
 _CLOCK_DOT_AS_TIME_RE = re.compile(r"(?<![0-9])(\d{1,2})\.(\d{2})(?![0-9\.])")
+# 大钟冒号被读成 8/1/l/|：14 + 8 + 11:43 → 14811:43
+_CLOCK_GLUED_COLON_AS_DIGIT_RE = re.compile(
+    r"(?<![0-9])(\d{1,2})[18lI|](\d{2}):(\d{2})(?![0-9])"
+)
+# 时分之间缺冒号：1411:43 → 14:11:43
+_CLOCK_GLUED_MISSING_FIRST_COLON_RE = re.compile(
+    r"(?<![0-9])(\d{1,2})(\d{2}):(\d{2})(?![0-9])"
+)
 
 
 def normalize_ocr_dot_clocks(text: str) -> str:
@@ -1063,6 +1071,32 @@ def normalize_ocr_dot_clocks(text: str) -> str:
         return f"{h:02d}:{mi:02d}"
 
     return _CLOCK_DOT_AS_TIME_RE.sub(_repl, text or "")
+
+
+def normalize_ocr_glued_clocks(text: str) -> str:
+    """修复大钟 OCR 粘连：冒号→数字、或缺第一段冒号。
+
+    例：14811:43 → 14:11:43；1411:43 → 14:11:43。
+    合法性不够的保持原文；是否采纳仍由 inclusion（贴近现在）把关。
+    """
+
+    def _hms_ok(h: int, mi: int, sec: int) -> bool:
+        return h <= 23 and mi <= 59 and sec <= 59
+
+    def _repl_digit_colon(m: re.Match[str]) -> str:
+        h, mi, sec = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if not _hms_ok(h, mi, sec):
+            return m.group(0)
+        return f"{h:02d}:{mi:02d}:{sec:02d}"
+
+    def _repl_missing_colon(m: re.Match[str]) -> str:
+        h, mi, sec = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if not _hms_ok(h, mi, sec):
+            return m.group(0)
+        return f"{h:02d}:{mi:02d}:{sec:02d}"
+
+    out = _CLOCK_GLUED_COLON_AS_DIGIT_RE.sub(_repl_digit_colon, text or "")
+    return _CLOCK_GLUED_MISSING_FIRST_COLON_RE.sub(_repl_missing_colon, out)
 _NORMALIZED_BBOX_RE = re.compile(
     r"\[\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*\]"
 )
@@ -1080,7 +1114,9 @@ def _strip_bot_reply_text(text: str) -> str:
 
 def _clock_candidates_from_text(text: str) -> list[tuple[str, bool]]:
     """从文本收集全部 HH:MM(:SS) 候选；has_sec 表示模型明确给出了秒。"""
-    text = normalize_ocr_dot_clocks(_strip_bot_reply_text(text))
+    text = normalize_ocr_glued_clocks(
+        normalize_ocr_dot_clocks(_strip_bot_reply_text(text))
+    )
     found: list[tuple[str, bool]] = []
     seen: set[str] = set()
     for line in re.split(r"[\r\n]+", text):
@@ -1262,6 +1298,43 @@ def _collect_clock_candidates_from_regions(
     return found, tz_hint
 
 
+def _flip_12h_clock_candidate(clock: str) -> Optional[str]:
+    """±12 小时翻转（晚上 11:06 ↔ 23:06），供 OCR 包含法选时。
+
+    与 remote_diff 的上午/下午校正同一意图：12 小时制漏读「晚上/下午」时，
+    用发送时刻贴近度把候选翻到另一半日。
+    """
+    parts = (clock or "").strip().split(":")
+    if len(parts) < 2:
+        return None
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+        second = int(parts[2]) if len(parts) >= 3 else 0
+    except ValueError:
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+        return None
+    new_hour = (hour + 12) % 24
+    return f"{new_hour:02d}:{minute:02d}:{second:02d}"
+
+
+def _expand_clock_candidates_with_12h_flip(
+    candidates: list[tuple[str, bool]],
+) -> list[tuple[str, bool]]:
+    """OCR 择时：每个候选附带 ±12 小时翻转副本。"""
+    expanded: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+    for clock, has_sec in candidates:
+        clock3 = clock if len(clock.split(":")) == 3 else f"{clock}:00"
+        hs = has_sec if len(clock.split(":")) >= 3 else False
+        for c in (clock3, _flip_12h_clock_candidate(clock3)):
+            if c and c not in seen:
+                seen.add(c)
+                expanded.append((c, hs))
+    return expanded
+
+
 def _pick_clock_by_inclusion(
     candidates: dict[str, bool],
     *,
@@ -1271,6 +1344,7 @@ def _pick_clock_by_inclusion(
 ) -> tuple[Optional[str], bool]:
     """多个时钟字符串时，取与 reference 最接近且 skew 在窗口内的一个。
 
+    同时尝试每个候选的 ±12 小时翻转（OCR 与 BBQ/YYMG remote_diff 同口径）。
     返回 (选中时间, 是否曾出现超窗候选)。
     """
     if not candidates:
@@ -1280,9 +1354,17 @@ def _pick_clock_by_inclusion(
         with_sec = [c for c, hs in candidates.items() if hs]
         return (with_sec or list(candidates.keys()))[0], False
 
+    expanded: dict[str, bool] = {}
+    for clock, has_sec in candidates.items():
+        clock3 = clock if len(clock.split(":")) == 3 else f"{clock}:00"
+        expanded[clock3] = has_sec if len(clock.split(":")) >= 3 else False
+        flipped = _flip_12h_clock_candidate(clock3)
+        if flipped and flipped not in expanded:
+            expanded[flipped] = expanded[clock3]
+
     pool: list[tuple[float, int, str]] = []
     rejected: list[str] = []
-    for clock, has_sec in candidates.items():
+    for clock, has_sec in expanded.items():
         skew = _minutes_from_reference(
             clock_str=clock, reference_utc=reference_utc, tz_name=tz_name
         )
@@ -1559,13 +1641,26 @@ def _pick_best_clock_time(
     reference_utc: datetime | None,
     tz_name: str = "Asia/Shanghai",
 ) -> Optional[str]:
+    """多候选择时：有 reference 时取最接近「现在」的（图中对的时间即可过）。
+
+    不再优先 HH:MM:SS——搜索摘要里带秒的过期时间会盖过大钟 HH:MM。
+    无 reference 时仍优先带秒（更像主钟）。
+    """
     if not candidates:
         return None
+    if reference_utc is not None:
+        pool = _expand_clock_candidates_with_12h_flip(candidates)
+        return min(
+            pool,
+            key=lambda item: (
+                _minutes_from_reference(
+                    clock_str=item[0], reference_utc=reference_utc, tz_name=tz_name
+                ),
+                0 if item[1] else 1,
+            ),
+        )[0]
     with_sec = [c for c, has_sec in candidates if has_sec]
-    pool = with_sec if with_sec else [c for c, _ in candidates]
-    if reference_utc is None or len(pool) == 1:
-        return pool[0]
-    return min(pool, key=lambda c: _minutes_from_reference(clock_str=c, reference_utc=reference_utc, tz_name=tz_name))
+    return (with_sec or [c for c, _ in candidates])[0]
 
 
 def _extract_clock_time_from_text(

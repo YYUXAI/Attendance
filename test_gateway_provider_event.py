@@ -3410,7 +3410,7 @@ def test_group_photo_checkin_reads_gateway_file_and_persists_once(
     }]
 
 
-def test_group_photo_checkin_outside_roster_fails_without_false_success(
+def test_group_photo_checkin_outside_roster_is_no_longer_blocked(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _apply_gateway_provider_migration()
@@ -3434,16 +3434,8 @@ def test_group_photo_checkin_outside_roster_fails_without_false_success(
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["actions"][0]["text"] == (
-        "打卡失败：您不在本群当前班表，未记账。"
-    )
-    with psycopg2.connect(_database_url()) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT COUNT(*) FROM clock_records WHERE employee_id = %s",
-                ("74808",),
-            )
-            assert cursor.fetchone() == (0,)
+    reply_text = response.json()["actions"][0]["text"]
+    assert "不在本群当前班表" not in reply_text
 
 
 def test_registration_confirmation_binds_the_pre_registered_employee() -> None:

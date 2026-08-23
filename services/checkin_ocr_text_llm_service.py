@@ -291,8 +291,19 @@ async def extract_checkin_from_ocr_text_llm(
             )
             extraction = replace(extraction, clock_date=None)
 
-    if not extraction.clock_time and inclusion_pick:
-        log.info("checkin_ocr_text_llm: use inclusion clock from ocr text value=%s", inclusion_pick)
+    # 图中只要有与「现在」偏差在窗内的时间就采用（覆盖兜底误选）
+    if inclusion_pick:
+        if extraction.clock_time and extraction.clock_time != inclusion_pick:
+            log.info(
+                "checkin_ocr_text_llm: prefer inclusion clock %s (was %s)",
+                inclusion_pick,
+                extraction.clock_time,
+            )
+        elif not extraction.clock_time:
+            log.info(
+                "checkin_ocr_text_llm: use inclusion clock from ocr text value=%s",
+                inclusion_pick,
+            )
         extraction = replace(extraction, clock_time=inclusion_pick)
 
     if skew_rejected and not extraction.clock_time:

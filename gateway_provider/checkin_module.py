@@ -80,14 +80,13 @@ def process_group_checkin(
         roster_source=roster_source,
         employee_id=registration.employee_id,
     )
+    # 班表仅用于 ai-dry-run 等能力判断，不再拦截未入班表人员打卡。
     ai_dry_run = checkin_service.should_run_ai_without_persist(
         chat_id=message.chat.id,
         employee_id=registration.employee_id,
         roster_allowed=roster_allowed,
         chat_title=message.chat.title,
     )
-    if not roster_allowed and not ai_dry_run:
-        return _reply(request, update, "打卡失败：您不在本群当前班表，未记账。")
 
     caption_error = _caption_error(
         caption=message.caption,
