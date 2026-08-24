@@ -37,6 +37,12 @@ from gateway_provider.admin_module import (
     is_admin_test_message,
     process_admin_test_message,
 )
+from infra.leave_return_keyboard_only_config import (
+    is_leave_return_keyboard_only_chat,
+    is_username_identity_chat,
+    leave_overtime_minutes_for_chat,
+    normalize_tg_username,
+)
 from gateway_provider.admin_export_module import (
     has_active_admin_export_session,
     is_admin_export_callback,
@@ -47,10 +53,13 @@ from gateway_provider.admin_export_module import (
 )
 from gateway_provider.gateway_file_client import GatewayFileReader
 from gateway_provider.export_module import (
+    ensure_admin_identity,
     is_admin,
     is_export_callback,
+    is_leave_export_scope,
     process_export_callback,
     process_export_message,
+    resolve_admin_export_chat_id,
 )
 from gateway_provider.profile_module import profile_text_for_tg_id
 from infra.checkin_remote_diff_config import requires_remote_diff_checkin
@@ -69,7 +78,6 @@ from repositories import (
 )
 from services import register_service
 from services.leave_flow_guard import (
-    LEAVE_BACK_OVERTIME_MINUTES,
     format_leave_duration_minutes,
     requires_leave_back_copy_fallback,
     requires_leave_mutual_exclusion,
@@ -213,6 +221,11 @@ def _process_attendance_event(
         if is_export_callback(callback_data):
             return process_export_callback(request, cursor, update)
         if callback_data == "att:menu":
+            ensure_admin_identity(
+                cursor,
+                tg_id=update.callback_query.sender.id,
+                tg_username=update.callback_query.sender.username,
+            )
             return _private_menu_response(
                 request,
                 cursor,
@@ -314,6 +327,11 @@ def _process_attendance_event(
             "返岗": ("back", "返岗"),
         }.get(message_text)
         if group_action is not None and group_action[0] in {"signin", "signout"}:
+            if is_leave_return_keyboard_only_chat(
+                chat_id=message.chat.id,
+                chat_title=message.chat.title,
+            ):
+                return _group_menu_response(request, update)
             return _show_group_message_action(
                 request,
                 cursor,
@@ -370,6 +388,12 @@ def _process_attendance_event(
     ):
         raise GatewayRouteOwnershipMismatchError()
 
+    if message.sender is not None:
+        ensure_admin_identity(
+            cursor,
+            tg_id=message.sender.id,
+            tg_username=message.sender.username,
+        )
     return _private_menu_response(
         request,
         cursor,
@@ -394,22 +418,25 @@ def _private_menu_response(
     callback_id: str | None = None,
 ) -> GatewayEventResponse:
     register_service.clear_waiting_register_input(cursor, tg_id=actor_id)
+    # 预登记仅有 @用户名时，私聊首次点菜单补绑 tg_id（管理员导出依赖）
+    # username 由调用方在有 sender 时先 bind；此处仅按 tg_id 判管理员
     menu_rows = [
         [InlineKeyboardButton(text="我的考勤", callbackData="att:profile")],
     ]
     # 非管理员只展示「我的考勤」；导出 / 班表仅管理员可见
     if is_admin(cursor, tg_id=actor_id):
-        shift_button = (
-            InlineKeyboardButton(text="班表", webAppUrl=shift_web_app_url)
-            if shift_web_app_url is not None
-            else InlineKeyboardButton(text="班表", callbackData="att:shift")
+        export_chat_id = resolve_admin_export_chat_id(cursor, tg_id=actor_id)
+        leave_export_only = is_leave_export_scope(chat_id=export_chat_id)
+        menu_rows.append(
+            [InlineKeyboardButton(text="导出", callbackData="att:export")]
         )
-        menu_rows.extend(
-            [
-                [InlineKeyboardButton(text="导出", callbackData="att:export")],
-                [shift_button],
-            ]
-        )
+        if not leave_export_only:
+            shift_button = (
+                InlineKeyboardButton(text="班表", webAppUrl=shift_web_app_url)
+                if shift_web_app_url is not None
+                else InlineKeyboardButton(text="班表", callbackData="att:shift")
+            )
+            menu_rows.append([shift_button])
     callback_actions = [] if callback_id is None else [
         AnswerCallbackAction(
             actionId=f"{request.eventId}.callback",
@@ -461,6 +488,40 @@ def _shift_web_app_url(
     )
 
 
+def _group_reply_keyboard(
+    *,
+    chat_id: int | None,
+    chat_title: str | None,
+) -> ReplyKeyboardMarkup:
+    if is_leave_return_keyboard_only_chat(
+        chat_id=chat_id,
+        chat_title=chat_title,
+    ):
+        rows = [
+            [
+                ReplyKeyboardButton(text="离岗"),
+                ReplyKeyboardButton(text="返岗"),
+            ],
+        ]
+    else:
+        rows = [
+            [
+                ReplyKeyboardButton(text="签到"),
+                ReplyKeyboardButton(text="签退"),
+            ],
+            [
+                ReplyKeyboardButton(text="离岗"),
+                ReplyKeyboardButton(text="返岗"),
+            ],
+        ]
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
+        resizeKeyboard=True,
+        isPersistent=True,
+        inputFieldPlaceholder="选下方按钮或输入消息",
+    )
+
+
 def _group_menu_response(
     request: GatewayEventRequest,
     update: TelegramMessageUpdate,
@@ -478,20 +539,9 @@ def _group_menu_response(
                 chatId=message.chat.id,
                 replyToMessageId=message.message_id,
                 text="功能菜单（底部按钮或 /start）",
-                replyMarkup=ReplyKeyboardMarkup(
-                    keyboard=[
-                        [
-                            ReplyKeyboardButton(text="签到"),
-                            ReplyKeyboardButton(text="签退"),
-                        ],
-                        [
-                            ReplyKeyboardButton(text="离岗"),
-                            ReplyKeyboardButton(text="返岗"),
-                        ],
-                    ],
-                    resizeKeyboard=True,
-                    isPersistent=True,
-                    inputFieldPlaceholder="选下方按钮或输入消息",
+                replyMarkup=_group_reply_keyboard(
+                    chat_id=message.chat.id,
+                    chat_title=message.chat.title,
                 ),
             )
         ],
@@ -1045,6 +1095,7 @@ def _show_leave_back_action(
     text, reply_markup = _leave_back_content(
         cursor,
         tg_id=callback.sender.id,
+        tg_username=callback.sender.username,
         chat_id=message.chat.id,
         chat_title=message.chat.title,
         operation=operation,
@@ -1074,6 +1125,7 @@ def _show_leave_back_message_action(
     text, reply_markup = _leave_back_content(
         cursor,
         tg_id=sender.id,
+        tg_username=sender.username,
         chat_id=message.chat.id,
         chat_title=message.chat.title,
         operation=operation,
@@ -1130,20 +1182,60 @@ def _switch_attendance_group(
     )
 
 
+def _registration_for_group_action(
+    cursor: Cursor,
+    *,
+    tg_id: int,
+    tg_username: str | None,
+    chat_id: int,
+    chat_title: str | None,
+):
+    if is_username_identity_chat(chat_id=chat_id, chat_title=chat_title):
+        username = normalize_tg_username(tg_username)
+        if not username:
+            return None, "missing_username"
+        registration = registrations_repo.get_by_tg_username_cur(
+            cursor,
+            tg_username=username,
+        )
+        if registration is None:
+            return None, "unknown_username"
+        return registration, None
+    registration = registrations_repo.get_by_tg_id_cur(cursor, tg_id=tg_id)
+    if registration is None:
+        return None, "unregistered"
+    return registration, None
+
+
+def _username_identity_unmatched_text(reason: str) -> str:
+    if reason == "missing_username":
+        return "本群按 Telegram 用户名识别，请先设置用户名后再点离岗/返岗。"
+    if reason == "unknown_username":
+        return "本群名单未包含你的 Telegram 用户名，请联系管理员。"
+    return "请先私聊机器人完成注册（英文名$工号）。"
+
+
 def _leave_back_content(
     cursor: Cursor,
     *,
     tg_id: int,
+    tg_username: str | None = None,
     chat_id: int,
     chat_title: str | None,
     operation: str,
     now_utc: datetime,
 ) -> tuple[str, InlineKeyboardMarkup | None]:
-    registration = registrations_repo.get_by_tg_id_cur(cursor, tg_id=tg_id)
+    registration, miss = _registration_for_group_action(
+        cursor,
+        tg_id=tg_id,
+        tg_username=tg_username,
+        chat_id=chat_id,
+        chat_title=chat_title,
+    )
     if registration is None:
         label = "离岗" if operation == "leave" else "返岗"
         return (
-            "请先私聊机器人完成注册（英文名$工号）。",
+            _username_identity_unmatched_text(miss or "unregistered"),
             InlineKeyboardMarkup(
                 inlineKeyboard=[[
                     InlineKeyboardButton(
@@ -1188,7 +1280,10 @@ def _leave_back_content(
                 int((now_utc - _as_utc(open_record.leave_at)).total_seconds() // 60),
             )
             duration = format_leave_duration_minutes(minutes)
-            overtime = minutes >= LEAVE_BACK_OVERTIME_MINUTES
+            overtime = minutes >= leave_overtime_minutes_for_chat(
+                chat_id=chat_id,
+                chat_title=chat_title,
+            )
         draft = build_back_draft(
             english_name=name,
             employee_id=registration.employee_id,
@@ -1323,9 +1418,28 @@ def _process_group_leave_report(
     sender = message.sender
     if sender is None:
         raise GatewayRouteOwnershipMismatchError()
-    registration = registrations_repo.get_by_tg_id_cur(cursor, tg_id=sender.id)
+    registration, miss = _registration_for_group_action(
+        cursor,
+        tg_id=sender.id,
+        tg_username=sender.username,
+        chat_id=message.chat.id,
+        chat_title=message.chat.title,
+    )
     if registration is None:
+        if miss in {"missing_username", "unknown_username"}:
+            return _group_report_message(
+                request,
+                chat_id=message.chat.id,
+                reply_to_message_id=message.message_id,
+                text=_username_identity_unmatched_text(miss),
+            )
         return _group_report_without_actions(request)
+
+    registrations_repo.bind_tg_id_if_username_matches_cur(
+        cursor,
+        tg_id=sender.id,
+        tg_username=sender.username,
+    )
 
     employee_id = registration.employee_id
     cursor.execute(

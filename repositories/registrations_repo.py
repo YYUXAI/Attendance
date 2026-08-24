@@ -20,26 +20,30 @@ class RegistrationRow:
     shift_id: Optional[int]
 
 
-def get_by_tg_username(tg_username: str) -> Optional[RegistrationRow]:
+def get_by_tg_username_cur(cur: Cursor, *, tg_username: str) -> Optional[RegistrationRow]:
     key = (tg_username or "").strip().lstrip("@").lower()
     if not key:
         return None
+    cur.execute(
+        """
+        SELECT id, employee_id, tg_id, english_name, tg_username, registered_chat_id,
+               organization_id, shift_id
+        FROM public.registrations
+        WHERE LOWER(TRIM(BOTH '@' FROM COALESCE(tg_username, ''))) = %s
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (key,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    return RegistrationRow(*row)
+
+
+def get_by_tg_username(tg_username: str) -> Optional[RegistrationRow]:
     with get_cursor() as cur:
-        cur.execute(
-            """
-            SELECT id, employee_id, tg_id, english_name, tg_username, registered_chat_id,
-                   organization_id, shift_id
-            FROM public.registrations
-            WHERE LOWER(TRIM(BOTH '@' FROM COALESCE(tg_username, ''))) = %s
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (key,),
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        return RegistrationRow(*row)
+        return get_by_tg_username_cur(cur, tg_username=tg_username)
 
 
 def get_by_tg_id_cur(cur: Cursor, *, tg_id: int) -> Optional[RegistrationRow]:
@@ -141,6 +145,7 @@ def upsert_preregistered_employee(
     employee_id: str,
     english_name: str,
     registered_chat_id: int | None = None,
+    tg_username: str | None = None,
 ) -> str:
     """
     预注册：仅工号+姓名，tg_id 为空。
@@ -148,17 +153,18 @@ def upsert_preregistered_employee(
     """
     eid = str(employee_id).strip()
     name = str(english_name or "").strip() or eid
+    username = (tg_username or "").strip().lstrip("@") or None
     existing = get_by_employee_id(eid)
     if existing is None:
         with get_cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO public.registrations
-                    (employee_id, tg_id, english_name, registered_at, registered_chat_id)
+                    (employee_id, tg_id, english_name, registered_at, registered_chat_id, tg_username)
                 VALUES
-                    (%s, NULL, %s, NOW(), %s)
+                    (%s, NULL, %s, NOW(), %s, %s)
                 """,
-                (eid, name, registered_chat_id),
+                (eid, name, registered_chat_id, username),
             )
         return "inserted"
     if existing.tg_id is not None:
@@ -168,12 +174,42 @@ def upsert_preregistered_employee(
             """
             UPDATE public.registrations
             SET english_name = %s,
-                registered_chat_id = COALESCE(%s, registered_chat_id)
+                registered_chat_id = COALESCE(%s, registered_chat_id),
+                tg_username = COALESCE(%s, tg_username)
             WHERE employee_id = %s AND tg_id IS NULL
             """,
-            (name, registered_chat_id, eid),
+            (name, registered_chat_id, username, eid),
         )
     return "updated"
+
+
+def bind_tg_id_if_username_matches_cur(
+    cur: Cursor,
+    *,
+    tg_id: int,
+    tg_username: str | None,
+) -> bool:
+    """预登记仅有 @用户名时：私聊/群内首次出现则补绑 tg_id。"""
+    key = (tg_username or "").strip().lstrip("@").lower()
+    if not key:
+        return False
+    if get_by_tg_id_cur(cur, tg_id=int(tg_id)) is not None:
+        return False
+    existing = get_by_tg_username_cur(cur, tg_username=key)
+    if existing is None or existing.tg_id is not None:
+        return False
+    # another registration already owns this tg_id? already checked above
+    cur.execute(
+        """
+        UPDATE public.registrations
+        SET tg_id = %s,
+            tg_username = COALESCE(tg_username, %s),
+            registered_at = COALESCE(registered_at, NOW())
+        WHERE employee_id = %s AND tg_id IS NULL
+        """,
+        (int(tg_id), key, str(existing.employee_id)),
+    )
+    return int(cur.rowcount or 0) > 0
 
 
 def bind_tg_to_registration(

@@ -27,8 +27,9 @@ from gateway_provider.contracts import (
     UnchangedSessionDirective,
 )
 from infra.admin_export_scope_config import admin_export_chat_id_for_employee
-from repositories import worker_schedule_repo
-from services import attendance_export_service
+from infra.leave_return_keyboard_only_config import is_leave_return_keyboard_only_chat
+from repositories import registrations_repo, worker_schedule_repo
+from services import attendance_export_service, leave_export_service
 
 
 log = logging.getLogger(__name__)
@@ -66,6 +67,23 @@ def resolve_admin_export_chat_id(cursor: Cursor, *, tg_id: int) -> int | None:
     return admin_export_chat_id_for_employee(employee_id=employee_id)
 
 
+def is_leave_export_scope(*, chat_id: int | None) -> bool:
+    return is_leave_return_keyboard_only_chat(chat_id=chat_id, chat_title=None)
+
+
+def ensure_admin_identity(
+    cursor: Cursor,
+    *,
+    tg_id: int,
+    tg_username: str | None,
+) -> None:
+    registrations_repo.bind_tg_id_if_username_matches_cur(
+        cursor,
+        tg_id=tg_id,
+        tg_username=tg_username,
+    )
+
+
 
 def process_export_callback(
     request: GatewayEventRequest,
@@ -78,11 +96,17 @@ def process_export_callback(
     message = callback.message
     if message.chat.type != "private" or callback.sender.id != message.chat.id:
         return _callback_reply(request, update, text="导出仅支持私聊中使用。")
+    ensure_admin_identity(
+        cursor,
+        tg_id=callback.sender.id,
+        tg_username=callback.sender.username,
+    )
     if not is_admin(cursor, tg_id=callback.sender.id):
         return _callback_reply(request, update, text="无权限操作")
     export_chat_id = resolve_admin_export_chat_id(cursor, tg_id=callback.sender.id)
     if export_chat_id is None:
         return _callback_reply(request, update, text=MSG_NO_EXPORT_SCOPE)
+    leave_mode = is_leave_export_scope(chat_id=export_chat_id)
     if callback.data == "att:export":
         return _callback_reply(
             request,
@@ -100,6 +124,7 @@ def process_export_callback(
         kind=kind,
         today=today,
     )
+    progress_noun = "离岗返岗导出" if leave_mode else "考勤导出"
     progress_action_id = f"{request.eventId}.progress"
     initial_actions = [
         AnswerCallbackAction(
@@ -113,7 +138,7 @@ def process_export_callback(
             chatId=message.chat.id,
             replyToMessageId=message.message_id,
             text=(
-                f"正在生成{range_label}考勤导出（{start.isoformat()}～"
+                f"正在生成{range_label}{progress_noun}（{start.isoformat()}～"
                 f"{end.isoformat()}），请稍候…"
             ),
         ),
@@ -147,25 +172,41 @@ def process_export_callback(
             actions=initial_actions,
         )
     try:
-        rows = asyncio.run(
-            attendance_export_service.collect_rows_for_single_group(
+        if leave_mode:
+            leave_rows = leave_export_service.collect_leave_rows_for_chat(
                 chat_id=export_chat_id,
                 start=start,
                 end=end,
             )
-        )
-        pivot, overview, dates = attendance_export_service.build_pivot_and_overview(
-            rows=rows,
-            start=start,
-            end=end,
-        )
-        body = attendance_export_service.encode_attendance_export_xlsx(
-            pivot=pivot,
-            dates=dates,
-            overview=overview,
-            range_label=range_label,
-        )
-        body = _deterministic_xlsx(body, generated_at=received_at)
+            body = leave_export_service.encode_leave_export_xlsx(rows=leave_rows)
+            body = _deterministic_xlsx(body, generated_at=received_at)
+            caption = f"{range_label}离岗返岗导出（{len(leave_rows)} 条）"
+            file_name = leave_export_service.leave_export_filename(start=start, end=end)
+        else:
+            rows = asyncio.run(
+                attendance_export_service.collect_rows_for_single_group(
+                    chat_id=export_chat_id,
+                    start=start,
+                    end=end,
+                )
+            )
+            pivot, overview, dates = attendance_export_service.build_pivot_and_overview(
+                rows=rows,
+                start=start,
+                end=end,
+            )
+            body = attendance_export_service.encode_attendance_export_xlsx(
+                pivot=pivot,
+                dates=dates,
+                overview=overview,
+                range_label=range_label,
+            )
+            body = _deterministic_xlsx(body, generated_at=received_at)
+            caption = f"{range_label}考勤导出（{overview.expected_count} 人）"
+            file_name = attendance_export_service.export_filename(
+                start=start,
+                end=end,
+            )
     except Exception:
         log.exception("Attendance export generation failed")
         return GatewayEventResponse(
@@ -197,14 +238,11 @@ def process_export_callback(
                 type="SEND_DOCUMENT",
                 chatId=message.chat.id,
                 replyToMessageId=message.message_id,
-                caption=f"{range_label}考勤导出（{overview.expected_count} 人）",
+                caption=caption,
                 document=BytesMediaSource(
                     source="BYTES",
                     contentBase64=base64.b64encode(body).decode("ascii"),
-                    fileName=attendance_export_service.export_filename(
-                        start=start,
-                        end=end,
-                    ),
+                    fileName=file_name,
                     mimeType=_XLSX_MIME_TYPE,
                 ),
             ),
@@ -223,15 +261,21 @@ def process_export_message(
     if message.chat.type != "private" or sender is None:
         text = "导出仅支持私聊中使用。"
         reply_markup = None
-    elif not is_admin(cursor, tg_id=sender.id):
-        text = "无权限操作"
-        reply_markup = None
-    elif resolve_admin_export_chat_id(cursor, tg_id=sender.id) is None:
-        text = MSG_NO_EXPORT_SCOPE
-        reply_markup = None
     else:
-        text = "请选择导出范围："
-        reply_markup = _range_keyboard()
+        ensure_admin_identity(
+            cursor,
+            tg_id=sender.id,
+            tg_username=sender.username,
+        )
+        if not is_admin(cursor, tg_id=sender.id):
+            text = "无权限操作"
+            reply_markup = None
+        elif resolve_admin_export_chat_id(cursor, tg_id=sender.id) is None:
+            text = MSG_NO_EXPORT_SCOPE
+            reply_markup = None
+        else:
+            text = "请选择导出范围："
+            reply_markup = _range_keyboard()
     return GatewayEventResponse(
         protocolVersion="1.0",
         eventId=request.eventId,

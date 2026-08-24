@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from infra.attendance_group_policy import title_has_capability
+from infra.leave_return_keyboard_only_config import leave_overtime_minutes_for_chat
 from repositories import temporary_leave_records_repo
 
 # YYMG 返岗模板：离岗时长 >= 21 分钟时追加「提示：你已超时」
@@ -43,6 +44,7 @@ def compute_open_leave_draft_info(
     *,
     employee_id: str,
     chat_id: int,
+    chat_title: str | None = None,
     now_utc: datetime | None = None,
 ) -> OpenLeaveDraftInfo | None:
     """未返岗记录的离岗时长（用于返岗模板预填）。"""
@@ -61,9 +63,13 @@ def compute_open_leave_draft_info(
     if ref.tzinfo is None:
         ref = ref.replace(tzinfo=timezone.utc)
     mins = max(0, int((ref - leave_at).total_seconds() // 60))
+    threshold = leave_overtime_minutes_for_chat(
+        chat_id=chat_id,
+        chat_title=chat_title,
+    )
     return OpenLeaveDraftInfo(
         duration_text=format_leave_duration_minutes(mins),
-        overtime=mins >= LEAVE_BACK_OVERTIME_MINUTES,
+        overtime=mins >= threshold,
     )
 
 
