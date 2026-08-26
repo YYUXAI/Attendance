@@ -1142,6 +1142,40 @@ def test_username_identity_group_leave_matches_preregistered_username() -> None:
     ]
 
 
+def test_qdyyz_username_identity_leave_matches_preregistered_username() -> None:
+    _apply_gateway_provider_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, tg_username, registered_chat_id
+                ) VALUES (%s, %s, NULL, %s, %s)
+                """,
+                ("71660", "Molton", "Y_YY_MOLTON", -1004373351741),
+            )
+    event = _group_action_command_event("离岗")
+    event["eventId"] = "evt-attendance-qdyyz-username-identity"
+    message = event["telegramUpdate"]["message"]
+    message["chat"]["id"] = -1004373351741
+    message["chat"]["title"] = "QDYYZ 打卡报备群"
+    message["from"]["username"] = "Y_YY_MOLTON"
+    message["from"]["id"] = 999002
+
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=event,
+    )
+
+    assert response.status_code == 200, response.text
+    reply = response.json()["actions"][0]
+    assert reply["text"] == "请点击下方按钮操作"
+    assert "人员：Molton" in reply["replyMarkup"]["inlineKeyboard"][0][0][
+        "switchInlineQueryCurrentChat"
+    ]
+
+
 def test_homepage_attendance_button_reuses_the_private_menu_and_answers_callback() -> None:
     _apply_gateway_provider_migration()
     event = _profile_callback_event()

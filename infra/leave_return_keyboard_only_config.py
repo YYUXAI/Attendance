@@ -1,4 +1,4 @@
-"""仅 T-上班报备群：群底部 reply keyboard 只展示离岗/返岗。"""
+"""T 群：底部键盘仅离岗/返岗；T/QDYYZ：按 @用户名认人。"""
 from __future__ import annotations
 
 _DEFAULT_CHAT_IDS: frozenset[int] = frozenset(
@@ -9,6 +9,20 @@ _DEFAULT_CHAT_IDS: frozenset[int] = frozenset(
 _DEFAULT_TITLES: frozenset[str] = frozenset(
     {
         "T-上班报备群",
+    }
+)
+
+# 按 @username 认人（可不绑 tg_id）；含 T 群 + QDYYZ
+_USERNAME_IDENTITY_CHAT_IDS: frozenset[int] = frozenset(
+    {
+        -1002176838761,  # T-上班报备群
+        -1004373351741,  # QDYYZ 打卡报备群
+    }
+)
+_USERNAME_IDENTITY_TITLES: frozenset[str] = frozenset(
+    {
+        "T-上班报备群",
+        "QDYYZ 打卡报备群",
     }
 )
 
@@ -34,10 +48,10 @@ def is_username_identity_chat(
     chat_title: str | None = None,
 ) -> bool:
     """本群用 Telegram @用户名当名单唯一键，不要求私聊绑定 tg_id。"""
-    return is_leave_return_keyboard_only_chat(
-        chat_id=chat_id,
-        chat_title=chat_title,
-    )
+    if chat_id is not None and int(chat_id) in _USERNAME_IDENTITY_CHAT_IDS:
+        return True
+    title = (chat_title or "").strip()
+    return bool(title and title in _USERNAME_IDENTITY_TITLES)
 
 
 def normalize_tg_username(value: str | None) -> str:

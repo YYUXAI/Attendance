@@ -29,6 +29,10 @@ from infra.checkin_ai_config import load_checkin_ai_config
 from infra.checkin_employee_id_only_config import requires_employee_id_only_checkin
 from infra.checkin_remote_diff_config import requires_remote_diff_checkin
 from infra.bbq_google_sheets_config import load_bbq_google_sheets_config
+from infra.leave_return_keyboard_only_config import (
+    is_username_identity_chat,
+    normalize_tg_username,
+)
 from infra.test_group_google_config import is_test_group_chat
 from infra.test_group_google_config import load_test_group_google_config
 from repositories import clock_records_repo, registrations_repo, worker_schedule_repo
@@ -65,9 +69,20 @@ def process_group_checkin(
     if attachment.kind != expected_kind:
         return _reply(request, update, "打卡失败：附件类型不匹配，请重新发送截图。")
 
-    registration = registrations_repo.get_by_tg_id_cur(cursor, tg_id=sender.id)
+    registration, miss = _registration_for_checkin(
+        cursor,
+        tg_id=sender.id,
+        tg_username=sender.username,
+        chat_id=message.chat.id,
+        chat_title=message.chat.title,
+    )
     if registration is None:
-        return _reply(request, update, "打卡失败，您尚未注册")
+        return _reply(request, update, _checkin_unregistered_text(miss))
+    registrations_repo.bind_tg_id_if_username_matches_cur(
+        cursor,
+        tg_id=sender.id,
+        tg_username=sender.username,
+    )
     sent_at_utc = datetime.fromtimestamp(message.date, tz=timezone.utc)
     year_month = sent_at_utc.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m")
     roster_source = checkin_service.formal_group_roster_source_for_chat(
@@ -333,6 +348,39 @@ def _resolve_checkin(
             registration=registration,
         )
     )
+
+
+def _registration_for_checkin(
+    cursor: Cursor,
+    *,
+    tg_id: int,
+    tg_username: str | None,
+    chat_id: int,
+    chat_title: str | None,
+):
+    if is_username_identity_chat(chat_id=chat_id, chat_title=chat_title):
+        username = normalize_tg_username(tg_username)
+        if not username:
+            return None, "missing_username"
+        registration = registrations_repo.get_by_tg_username_cur(
+            cursor,
+            tg_username=username,
+        )
+        if registration is None:
+            return None, "unknown_username"
+        return registration, None
+    registration = registrations_repo.get_by_tg_id_cur(cursor, tg_id=tg_id)
+    if registration is None:
+        return None, "unregistered"
+    return registration, None
+
+
+def _checkin_unregistered_text(reason: str | None) -> str:
+    if reason == "missing_username":
+        return "本群按 Telegram 用户名识别，请先设置用户名后再打卡。"
+    if reason == "unknown_username":
+        return "本群名单未包含你的 Telegram 用户名，请联系管理员。"
+    return "打卡失败，您尚未注册"
 
 
 def _reply(
