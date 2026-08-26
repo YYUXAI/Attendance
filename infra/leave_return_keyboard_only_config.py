@@ -1,14 +1,16 @@
-"""T 群：底部键盘仅离岗/返岗；T/QDYYZ：按 @用户名认人。"""
+"""T/QDYYZ：底部键盘仅离岗/返岗；并按 @用户名认人。T 群离岗超时 30 分钟。"""
 from __future__ import annotations
 
-_DEFAULT_CHAT_IDS: frozenset[int] = frozenset(
+_LEAVE_RETURN_KEYBOARD_ONLY_CHAT_IDS: frozenset[int] = frozenset(
     {
         -1002176838761,  # T-上班报备群
+        -1004373351741,  # QDYYZ 打卡报备群
     }
 )
-_DEFAULT_TITLES: frozenset[str] = frozenset(
+_LEAVE_RETURN_KEYBOARD_ONLY_TITLES: frozenset[str] = frozenset(
     {
         "T-上班报备群",
+        "QDYYZ 打卡报备群",
     }
 )
 
@@ -26,9 +28,11 @@ _USERNAME_IDENTITY_TITLES: frozenset[str] = frozenset(
     }
 )
 
-# 默认与 YYMG 一致；T 群单独 30 分钟
+# 默认与 YYMG 一致；仅 T 群 30 分钟
 _DEFAULT_LEAVE_OVERTIME_MINUTES = 21
 _T_GROUP_LEAVE_OVERTIME_MINUTES = 30
+_T_GROUP_CHAT_IDS: frozenset[int] = frozenset({-1002176838761})
+_T_GROUP_TITLES: frozenset[str] = frozenset({"T-上班报备群"})
 
 
 def is_leave_return_keyboard_only_chat(
@@ -36,10 +40,10 @@ def is_leave_return_keyboard_only_chat(
     chat_id: int | None,
     chat_title: str | None = None,
 ) -> bool:
-    if chat_id is not None and int(chat_id) in _DEFAULT_CHAT_IDS:
+    if chat_id is not None and int(chat_id) in _LEAVE_RETURN_KEYBOARD_ONLY_CHAT_IDS:
         return True
     title = (chat_title or "").strip()
-    return bool(title and title in _DEFAULT_TITLES)
+    return bool(title and title in _LEAVE_RETURN_KEYBOARD_ONLY_TITLES)
 
 
 def is_username_identity_chat(
@@ -63,6 +67,9 @@ def leave_overtime_minutes_for_chat(
     chat_id: int | None,
     chat_title: str | None = None,
 ) -> int:
-    if is_leave_return_keyboard_only_chat(chat_id=chat_id, chat_title=chat_title):
+    if chat_id is not None and int(chat_id) in _T_GROUP_CHAT_IDS:
+        return _T_GROUP_LEAVE_OVERTIME_MINUTES
+    title = (chat_title or "").strip()
+    if title and title in _T_GROUP_TITLES:
         return _T_GROUP_LEAVE_OVERTIME_MINUTES
     return _DEFAULT_LEAVE_OVERTIME_MINUTES
