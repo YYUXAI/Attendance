@@ -84,6 +84,8 @@ ux test restart attendance
 
 当前 candidate 声明一个群：`ux助手考勤测试群`，使用 `main` roster 与 `standard-checkin`。active 状态必须以 `ux test config --redacted --json` 和受控激活后的 runtime drift 为准；文档不是运行真相。
 
+`ux助手考勤测试群` 在代码层固定启用与正式考勤测试群一致的 **AI 识图试跑（不入库）**：注册员工若不在当月 `main` 班表，走完整识图校验并返回可读结果，但不写入 `clock_records`；在班表内则正常入库。试跑识图 **直接走智谱 glm-4v-flash**，跳过 OCR.space，也不使用 premium glm-4.6v。该行为不依赖 `ai-dry-run-no-persist` capability（与 `test-group-google-sheets` 可并存于不同群，本群仅 standard-checkin 即可）。
+
 ## 尚未迁移
 
 此接口已经覆盖当前长期运行的群级能力。历史导入/诊断脚本仍属于一次性维护工具，不是运行配置源。新增能力必须先归类为 group capability、公开 Attendance 配置、数据库业务事实、test-only 应用凭据或宿主受保护凭据，不能新增 chat-ID/routeKey 环境变量。
