@@ -50,6 +50,7 @@ def build_back_draft(
     employee_id: str,
     leave_duration: str | None = None,
     leave_overtime: bool = False,
+    leave_reason: str | None = None,
     now_local: datetime | None = None,
 ) -> str:
     del employee_id
@@ -63,7 +64,8 @@ def build_back_draft(
         text += f"离岗时长：{leave_duration}\n"
     if leave_overtime:
         text += "提示：你已超时\n"
-    return text + "原因："
+    reason = " ".join(str(leave_reason or "").split()).strip()[:500]
+    return text + f"原因：{reason}"
 
 
 def _time_text(value: datetime | None) -> str:

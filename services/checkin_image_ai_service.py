@@ -2335,13 +2335,18 @@ async def extract_checkin_from_image(
     skip_name_verify: bool = False,
     chat_id: int | None = None,
     chat_title: str | None = None,
+    quality_inspection: bool = False,
 ) -> tuple[Optional[CheckinImageExtraction], Optional[CheckinAiExtractError]]:
     if not image_bytes:
         return None, CheckinAiExtractError("AI_EMPTY_IMAGE", "打卡失败，图片为空")
 
     from infra.checkin_ocrspace_config import is_ocrspace_extract_chat
 
-    if is_ocrspace_extract_chat(chat_id=chat_id, chat_title=chat_title):
+    ocrspace_zhipu_fallback = False
+    if (
+        not quality_inspection
+        and is_ocrspace_extract_chat(chat_id=chat_id, chat_title=chat_title)
+    ):
         from services.checkin_ocrspace_service import (
             extract_checkin_from_ocrspace,
             is_ocrspace_infra_failure,
@@ -2369,29 +2374,56 @@ async def extract_checkin_from_image(
             )
             return ocr_ext, ocr_err
         log.warning(
-            "checkin_ai: ocrspace infra fail code=%s -> fallback zhipu chat_id=%s",
+            "checkin_ai: ocrspace infra fail code=%s -> fallback zhipu(flash,google_beijing) chat_id=%s",
             ocr_err.error_code,
             chat_id,
         )
+        ocrspace_zhipu_fallback = True
 
     if config.zhipu:
-        from infra.checkin_ai_config import resolve_checkin_ai_config_for_chat
-        from services.checkin_zhipu_vision_service import extract_checkin_from_zhipu_vision
+        from infra.checkin_ai_config import (
+            base_zhipu_config_for_quality_inspection,
+            resolve_checkin_ai_config_for_chat,
+        )
+        from services.checkin_zhipu_vision_service import (
+            extract_checkin_from_zhipu_ocrspace_fallback,
+            extract_checkin_from_zhipu_vision,
+        )
 
-        config = resolve_checkin_ai_config_for_chat(
-            config,
-            chat_id=chat_id,
-            chat_title=chat_title,
+        if ocrspace_zhipu_fallback:
+            zhipu_config = base_zhipu_config_for_quality_inspection(config)
+            log.info(
+                "checkin_ai: extract_backend=zhipu(ocrspace_fallback) model=%s chat_id=%s",
+                zhipu_config.model,
+                chat_id,
+            )
+            return await extract_checkin_from_zhipu_ocrspace_fallback(
+                image_bytes=image_bytes,
+                config=zhipu_config,
+                reference_utc=reference_utc,
+                shift_timezone=shift_timezone,
+                tg_id=tg_id,
+            )
+
+        zhipu_config = (
+            base_zhipu_config_for_quality_inspection(config)
+            if quality_inspection
+            else resolve_checkin_ai_config_for_chat(
+                config,
+                chat_id=chat_id,
+                chat_title=chat_title,
+            )
         )
         log.info(
-            "checkin_ai: extract_backend=zhipu model=%s base=%s chat_id=%s",
-            config.model,
-            config.base_url,
+            "checkin_ai: extract_backend=zhipu model=%s base=%s chat_id=%s qc=%s",
+            zhipu_config.model,
+            zhipu_config.base_url,
             chat_id,
+            quality_inspection,
         )
         return await extract_checkin_from_zhipu_vision(
             image_bytes=image_bytes,
-            config=config,
+            config=zhipu_config,
             expected_tg_username=expected_tg_username,
             expected_english_name=expected_english_name,
             reference_utc=reference_utc,

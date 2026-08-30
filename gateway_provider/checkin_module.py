@@ -155,6 +155,7 @@ def process_group_checkin(
         chat_id=message.chat.id,
         chat_title=message.chat.title,
         registration=registration,
+        quality_inspection=ai_dry_run,
     )
     if isinstance(resolved, ServiceResult):
         return _reply_after_progress(
@@ -326,6 +327,7 @@ def _resolve_checkin(
     chat_id: int,
     chat_title: str | None,
     registration: registrations_repo.RegistrationRow,
+    quality_inspection: bool = False,
 ) -> ServiceResult | checkin_ai_orchestrator.CheckinAiResolveResult:
     config = load_checkin_ai_config()
     if not config.enabled:
@@ -346,6 +348,7 @@ def _resolve_checkin(
             chat_id=chat_id,
             chat_title=chat_title,
             registration=registration,
+            quality_inspection=quality_inspection,
         )
     )
 
@@ -360,15 +363,19 @@ def _registration_for_checkin(
 ):
     if is_username_identity_chat(chat_id=chat_id, chat_title=chat_title):
         username = normalize_tg_username(tg_username)
+        if username:
+            registration = registrations_repo.get_by_tg_username_cur(
+                cursor,
+                tg_username=username,
+            )
+            if registration is not None:
+                return registration, None
+        by_tg_id = registrations_repo.get_by_tg_id_cur(cursor, tg_id=tg_id)
+        if by_tg_id is not None:
+            return by_tg_id, None
         if not username:
             return None, "missing_username"
-        registration = registrations_repo.get_by_tg_username_cur(
-            cursor,
-            tg_username=username,
-        )
-        if registration is None:
-            return None, "unknown_username"
-        return registration, None
+        return None, "unknown_username"
     registration = registrations_repo.get_by_tg_id_cur(cursor, tg_id=tg_id)
     if registration is None:
         return None, "unregistered"
@@ -377,9 +384,9 @@ def _registration_for_checkin(
 
 def _checkin_unregistered_text(reason: str | None) -> str:
     if reason == "missing_username":
-        return "本群按 Telegram 用户名识别，请先设置用户名后再打卡。"
+        return "本群优先按 Telegram 用户名识别；未设置用户名时请先私聊机器人完成注册后再打卡。"
     if reason == "unknown_username":
-        return "本群名单未包含你的 Telegram 用户名，请联系管理员。"
+        return "本群名单未包含你的 Telegram 用户名，请联系管理员或私聊机器人完成注册。"
     return "打卡失败，您尚未注册"
 
 

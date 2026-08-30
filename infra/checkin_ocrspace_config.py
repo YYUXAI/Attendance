@@ -1,4 +1,4 @@
-"""UX 考勤：仅 ux助手考勤测试群走 OCR.space（分块/规则/Key 轮换；基建失败回退智谱）。"""
+"""UX 考勤：ux助手考勤测试群 + QDYYZ 走 OCR.space（QDYYZ 仅校验时间/日期；测试群仍含姓名）。"""
 from __future__ import annotations
 
 import os
@@ -8,11 +8,13 @@ from pathlib import Path
 _DEFAULT_EXTRACT_CHAT_IDS: frozenset[int] = frozenset(
     {
         -1004347063533,  # ux助手考勤测试群
+        -1004373351741,  # QDYYZ 打卡报备群
     }
 )
 _DEFAULT_EXTRACT_TITLES: frozenset[str] = frozenset(
     {
         "ux助手考勤测试群",
+        "QDYYZ 打卡报备群",
     }
 )
 

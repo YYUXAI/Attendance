@@ -535,4 +535,6 @@ async def extract_checkin_from_ocrspace(
                 "请截含 TIME.IS 大钟 + Slack 浮窗的清晰图后重试。"
             ),
         )
+    if not extraction.clock_time:
+        return None, CheckinAiExtractError("AI_TIME_NOT_FOUND", MSG_TIME_MISMATCH)
     return extraction, None

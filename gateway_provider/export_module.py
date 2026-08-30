@@ -27,20 +27,32 @@ from gateway_provider.contracts import (
     UnchangedSessionDirective,
 )
 from infra.admin_export_scope_config import admin_export_chat_id_for_employee
-from infra.leave_return_keyboard_only_config import is_leave_return_keyboard_only_chat
+from infra.leave_return_keyboard_only_config import (
+    is_leave_return_keyboard_only_chat,
+    is_qdyyz_chat,
+)
 from repositories import registrations_repo, worker_schedule_repo
 from services import attendance_export_service, leave_export_service
 
 
 log = logging.getLogger(__name__)
 
-_EXPORT_KINDS: dict[str, attendance_export_service.ExportRangeKind] = {
-    "att:export:today": "today",
-    "att:export:yesterday": "yesterday",
-    "att:export:week": "week",
-    "att:export:last_week": "last_week",
-    "att:export:month": "month",
-    "att:export:last_month": "last_month",
+ExportMode = str  # "attendance" | "leave"
+
+_RANGE_KINDS: dict[str, attendance_export_service.ExportRangeKind] = {
+    "today": "today",
+    "yesterday": "yesterday",
+    "week": "week",
+    "last_week": "last_week",
+    "month": "month",
+    "last_month": "last_month",
+}
+_LEGACY_EXPORT_KINDS: dict[str, attendance_export_service.ExportRangeKind] = {
+    f"att:export:{suffix}": kind for suffix, kind in _RANGE_KINDS.items()
+}
+_MODE_ENTRY_CALLBACKS = {
+    "att:export:attendance": "attendance",
+    "att:export:leave": "leave",
 }
 _XLSX_MIME_TYPE = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -71,6 +83,11 @@ def is_leave_export_scope(*, chat_id: int | None) -> bool:
     return is_leave_return_keyboard_only_chat(chat_id=chat_id, chat_title=None)
 
 
+def is_dual_admin_export_scope(*, chat_id: int | None) -> bool:
+    """QDYYZ：管理员菜单同时提供考勤导出与报备导出。"""
+    return is_qdyyz_chat(chat_id=chat_id, chat_title=None)
+
+
 def ensure_admin_identity(
     cursor: Cursor,
     *,
@@ -82,7 +99,6 @@ def ensure_admin_identity(
         tg_id=tg_id,
         tg_username=tg_username,
     )
-
 
 
 def process_export_callback(
@@ -106,17 +122,27 @@ def process_export_callback(
     export_chat_id = resolve_admin_export_chat_id(cursor, tg_id=callback.sender.id)
     if export_chat_id is None:
         return _callback_reply(request, update, text=MSG_NO_EXPORT_SCOPE)
-    leave_mode = is_leave_export_scope(chat_id=export_chat_id)
-    if callback.data == "att:export":
+    dual_mode = is_dual_admin_export_scope(chat_id=export_chat_id)
+    default_leave_mode = is_leave_export_scope(chat_id=export_chat_id) and not dual_mode
+    entry_mode = _MODE_ENTRY_CALLBACKS.get(callback.data)
+    if callback.data == "att:export" or entry_mode is not None:
+        mode: ExportMode = entry_mode or (
+            "leave" if default_leave_mode else "attendance"
+        )
         return _callback_reply(
             request,
             update,
             text="请选择导出范围：",
-            reply_markup=_range_keyboard(),
+            reply_markup=_range_keyboard(mode=mode),
         )
-    kind = _EXPORT_KINDS.get(callback.data)
-    if kind is None:
+    parsed = _parse_export_range_callback(
+        callback.data,
+        default_leave_mode=default_leave_mode,
+    )
+    if parsed is None:
         return _callback_reply(request, update, text="导出范围无效，请重新选择。")
+    export_mode, kind = parsed
+    leave_mode = export_mode == "leave"
 
     received_at = datetime.fromisoformat(request.receivedAt.replace("Z", "+00:00"))
     today = received_at.astimezone(ZoneInfo("Asia/Shanghai")).date()
@@ -124,7 +150,7 @@ def process_export_callback(
         kind=kind,
         today=today,
     )
-    progress_noun = "离岗返岗导出" if leave_mode else "考勤导出"
+    progress_noun = "报备导出" if leave_mode else "考勤导出"
     progress_action_id = f"{request.eventId}.progress"
     initial_actions = [
         AnswerCallbackAction(
@@ -180,7 +206,7 @@ def process_export_callback(
             )
             body = leave_export_service.encode_leave_export_xlsx(rows=leave_rows)
             body = _deterministic_xlsx(body, generated_at=received_at)
-            caption = f"{range_label}离岗返岗导出（{len(leave_rows)} 条）"
+            caption = f"{range_label}报备导出（{len(leave_rows)} 条）"
             file_name = leave_export_service.leave_export_filename(start=start, end=end)
         else:
             rows = asyncio.run(
@@ -255,6 +281,8 @@ def process_export_message(
     request: GatewayEventRequest,
     cursor: Cursor,
     update: TelegramMessageUpdate,
+    *,
+    export_mode: ExportMode | None = None,
 ) -> GatewayEventResponse:
     message = update.message
     sender = message.sender
@@ -270,12 +298,36 @@ def process_export_message(
         if not is_admin(cursor, tg_id=sender.id):
             text = "无权限操作"
             reply_markup = None
-        elif resolve_admin_export_chat_id(cursor, tg_id=sender.id) is None:
-            text = MSG_NO_EXPORT_SCOPE
-            reply_markup = None
         else:
-            text = "请选择导出范围："
-            reply_markup = _range_keyboard()
+            export_chat_id = resolve_admin_export_chat_id(cursor, tg_id=sender.id)
+            if export_chat_id is None:
+                text = MSG_NO_EXPORT_SCOPE
+                reply_markup = None
+            elif is_dual_admin_export_scope(chat_id=export_chat_id) and export_mode is None:
+                text = "请选择导出类型："
+                reply_markup = InlineKeyboardMarkup(
+                    inlineKeyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="考勤导出",
+                                callbackData="att:export:attendance",
+                            ),
+                            InlineKeyboardButton(
+                                text="报备导出",
+                                callbackData="att:export:leave",
+                            ),
+                        ]
+                    ]
+                )
+            else:
+                dual = is_dual_admin_export_scope(chat_id=export_chat_id)
+                mode: ExportMode = export_mode or (
+                    "leave"
+                    if is_leave_export_scope(chat_id=export_chat_id) and not dual
+                    else "attendance"
+                )
+                text = "请选择导出范围："
+                reply_markup = _range_keyboard(mode=mode)
     return GatewayEventResponse(
         protocolVersion="1.0",
         eventId=request.eventId,
@@ -295,7 +347,13 @@ def process_export_message(
 
 
 def is_export_callback(data: str) -> bool:
-    return data == "att:export" or data in _EXPORT_KINDS
+    if data == "att:export" or data in _MODE_ENTRY_CALLBACKS:
+        return True
+    if data in _LEGACY_EXPORT_KINDS:
+        return True
+    return any(
+        data.startswith(f"att:export:{mode}:") for mode in ("attendance", "leave")
+    )
 
 
 def is_admin(cursor: Cursor, *, tg_id: int) -> bool:
@@ -315,30 +373,42 @@ def is_admin(cursor: Cursor, *, tg_id: int) -> bool:
     return bool(row and row[0])
 
 
-def _range_keyboard() -> InlineKeyboardMarkup:
+def _range_keyboard(*, mode: ExportMode = "attendance") -> InlineKeyboardMarkup:
+    def _cb(kind: str) -> str:
+        return f"att:export:{mode}:{kind}"
+
     return InlineKeyboardMarkup(
         inlineKeyboard=[
             [
-                InlineKeyboardButton(text="今日", callbackData="att:export:today"),
-                InlineKeyboardButton(text="本周", callbackData="att:export:week"),
-                InlineKeyboardButton(text="本月", callbackData="att:export:month"),
+                InlineKeyboardButton(text="今日", callbackData=_cb("today")),
+                InlineKeyboardButton(text="本周", callbackData=_cb("week")),
+                InlineKeyboardButton(text="本月", callbackData=_cb("month")),
             ],
             [
-                InlineKeyboardButton(
-                    text="昨天",
-                    callbackData="att:export:yesterday",
-                ),
-                InlineKeyboardButton(
-                    text="上周",
-                    callbackData="att:export:last_week",
-                ),
-                InlineKeyboardButton(
-                    text="上月",
-                    callbackData="att:export:last_month",
-                ),
+                InlineKeyboardButton(text="昨天", callbackData=_cb("yesterday")),
+                InlineKeyboardButton(text="上周", callbackData=_cb("last_week")),
+                InlineKeyboardButton(text="上月", callbackData=_cb("last_month")),
             ],
         ]
     )
+
+
+def _parse_export_range_callback(
+    data: str,
+    *,
+    default_leave_mode: bool,
+) -> tuple[ExportMode, attendance_export_service.ExportRangeKind] | None:
+    for mode in ("attendance", "leave"):
+        prefix = f"att:export:{mode}:"
+        if data.startswith(prefix):
+            kind = _RANGE_KINDS.get(data[len(prefix) :])
+            if kind is None:
+                return None
+            return mode, kind
+    kind = _LEGACY_EXPORT_KINDS.get(data)
+    if kind is None:
+        return None
+    return ("leave" if default_leave_mode else "attendance"), kind
 
 
 def _callback_reply(

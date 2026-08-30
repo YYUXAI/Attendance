@@ -1465,6 +1465,251 @@ async def detect_avatar_menu_via_zhipu(
     return "true" in low and ("avatar" in low or "头像" in text)
 
 
+async def _apply_google_beijing_clock_resolution(
+    *,
+    data: dict[str, Any],
+    raw: str,
+    config: CheckinAiConfig,
+    reference_utc: datetime | None,
+    shift_timezone: str,
+    base_url: str,
+    model: str,
+    api_key: str,
+    image_b64: str,
+    tg_id: int | None,
+) -> dict[str, Any]:
+    """Google「北京时间」页：24 小时制校正 + 偏差过大时整图重试。"""
+    from services.checkin_clock_time_service import (
+        normalize_clock_date_month_day,
+        resolve_remote_diff_clock_time,
+    )
+
+    data = _normalize_remote_diff_data(data)
+    ref_dt = reference_utc if isinstance(reference_utc, datetime) else None
+    if ref_dt is not None and ref_dt.tzinfo is None:
+        ref_dt = ref_dt.replace(tzinfo=timezone.utc)
+    expected_date = _expected_date_for_parse(
+        reference_utc=ref_dt, shift_timezone=shift_timezone
+    )
+
+    extraction_probe = _parse_extraction_payload(data)
+    extraction_probe = _patch_missing_clock_date(
+        extraction=extraction_probe,
+        raw=raw,
+        expected_date=expected_date,
+    )
+    if extraction_probe.clock_date:
+        norm_date = normalize_clock_date_month_day(extraction_probe.clock_date)
+        if norm_date:
+            data = dict(data)
+            data["clock_date"] = norm_date
+
+    resolved_time = resolve_remote_diff_clock_time(
+        clock_time=_remote_nullable_str(data.get("clock_time")),
+        clock_period=_remote_nullable_str(data.get("clock_period") or data.get("am_pm")),
+        raw_text=raw or "",
+        reference_utc=ref_dt,
+        shift_timezone=shift_timezone,
+        max_skew_minutes=int(config.max_clock_skew_minutes),
+    )
+    if resolved_time and resolved_time != data.get("clock_time"):
+        data = dict(data)
+        data["clock_time"] = resolved_time
+        log.info(
+            "checkin_zhipu: google_beijing clock normalized %r -> %r",
+            extraction_probe.clock_time,
+            resolved_time,
+        )
+
+    max_skew = int(config.max_clock_skew_minutes)
+    cur_time = _remote_nullable_str(data.get("clock_time"))
+    cur_skew = _remote_clock_skew_minutes(
+        clock_time=cur_time,
+        reference_utc=ref_dt,
+        shift_timezone=shift_timezone,
+    )
+    if ref_dt is not None and cur_skew is not None and cur_skew > max_skew:
+        log.info(
+            "checkin_zhipu: google_beijing clock skew %.1fm > %sm (%r), retry",
+            cur_skew,
+            max_skew,
+            cur_time,
+        )
+        time_patch = await _remote_diff_time_fallback_full(
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            image_b64=image_b64,
+            timeout_seconds=config.timeout_seconds,
+            tg_id=tg_id,
+        )
+        if time_patch:
+            fb_resolved = resolve_remote_diff_clock_time(
+                clock_time=_remote_nullable_str(time_patch.get("clock_time")),
+                clock_period=_remote_nullable_str(
+                    time_patch.get("clock_period") or time_patch.get("am_pm")
+                ),
+                raw_text=str(time_patch),
+                reference_utc=ref_dt,
+                shift_timezone=shift_timezone,
+                max_skew_minutes=max_skew,
+            )
+            fb_time = fb_resolved or _remote_nullable_str(time_patch.get("clock_time"))
+            fb_skew = _remote_clock_skew_minutes(
+                clock_time=fb_time,
+                reference_utc=ref_dt,
+                shift_timezone=shift_timezone,
+            )
+            if fb_time and fb_skew is not None and fb_skew <= max_skew:
+                data = _merge_remote_time_patch(data, time_patch)
+                data = dict(data)
+                data["clock_time"] = fb_time
+                log.info(
+                    "checkin_zhipu: google_beijing clock retry ok %r -> %r skew=%.1fm",
+                    cur_time,
+                    fb_time,
+                    fb_skew,
+                )
+            elif fb_time and fb_skew is not None and (
+                cur_skew is None or fb_skew < cur_skew
+            ):
+                data = _merge_remote_time_patch(data, time_patch)
+                data = dict(data)
+                data["clock_time"] = fb_time
+                log.info(
+                    "checkin_zhipu: google_beijing clock retry improved %r -> %r skew=%.1fm",
+                    cur_time,
+                    fb_time,
+                    fb_skew,
+                )
+    return data
+
+
+async def extract_checkin_from_zhipu_ocrspace_fallback(
+    *,
+    image_bytes: bytes,
+    config: CheckinAiConfig,
+    reference_utc: datetime | None = None,
+    shift_timezone: str = "Asia/Shanghai",
+    tg_id: int | None = None,
+) -> tuple[Optional[CheckinImageExtraction], Optional[CheckinAiExtractError]]:
+    """OCR.space 基建失败回退：Google 北京时间专用 prompt（非 TIME.IS 通用 prompt）。"""
+    if not image_bytes:
+        return None, CheckinAiExtractError("AI_EMPTY_IMAGE", "打卡失败，图片为空")
+    if not (config.api_key or "").strip():
+        return None, CheckinAiExtractError(
+            "AI_CONFIG_MISSING",
+            "打卡失败：未配置智谱 API Key（CHECKIN_AI_API_KEY）。",
+        )
+
+    prepared = _prepare_image_bytes(image_bytes)
+    image_b64 = base64.standard_b64encode(prepared).decode("ascii")
+    base_url = (config.base_url or ZHIPU_DEFAULT_BASE_URL).rstrip("/")
+    model = (config.model or ZHIPU_DEFAULT_MODEL).strip()
+
+    log.info(
+        "checkin_zhipu: ocrspace_fallback extract start model=%s size_kb=%s",
+        model,
+        len(prepared) // 1024,
+    )
+    t0 = time.perf_counter()
+    try:
+        raw = await _call_zhipu_vision(
+            base_url=base_url,
+            model=model,
+            api_key=config.api_key.strip(),
+            image_b64=image_b64,
+            prompt=_ZHIPU_REMOTE_DIFF_TIME_PROMPT,
+            timeout_seconds=config.timeout_seconds,
+            max_tokens=128,
+        )
+        log.info(
+            "checkin_zhipu: ocrspace_fallback vision ok model=%s sec=%.1f raw_len=%s",
+            model,
+            time.perf_counter() - t0,
+            len(raw),
+        )
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code if exc.response is not None else 0
+        log.exception("checkin_zhipu: ocrspace_fallback http %s model=%s", status, model)
+        if status in {401, 403}:
+            return None, CheckinAiExtractError(
+                "AI_AUTH_FAILED",
+                "打卡失败：智谱 API Key 无效或已过期，请检查 CHECKIN_AI_API_KEY。",
+            )
+        if status == 429:
+            return None, CheckinAiExtractError(
+                "AI_RATE_LIMIT",
+                "打卡失败：智谱 API 调用频率超限，请稍后重试。",
+            )
+        return None, CheckinAiExtractError(
+            "AI_HTTP_ERROR",
+            f"打卡失败，智谱 API 返回错误（HTTP {status}）。",
+        )
+    except httpx.TimeoutException:
+        log.exception("checkin_zhipu: ocrspace_fallback timeout model=%s", model)
+        return None, CheckinAiExtractError(
+            "AI_TIMEOUT",
+            f"打卡失败，智谱识别超时（{int(config.timeout_seconds)} 秒）。请稍后重试。",
+        )
+    except httpx.ConnectError:
+        log.exception("checkin_zhipu: ocrspace_fallback connect failed")
+        return None, CheckinAiExtractError(
+            "AI_SERVICE_DOWN",
+            "打卡失败：无法连接智谱 API，请检查网络。",
+        )
+    except Exception:
+        log.exception("checkin_zhipu: ocrspace_fallback vision failed model=%s", model)
+        return None, CheckinAiExtractError(
+            "AI_EXTRACT_FAILED",
+            "打卡失败，智谱识别异常。请换一张更清晰的截图重试。",
+        )
+
+    parsed = _parse_remote_diff_json(raw)
+    if parsed is None:
+        log.warning("checkin_zhipu: ocrspace_fallback invalid json raw=%s", text_summary(raw))
+        return None, CheckinAiExtractError("AI_TIME_NOT_FOUND", MSG_TIME_MISMATCH)
+
+    log_checkin_ai_text(phase="ocrspace_fallback_pass1", tg_id=tg_id, raw=raw)
+    data = await _apply_google_beijing_clock_resolution(
+        data=parsed,
+        raw=raw,
+        config=config,
+        reference_utc=reference_utc,
+        shift_timezone=shift_timezone,
+        base_url=base_url,
+        model=model,
+        api_key=config.api_key.strip(),
+        image_b64=image_b64,
+        tg_id=tg_id,
+    )
+
+    extraction = _parse_extraction_payload(data)
+    expected_date = _expected_date_for_parse(
+        reference_utc=reference_utc, shift_timezone=shift_timezone
+    )
+    extraction = _patch_missing_clock_date(
+        extraction=extraction,
+        raw=raw,
+        expected_date=expected_date,
+    )
+    if extraction.clock_date:
+        from services.checkin_clock_time_service import normalize_clock_date_month_day
+
+        norm_date = normalize_clock_date_month_day(extraction.clock_date)
+        if norm_date:
+            extraction = replace(extraction, clock_date=norm_date)
+
+    log.info(
+        "checkin_zhipu: ocrspace_fallback parsed clock=%r date=%r",
+        extraction.clock_time,
+        extraction.clock_date,
+    )
+    if not extraction.clock_time:
+        return None, CheckinAiExtractError("AI_TIME_NOT_FOUND", MSG_TIME_MISMATCH)
+    return extraction, None
+
+
 async def extract_checkin_from_zhipu_vision(
     *,
     image_bytes: bytes,

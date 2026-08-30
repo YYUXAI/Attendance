@@ -92,8 +92,16 @@ def _extract_shift_code(cell: str) -> str:
 
 def _find_header_row(rows: list[list[str]]) -> int | None:
     for idx, row in enumerate(rows):
-        joined = " ".join(_norm_cell(c) for c in row)
-        if "工号" in joined and ("名字" in joined or "姓名" in joined or "英文名" in joined):
+        cells = {_norm_cell(c) for c in row}
+        joined = " ".join(sorted(cells))
+        has_emp = "工号" in joined or "GH" in cells
+        has_name = (
+            "名字" in joined
+            or "姓名" in joined
+            or "英文名" in joined
+            or "XM" in cells
+        )
+        if has_emp and has_name:
             return idx
     return None
 
@@ -101,7 +109,9 @@ def _find_header_row(rows: list[list[str]]) -> int | None:
 def _find_col(row: list[str], *keywords: str) -> int | None:
     for i, cell in enumerate(row):
         text = _norm_cell(cell)
-        if any(k in text for k in keywords):
+        if not text:
+            continue
+        if any(text == k or k in text for k in keywords):
             return i
     return None
 
@@ -177,14 +187,17 @@ def parse_shift_matrix(
     date_idx = header_idx + 1
     if date_idx >= len(rows):
         raise ValueError("表头下一行缺少日期行")
+    # 日列常在表头行（1..31）；下一行多为星期，需回退到表头解析
     day_cols = _parse_day_columns(rows[date_idx])
+    if not day_cols:
+        day_cols = _parse_day_columns(header)
     if not day_cols:
         raise ValueError("未解析到 1–31 日列")
 
-    emp_col = _find_col(header, "工号")
-    name_col = _find_col(header, "名字", "姓名", "英文名")
+    emp_col = _find_col(header, "工号", "GH")
+    name_col = _find_col(header, "名字", "姓名", "英文名", "XM")
     cn_col = _find_col(header, "中文", "昵称")
-    region_col = _find_col(header, "地区")
+    region_col = _find_col(header, "地区", "场地", "GJ")
 
     employees: list[ParsedEmployee] = []
     current_team = ""
@@ -255,17 +268,24 @@ def _cell_kind(cell: str, code: str) -> str:
     return "empty"
 
 
-def _work_date(year_month: str, day: int) -> date:
+def _work_date(year_month: str, day: int) -> date | None:
     y, m = year_month.split("-", 1)
-    return date(int(y), int(m), day)
+    year_i, month_i = int(y), int(m)
+    try:
+        return date(year_i, month_i, day)
+    except ValueError:
+        return None
 
 
 def _calendar_rows(emp: ParsedEmployee, *, year_month: str) -> list[tuple[str, date, str, str, str]]:
     out: list[tuple[str, date, str, str, str]] = []
     for day, cell in emp.daily.items():
+        work_date = _work_date(year_month, day)
+        if work_date is None:
+            continue
         code = _extract_shift_code(cell)
         kind = _cell_kind(cell, code)
-        out.append((emp.employee_id, _work_date(year_month, day), cell, code, kind))
+        out.append((emp.employee_id, work_date, cell, code, kind))
     return out
 
 
@@ -351,7 +371,12 @@ def shift_sheet_title_candidates(*, year_month: str, source: str) -> list[str]:
     if source == "main":
         return [f"排班 {year_month}"]
     if source == "alt":
-        return [f"{y}年{month}月排班表", f"{y}年{m}月排班表"]
+        return [
+            f"{y}年{month}月排班表",
+            f"{y}年{m}月排班表",
+            f"{y}/{month}月",
+            f"{y}/{m}月",
+        ]
     return []
 
 
@@ -437,17 +462,28 @@ def sync_shifts_from_google_sheets(
         return SyncResult(False, "缺少或无效 GOOGLE_SHEETS_YEAR_MONTH", ym, 0, 0)
 
     try:
+        # 主表只按月份 tab 名取数，避免 gid 回退把其它月份写入当前 year_month
         sheet_title, rows = fetch_shift_matrix_sheet(
             spreadsheet_id=cfg.spreadsheet_id,
             credentials_json=cfg.credentials_json,
             year_month=ym,
             source="main",
-            fallback_gid=cfg.sheet_gid,
+            fallback_gid=None,
         )
         _, employees = parse_shift_matrix(rows, year_month=ym)
     except Exception as error:
-        log.error("google_sheets sync failed", extra={"error_type": type(error).__name__})
-        return SyncResult(False, "configured Sheet sync failed", ym, 0, 0)
+        alt_cfg_probe = load_google_sheets_alt_config()
+        if not alt_cfg_probe:
+            log.error("google_sheets sync failed", extra={"error_type": type(error).__name__})
+            return SyncResult(False, "configured Sheet sync failed", ym, 0, 0)
+        # 主表尚无该月 tab（如 9 月 QDYYZ 先上线）时允许只同步 alt
+        log.warning(
+            "google_sheets: primary skip %s (%s), continue with alt roster",
+            ym,
+            type(error).__name__,
+        )
+        employees = []
+        sheet_title = ""
 
     employee_shift_config_repo.ensure_table()
     employee_shift_calendar_repo.ensure_table()

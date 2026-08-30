@@ -26,6 +26,7 @@ def validate_extraction_for_checkin(
     trust_sender_when_name_unreadable: bool = False,
     composite_screenshot: bool = False,
     skip_identity_verify: bool = False,
+    require_date: bool | None = None,
 ) -> ServiceResult | datetime:
     """
     校验截图识别结果（姓名与时间均以图片 OCR/AI 结果为准，不因配文一致而跳过）。
@@ -108,7 +109,9 @@ def validate_extraction_for_checkin(
         extraction=extraction,
         shift_timezone=shift_timezone,
         now_utc=now_utc,
-        require_date=composite_screenshot,
+        require_date=(
+            composite_screenshot if require_date is None else bool(require_date)
+        ),
     )
     if date_status == "missing":
         return ServiceResult(
