@@ -55,6 +55,7 @@ from gateway_provider.gateway_file_client import GatewayFileReader
 from gateway_provider.export_module import (
     ensure_admin_identity,
     is_admin,
+    is_dual_admin_export_scope,
     is_export_callback,
     is_leave_export_scope,
     process_export_callback,
@@ -369,6 +370,12 @@ def _process_attendance_event(
     normalized_private = (message.text or "").strip()
     if normalized_private in {"我的考勤", "个人", "我的信息"}:
         return _show_profile_message(request, cursor, update)
+    if normalized_private == "考勤导出":
+        return process_export_message(
+            request, cursor, update, export_mode="attendance"
+        )
+    if normalized_private == "报备导出":
+        return process_export_message(request, cursor, update, export_mode="leave")
     if normalized_private == "导出":
         return process_export_message(request, cursor, update)
     if normalized_private in {"班表", "班次"}:
@@ -426,11 +433,30 @@ def _private_menu_response(
     # 非管理员只展示「我的考勤」；导出 / 班表仅管理员可见
     if is_admin(cursor, tg_id=actor_id):
         export_chat_id = resolve_admin_export_chat_id(cursor, tg_id=actor_id)
+        dual_export = is_dual_admin_export_scope(chat_id=export_chat_id)
         leave_export_only = is_leave_export_scope(chat_id=export_chat_id)
-        menu_rows.append(
-            [InlineKeyboardButton(text="导出", callbackData="att:export")]
-        )
-        if not leave_export_only:
+        if dual_export:
+            menu_rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="考勤导出",
+                        callbackData="att:export:attendance",
+                    )
+                ]
+            )
+            menu_rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="报备导出",
+                        callbackData="att:export:leave",
+                    )
+                ]
+            )
+        else:
+            menu_rows.append(
+                [InlineKeyboardButton(text="导出", callbackData="att:export")]
+            )
+        if dual_export or not leave_export_only:
             shift_button = (
                 InlineKeyboardButton(text="班表", webAppUrl=shift_web_app_url)
                 if shift_web_app_url is not None
@@ -1017,6 +1043,7 @@ def _show_group_action(
     text, reply_markup = _group_action_content(
         cursor,
         tg_id=callback.sender.id,
+        tg_username=callback.sender.username,
         chat_id=message.chat.id,
         chat_title=message.chat.title,
         label=label,
@@ -1058,6 +1085,7 @@ def _show_group_message_action(
     text, reply_markup = _group_action_content(
         cursor,
         tg_id=sender.id,
+        tg_username=sender.username,
         chat_id=message.chat.id,
         chat_title=message.chat.title,
         label=label,
@@ -1191,16 +1219,22 @@ def _registration_for_group_action(
     chat_title: str | None,
 ):
     if is_username_identity_chat(chat_id=chat_id, chat_title=chat_title):
+        # 优先 @用户名（批量预注册）；无私聊绑定 tg_id 的账号也可认。
+        # 无 @用户名或名单未命中时，回退已私聊绑定的 tg_id（显示名≠用户名）。
         username = normalize_tg_username(tg_username)
+        if username:
+            registration = registrations_repo.get_by_tg_username_cur(
+                cursor,
+                tg_username=username,
+            )
+            if registration is not None:
+                return registration, None
+        by_tg_id = registrations_repo.get_by_tg_id_cur(cursor, tg_id=tg_id)
+        if by_tg_id is not None:
+            return by_tg_id, None
         if not username:
             return None, "missing_username"
-        registration = registrations_repo.get_by_tg_username_cur(
-            cursor,
-            tg_username=username,
-        )
-        if registration is None:
-            return None, "unknown_username"
-        return registration, None
+        return None, "unknown_username"
     registration = registrations_repo.get_by_tg_id_cur(cursor, tg_id=tg_id)
     if registration is None:
         return None, "unregistered"
@@ -1209,9 +1243,9 @@ def _registration_for_group_action(
 
 def _username_identity_unmatched_text(reason: str) -> str:
     if reason == "missing_username":
-        return "本群按 Telegram 用户名识别，请先设置用户名后再点离岗/返岗。"
+        return "本群优先按 Telegram 用户名识别；未设置用户名时请先私聊机器人完成注册（英文名$工号）。"
     if reason == "unknown_username":
-        return "本群名单未包含你的 Telegram 用户名，请联系管理员。"
+        return "本群名单未包含你的 Telegram 用户名，请联系管理员或私聊机器人完成注册。"
     return "请先私聊机器人完成注册（英文名$工号）。"
 
 
@@ -1289,6 +1323,9 @@ def _leave_back_content(
             employee_id=registration.employee_id,
             leave_duration=duration,
             leave_overtime=overtime,
+            leave_reason=(
+                open_record.reason if open_record is not None else None
+            ),
             now_local=now_local,
         )
     copy_fallback = requires_leave_back_copy_fallback(
@@ -1344,15 +1381,23 @@ def _group_action_content(
     cursor: Cursor,
     *,
     tg_id: int,
+    tg_username: str | None = None,
     chat_id: int,
     chat_title: str | None,
     label: str,
 ) -> tuple[str, InlineKeyboardMarkup | None]:
-    registration = registrations_repo.get_by_tg_id_cur(cursor, tg_id=tg_id)
+    # QDYYZ 等 username 身份群：批量注册只写 tg_username、tg_id 可为空。
+    registration, miss = _registration_for_group_action(
+        cursor,
+        tg_id=tg_id,
+        tg_username=tg_username,
+        chat_id=chat_id,
+        chat_title=chat_title,
+    )
     if registration is None:
         callback_data = "att:signin" if label == "签到" else "att:signout"
         return (
-            "请先私聊机器人完成注册（英文名$工号）。",
+            _username_identity_unmatched_text(miss or "unregistered"),
             InlineKeyboardMarkup(
                 inlineKeyboard=[[
                     InlineKeyboardButton(

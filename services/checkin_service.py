@@ -12,6 +12,10 @@ from repositories import employee_shift_config_repo, employee_shift_roster_repo,
 from services.employee_shift_day_service import get_daily_shift
 from repositories.registrations_repo import get_by_tg_id, update_registered_chat_by_tg_id
 from infra.attendance_group_policy import configured_policy_for_title, title_has_capability
+from infra.test_group_google_config import is_test_group_chat
+from infra.ux_assistant_attendance_test_group_config import (
+    is_ux_assistant_attendance_test_group,
+)
 
 
 ALLOWED_TIMEZONES = frozenset(
@@ -20,6 +24,8 @@ ALLOWED_TIMEZONES = frozenset(
         "Asia/Kuala_Lumpur",
         "Asia/Bangkok",
         "Asia/Dubai",
+        "Asia/Manila",
+        "Asia/Colombo",
     }
 )
 
@@ -56,7 +62,15 @@ def should_run_ai_without_persist(
     """指定场景：走完整 AI 校验，但不写入打卡记录。"""
     if roster_allowed:
         return False
-    del chat_id, employee_id
+    # 与正式考勤测试群一致：ux助手考勤测试群 / test-group 能力群，班表外全员 AI 试跑不入库。
+    if is_ux_assistant_attendance_test_group(
+        chat_id=chat_id,
+        chat_title=chat_title,
+    ):
+        return True
+    if is_test_group_chat(chat_id=int(chat_id), chat_title=chat_title):
+        return True
+    del employee_id
     return title_has_capability(chat_title, "ai-dry-run-no-persist")
 
 

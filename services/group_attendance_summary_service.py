@@ -19,7 +19,12 @@ from infra.checkin_remote_diff_config import (
     yymg_summary_excluded_employee_ids,
 )
 from domain.daily_attendance_status import PunchAt, evaluate_calendar_day_status, is_midnight_noon_shift
-from domain.employee_region import SCREENSHOT_TIMEZONE, resolve_employee_shift_timezone
+from domain.employee_region import (
+    SCREENSHOT_TIMEZONE,
+    local_shift_wall_times_to_beijing,
+    resolve_employee_shift_timezone,
+)
+from infra.leave_return_keyboard_only_config import is_qdyyz_chat
 from infra.db import get_cursor
 from repositories import employee_shift_calendar_repo, employee_shift_config_repo, registrations_repo, shifts_repo
 from services.employee_shift_day_service import DailyShift, load_calendar_map
@@ -180,6 +185,24 @@ def _worker_timezone(*, chat_id: int, region_code: str, shift_timezone: str) -> 
     )
 
 
+def _qdyyz_shift_times_for_compare(
+    *,
+    d: date,
+    cin: time,
+    cout: time,
+    row: dict,
+) -> tuple[time, time, str]:
+    """QDYYZ：表上当地墙钟换算成北京墙钟，再与北京打卡比对。"""
+    local_tz = str(row.get("local_tz") or row.get("tz") or SCREENSHOT_TIMEZONE)
+    bj_in, bj_out = local_shift_wall_times_to_beijing(
+        day=d,
+        checkin=cin,
+        checkout=cout,
+        local_tz_name=local_tz,
+    )
+    return bj_in, bj_out, SCREENSHOT_TIMEZONE
+
+
 def _fetch_group_workers(*, chat_id: int, year_month: str) -> List[dict]:
     """在册 + 当月班表；须曾在本群打过卡（不依赖 registrations.shift_id）。"""
     with get_cursor() as cur:
@@ -206,6 +229,12 @@ def _fetch_group_workers(*, chat_id: int, year_month: str) -> List[dict]:
     for r in rows:
         region_code = str(r[7] or "")
         shift_timezone = str(r[8] or "")
+        local_tz = _worker_timezone(
+            chat_id=int(chat_id),
+            region_code=region_code,
+            shift_timezone=shift_timezone,
+        )
+        qdyyz = is_qdyyz_chat(chat_id=int(chat_id), chat_title=None)
         out.append(
             {
                 "employee_id": str(r[0]).strip(),
@@ -216,11 +245,10 @@ def _fetch_group_workers(*, chat_id: int, year_month: str) -> List[dict]:
                 "cout": r[5],
                 "rest_days": str(r[6] or ""),
                 "region_code": region_code,
-                "tz": _worker_timezone(
-                    chat_id=int(chat_id),
-                    region_code=region_code,
-                    shift_timezone=shift_timezone,
-                ),
+                "local_tz": local_tz,
+                # QDYYZ：打卡按北京；班表当地时刻在比对前换算
+                "tz": SCREENSHOT_TIMEZONE if qdyyz else local_tz,
+                "shift_times_are_local": qdyyz,
             }
         )
     excluded: set[str] = set()
@@ -605,7 +633,6 @@ def _status_for_row(
     punches_yesterday: List[ClockPunch],
     calendar_map: dict[tuple[str, date], DailyShift] | None = None,
 ) -> tuple[str, str, str]:
-    tz = ZoneInfo(row["tz"])
     eid = str(row.get("employee_id") or "")
     cin, cout, is_rest, _ = _day_schedule_from_calendar(
         employee_id=eid,
@@ -622,11 +649,21 @@ def _status_for_row(
         row=row,
         calendar_map=calendar_map,
     )
+    tz_name = str(row.get("tz") or SCREENSHOT_TIMEZONE)
+    if row.get("shift_times_are_local"):
+        cin, cout, tz_name = _qdyyz_shift_times_for_compare(
+            d=d, cin=cin, cout=cout, row=row
+        )
+        if not prev_rest:
+            prev_cin, prev_cout, _ = _qdyyz_shift_times_for_compare(
+                d=prev_d, cin=prev_cin, cout=prev_cout, row=row
+            )
+    tz = ZoneInfo(tz_name)
     status, checkin_utc, checkout_utc = evaluate_calendar_day_status(
         day=d,
         checkin=cin,
         checkout=cout,
-        tz_name=row["tz"],
+        tz_name=tz_name,
         rest_days=set(),
         punches_today=_to_punch_at(punches_today),
         punches_yesterday=_to_punch_at(punches_yesterday),

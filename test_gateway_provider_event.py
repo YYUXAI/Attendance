@@ -727,8 +727,9 @@ def test_admin_attendance_menu_exposes_namespaced_export_action() -> None:
 
     assert response.status_code == 200, response.text
     keyboard = response.json()["actions"][1]["replyMarkup"]["inlineKeyboard"]
-    assert keyboard[1] == [
-        {"text": "导出", "callbackData": "att:export"},
+    assert keyboard[0] == [{"text": "我的考勤", "callbackData": "att:profile"}]
+    assert keyboard[1] == [{"text": "导出", "callbackData": "att:export"}]
+    assert keyboard[2] == [
         {
             "text": "班表",
             "webAppUrl": (
@@ -737,7 +738,41 @@ def test_admin_attendance_menu_exposes_namespaced_export_action() -> None:
             ),
         },
     ]
-    assert len(keyboard) == 2
+
+
+def test_qdyyz_admin_menu_exposes_dual_export_and_shift() -> None:
+    _apply_gateway_provider_migration()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            _seed_admin_with_export_scope(
+                cursor,
+                employee_id="56181",
+                english_name="Madarcos",
+                tg_id=90001,
+                registered_chat_id=90001,
+                export_chat_id=-1004373351741,
+            )
+
+    event = _attendance_command_event()
+    message = event["telegramUpdate"]["message"]
+    message["chat"]["id"] = 90001
+    message["from"]["id"] = 90001
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=event,
+    )
+
+    assert response.status_code == 200, response.text
+    keyboard = response.json()["actions"][1]["replyMarkup"]["inlineKeyboard"]
+    assert [row[0]["text"] for row in keyboard] == [
+        "我的考勤",
+        "考勤导出",
+        "报备导出",
+        "班表",
+    ]
+    assert keyboard[1][0]["callbackData"] == "att:export:attendance"
+    assert keyboard[2][0]["callbackData"] == "att:export:leave"
 
 
 def test_admin_export_schema_and_queries_use_only_current_owner_truth() -> None:
@@ -3349,7 +3384,7 @@ def test_leave_and_back_callbacks_render_current_business_drafts() -> None:
         "text": "返岗",
         "switchInlineQueryCurrentChat": (
             "\n#返岗报备\n人员：GRANDFOR\n时间：16:25:00\n"
-            "离岗时长：25分钟\n提示：你已超时\n原因："
+            "离岗时长：25分钟\n提示：你已超时\n原因：客户来电"
         ),
     }
 

@@ -72,6 +72,25 @@ def resolve_checkin_ai_config_for_chat(
     )
 
 
+def base_zhipu_config_for_quality_inspection(config: CheckinAiConfig) -> CheckinAiConfig:
+    """质检试跑：固定标准智谱 glm-4v-flash，不走 OCR.space 也不走 premium。"""
+    if not config.zhipu:
+        return config
+    model = (os.getenv("CHECKIN_AI_MODEL") or "glm-4v-flash").strip() or "glm-4v-flash"
+    api_key = (os.getenv("CHECKIN_AI_API_KEY") or "").strip()
+    if not api_key:
+        raise RuntimeError("CHECKIN_AI_API_KEY is required")
+    base_url = (
+        os.getenv("CHECKIN_AI_BASE_URL") or "https://open.bigmodel.cn/api/paas/v4"
+    ).rstrip("/")
+    return replace(
+        config,
+        api_key=api_key,
+        model=model,
+        base_url=base_url,
+    )
+
+
 def load_checkin_ai_config() -> CheckinAiConfig:
     enabled_raw = (os.getenv("CHECKIN_AI_ENABLED") or "").strip().lower()
     if enabled_raw not in {"true", "false"}:
