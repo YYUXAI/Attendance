@@ -11,8 +11,12 @@ from services.employee_shift_day_service import (
     DailyShift,
     daily_shift_from_calendar_row,
 )
+from domain.employee_region import SCREENSHOT_TIMEZONE, resolve_employee_shift_timezone
+from infra.kqbbq_checkin_config import is_kqbbq_chat
+from infra.leave_return_keyboard_only_config import is_qdyyz_chat
 from services.group_attendance_summary_service import (
     ClockPunch,
+    _timezone_for_attendance_group,
     compute_month_stats_from_punches,
 )
 
@@ -46,7 +50,8 @@ def profile_text_for_tg_id(
     cursor.execute(
         """
         SELECT shift_checkin_time, shift_checkout_time,
-               shift_time_range, monthly_rest_days
+               shift_time_range, monthly_rest_days,
+               region_code, shift_timezone
         FROM public.employee_shift_config
         WHERE employee_id = %s AND year_month = %s
         """,
@@ -64,6 +69,8 @@ def profile_text_for_tg_id(
     checkout = _as_time(shift[1])
     configured_range = str(shift[2] or "").strip()
     rest_days = str(shift[3] or "")
+    region_code = str(shift[4] or "")
+    shift_timezone = str(shift[5] or "")
     calendar_map = _calendar_map(
         cursor,
         employee_id=employee_id,
@@ -78,13 +85,30 @@ def profile_text_for_tg_id(
         calendar_map=calendar_map,
     )
     chat_id = _latest_attendance_chat(cursor, employee_id=employee_id)
+    group_fallback = (
+        _timezone_for_attendance_group(chat_id=int(chat_id))
+        if chat_id is not None
+        else SCREENSHOT_TIMEZONE
+    )
+    shift_local_tz = resolve_employee_shift_timezone(
+        region_code=region_code,
+        shift_timezone=shift_timezone,
+        fallback=group_fallback,
+    )
+    shift_times_are_local = False
+    punch_tz_name = tz_name
+    if chat_id is not None and (
+        is_qdyyz_chat(chat_id=int(chat_id)) or is_kqbbq_chat(chat_id=int(chat_id))
+    ):
+        shift_times_are_local = True
+        punch_tz_name = SCREENSHOT_TIMEZONE
     punches = _month_punches(
         cursor,
         employee_id=employee_id,
         chat_id=chat_id,
         month_start=month_start,
         as_of_local=as_of_local,
-        tz=tz,
+        tz=ZoneInfo(punch_tz_name),
     )
     stats = compute_month_stats_from_punches(
         employee_id=employee_id,
@@ -94,9 +118,11 @@ def profile_text_for_tg_id(
         checkin=checkin,
         checkout=checkout,
         rest_days_raw=rest_days,
-        tz_name=tz_name,
+        tz_name=punch_tz_name,
         calendar_map=calendar_map,
         punches=punches,
+        shift_times_are_local=shift_times_are_local,
+        local_tz=shift_local_tz,
     )
     return (
         f"姓名：{html.escape(english_name)}\n"

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -8,6 +10,7 @@ from psycopg2.extensions import cursor as Cursor
 
 from domain.clock_matter import (
     parse_matter_from_text,
+    parse_matter_note_from_text,
     validate_caption_for_remote_diff,
     validate_caption_identity_for_sender,
 )
@@ -30,6 +33,7 @@ from infra.checkin_employee_id_only_config import requires_employee_id_only_chec
 from infra.checkin_remote_diff_config import requires_remote_diff_checkin
 from infra.bbq_google_sheets_config import load_bbq_google_sheets_config
 from infra.leave_return_keyboard_only_config import (
+    is_qdyyz_chat,
     is_username_identity_chat,
     normalize_tg_username,
 )
@@ -38,6 +42,8 @@ from infra.test_group_google_config import load_test_group_google_config
 from repositories import clock_records_repo, registrations_repo, worker_schedule_repo
 from services import checkin_ai_orchestrator, checkin_service
 from services.checkin_user_message import user_message_for_checkin_error
+
+log = logging.getLogger(__name__)
 
 
 def process_group_checkin(
@@ -52,7 +58,13 @@ def process_group_checkin(
     sender = message.sender
     if sender is None:
         return _reply(request, update, "打卡失败：无法识别发送者。")
-    matter = parse_matter_from_text(message.caption)
+    matter = parse_matter_from_text(
+        message.caption,
+        allow_embedded=is_qdyyz_chat(
+            chat_id=message.chat.id,
+            chat_title=message.chat.title,
+        ),
+    )
     if matter not in {"签到", "签退"}:
         return _reply(
             request,
@@ -147,6 +159,14 @@ def process_group_checkin(
             progress_text=progress_text,
             final_text="打卡失败：截图超过 20 MiB。",
         )
+    log.info(
+        "checkin_ai: image downloaded file_ref=%s sha256=%s bytes=%s chat_id=%s tg_id=%s",
+        attachment.fileRef,
+        hashlib.sha256(image_bytes).hexdigest()[:16],
+        len(image_bytes),
+        message.chat.id,
+        sender.id,
+    )
     resolved = _resolve_checkin(
         image_bytes=image_bytes,
         tg_id=sender.id,
@@ -195,6 +215,7 @@ def process_group_checkin(
         shift_id=None,
         clock_time_utc=resolved.clock_time_utc,
         clock_action=matter,
+        matter_note=parse_matter_note_from_text(message.caption),
     )
     if not inserted:
         return _reply_after_progress(

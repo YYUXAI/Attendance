@@ -2373,12 +2373,22 @@ async def extract_checkin_from_image(
                 ocr_err.error_code,
             )
             return ocr_ext, ocr_err
-        log.warning(
-            "checkin_ai: ocrspace infra fail code=%s -> fallback zhipu(flash,google_beijing) chat_id=%s",
-            ocr_err.error_code,
-            chat_id,
-        )
-        ocrspace_zhipu_fallback = True
+        from infra.leave_return_keyboard_only_config import is_qdyyz_chat
+
+        # QDYYZ：flash + 只读北京时间。BBQ/测试群等：落入下方完整智谱识图（premium 为 glm-4.6v）。
+        if is_qdyyz_chat(chat_id=chat_id, chat_title=chat_title):
+            log.warning(
+                "checkin_ai: ocrspace infra fail code=%s -> fallback zhipu(flash,google_beijing) chat_id=%s",
+                ocr_err.error_code,
+                chat_id,
+            )
+            ocrspace_zhipu_fallback = True
+        else:
+            log.warning(
+                "checkin_ai: ocrspace infra fail code=%s -> fallback zhipu(full vision) chat_id=%s",
+                ocr_err.error_code,
+                chat_id,
+            )
 
     if config.zhipu:
         from infra.checkin_ai_config import (

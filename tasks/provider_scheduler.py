@@ -37,8 +37,9 @@ from infra.logger import configure_logging
 from infra.google_sheets_config import load_google_sheets_config
 from infra.shift_web_config import load_shift_web_config
 from infra.runtime_config_validation import validate_attendance_process_environment
-from repositories import runtime_component_repo, worker_action_repo, worker_schedule_repo
+from repositories import runtime_component_repo, shifts_repo, worker_action_repo, worker_schedule_repo
 from services import attendance_export_service, group_attendance_summary_service
+from infra.bbq_google_sheets_config import is_bbq_attendance_summary_chat
 from services.bbq_google_sheets_export_service import (
     sync_bbq_group_month_to_google_sheets,
 )
@@ -206,6 +207,17 @@ def run_scheduler_cycle(
                 enqueued += result.operation_count
             if not result.completed:
                 break
+
+
+    if config.group_summary_enabled and group_routes:
+        claimed_shift, enqueued_shift = _run_shift_start_cycle(
+            config,
+            worker_id=worker_id,
+            now=current,
+            group_routes=group_routes,
+        )
+        claimed += claimed_shift
+        enqueued += enqueued_shift
 
     sheets_config = load_google_sheets_config()
     if sheets_config.enabled:
@@ -590,6 +602,109 @@ def run_checkin_sheets_sync_cycle(
     return claimed
 
 
+
+
+def _canonical_shift_id_for_attendance_group(*, attendance_group_id: int) -> int | None:
+    rows = shifts_repo.list_by_attendance_group_id(attendance_group_id=int(attendance_group_id))
+    if not rows:
+        return None
+    return min(int(row.id) for row in rows)
+
+
+def _shift_checkin_reached(*, now: datetime, shift: shifts_repo.ShiftRow, work_date: date) -> bool:
+    if not isinstance(shift.checkin_time, wall_time):
+        return False
+    tz = ZoneInfo(str(shift.timezone or "Asia/Shanghai"))
+    target_local = datetime.combine(work_date, shift.checkin_time, tzinfo=tz)
+    return now.astimezone(timezone.utc) >= target_local.astimezone(timezone.utc)
+
+
+def _run_shift_start_cycle(
+    config: ProviderSchedulerConfig,
+    *,
+    worker_id: str,
+    now: datetime,
+    group_routes: Sequence[AttendanceGroupRoute],
+) -> tuple[int, int]:
+    route_by_chat = {int(route.chat_id): route for route in group_routes}
+    claimed = 0
+    enqueued = 0
+    with database_url_scope(config.database_url):
+        shifts = shifts_repo.list_all_shifts()
+    for shift in shifts:
+        group_id = shift.attendance_group_id
+        if group_id is None:
+            continue
+        group_route = route_by_chat.get(int(group_id))
+        if group_route is None:
+            continue
+        if not is_bbq_attendance_summary_chat(
+            chat_id=int(group_id),
+            chat_title=group_route.current_title,
+        ):
+            continue
+        canonical_shift_id = _canonical_shift_id_for_attendance_group(
+            attendance_group_id=int(group_id)
+        )
+        if canonical_shift_id is None or int(shift.id) != int(canonical_shift_id):
+            continue
+        tz = ZoneInfo(str(shift.timezone or "Asia/Shanghai"))
+        work_date = now.astimezone(tz).date()
+        if not _shift_checkin_reached(now=now, shift=shift, work_date=work_date):
+            continue
+        run_key = f"shift-start:{work_date.isoformat()}:{shift.id}"
+        result = _run_once(
+            config,
+            worker_id=worker_id,
+            run_key=run_key,
+            job_kind="SHIFT_START",
+            now=now,
+            operation=lambda shift=shift, work_date=work_date, group_route=group_route: _enqueue_shift_start_notice(
+                config,
+                shift=shift,
+                work_date=work_date,
+                created_at=now,
+                group_route=group_route,
+            ),
+        )
+        if result.claimed:
+            claimed += 1
+            enqueued += result.operation_count
+    return claimed, enqueued
+
+
+def _enqueue_shift_start_notice(
+    config: ProviderSchedulerConfig,
+    *,
+    shift: shifts_repo.ShiftRow,
+    work_date: date,
+    created_at: datetime,
+    group_route: AttendanceGroupRoute,
+) -> int:
+    chat_id = int(group_route.chat_id)
+    with database_url_scope(config.database_url):
+        text = group_attendance_summary_service.build_shift_start_notice_text_for_shift(
+            chat_id=chat_id,
+            shift_id=int(shift.id),
+            work_date=work_date,
+        )
+    if not text:
+        return 0
+    action_id = f"attendance.shift-start.{work_date.isoformat()}.{abs(chat_id)}"
+    result = worker_action_repo.enqueue_action(
+        database_url=config.database_url,
+        owner_key=f"{work_date.isoformat()}:{chat_id}:shift-start",
+        action_kind="SHIFT_START",
+        max_attempts=3,
+        request=_message_request(
+            action_id=action_id,
+            created_at=created_at,
+            route_key=group_route.route_ref,
+            text=text,
+        ),
+    )
+    return int(result == "ENQUEUED")
+
 def _enqueue_group_summaries(
     config: ProviderSchedulerConfig,
     *,
@@ -603,6 +718,11 @@ def _enqueue_group_summaries(
     with database_url_scope(config.database_url):
         for group_route in group_routes:
             chat_id = group_route.chat_id
+            if not is_bbq_attendance_summary_chat(
+                chat_id=chat_id,
+                chat_title=group_route.current_title,
+            ):
+                continue
             rows = group_attendance_summary_service.build_rows_for_group(
                 chat_id=chat_id,
                 target_date=target_date,
@@ -613,6 +733,7 @@ def _enqueue_group_summaries(
                 rows=rows,
                 target_date=target_date,
                 chat_id=chat_id,
+                chat_title=group_route.current_title,
             )
             action_id = (
                 f"attendance.group-summary.{target_date.isoformat()}.{abs(chat_id)}"

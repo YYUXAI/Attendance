@@ -124,8 +124,72 @@ def validate_caption_for_remote_diff(
     return None
 
 
-def parse_matter_from_text(text: str | None) -> str | None:
-    """从 #打卡 模板或配文中解析「事项：签到/签退」。"""
+def first_valid_action_in_text(text: str | None) -> str | None:
+    """配文中按出现顺序取第一个「签到」或「签退」。"""
+    if not text:
+        return None
+    hits: list[tuple[int, str]] = []
+    for action in (ACTION_SIGN_IN, ACTION_SIGN_OUT):
+        idx = text.find(action)
+        if idx >= 0:
+            hits.append((idx, action))
+    if not hits:
+        return None
+    hits.sort(key=lambda item: item[0])
+    return hits[0][1]
+
+
+def _strip_wrapping_parens(text: str) -> str:
+    s = (text or "").strip()
+    if len(s) >= 2 and (
+        (s[0] == "(" and s[-1] == ")") or (s[0] == "（" and s[-1] == "）")
+    ):
+        return s[1:-1].strip()
+    return s
+
+
+def parse_matter_note_from_text(text: str | None) -> str | None:
+    """事项行在「签到/签退」之后的备注。无备注返回 None。"""
+    if not text:
+        return None
+    for line in text.replace("\r", "").split("\n"):
+        s = line.strip()
+        if not s.startswith("事项"):
+            continue
+        if "：" in s:
+            val = s.split("：", 1)[1].strip()
+        elif ":" in s:
+            val = s.split(":", 1)[1].strip()
+        else:
+            continue
+        action = val if val in VALID_ACTIONS else first_valid_action_in_text(val)
+        if not action:
+            return None
+        rest = val[val.find(action) + len(action) :].strip()
+        rest = rest.lstrip("：:").strip()
+        rest = _strip_wrapping_parens(rest)
+        return rest or None
+    return None
+
+
+def format_export_status_with_note(status: str, note: str | None) -> str:
+    st = (status or "").strip()
+    n = _strip_wrapping_parens(note or "")
+    if not n:
+        return st
+    return f"{st}（{n}）"
+
+
+def parse_matter_from_text(
+    text: str | None,
+    *,
+    allow_embedded: bool = False,
+) -> str | None:
+    """从 #打卡 模板或配文中解析「事项：签到/签退」。
+
+    allow_embedded=True 时（QDYYZ）：事项值或整段配文含「签到」「签退」字样即可，
+    不要求事项整段恰好等于这两个字。
+    """
     if not text:
         return None
     for line in text.replace("\r", "").split("\n"):
@@ -140,4 +204,10 @@ def parse_matter_from_text(text: str | None) -> str | None:
             continue
         if val in VALID_ACTIONS:
             return val
+        if allow_embedded:
+            embedded = first_valid_action_in_text(val)
+            if embedded:
+                return embedded
+    if allow_embedded:
+        return first_valid_action_in_text(text)
     return None

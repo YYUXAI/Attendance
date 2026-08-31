@@ -38,6 +38,7 @@ from gateway_provider.registration_session_module import (
     end_private_registration_session,
 )
 from gateway_provider.summary_module import read_attendance_summary
+from infra.logger import configure_logging
 from repositories import runtime_component_repo
 
 
@@ -98,6 +99,11 @@ def create_attendance_gateway_provider_app(
     )
     receipt_module = AttendanceGatewayReceiptModule(config.database_url)
     app = FastAPI(title="Attendance Gateway Provider", version="1.0.0")
+
+    @app.on_event("startup")
+    def _configure_logging() -> None:
+        configure_logging()
+
 
     @app.get("/healthz")
     async def health() -> JSONResponse:

@@ -37,6 +37,7 @@ from gateway_provider.admin_module import (
     is_admin_test_message,
     process_admin_test_message,
 )
+from infra.kqbbq_checkin_config import is_kqbbq_chat
 from infra.leave_return_keyboard_only_config import (
     is_leave_return_keyboard_only_chat,
     is_username_identity_chat,
@@ -1314,9 +1315,13 @@ def _leave_back_content(
                 int((now_utc - _as_utc(open_record.leave_at)).total_seconds() // 60),
             )
             duration = format_leave_duration_minutes(minutes)
-            overtime = minutes >= leave_overtime_minutes_for_chat(
-                chat_id=chat_id,
-                chat_title=chat_title,
+            overtime = (
+                not is_kqbbq_chat(chat_id=chat_id, chat_title=chat_title)
+                and minutes
+                >= leave_overtime_minutes_for_chat(
+                    chat_id=chat_id,
+                    chat_title=chat_title,
+                )
             )
         draft = build_back_draft(
             english_name=name,
@@ -1523,6 +1528,11 @@ def _process_group_leave_report(
     if operation != "back":
         raise GatewayRouteOwnershipMismatchError()
     if open_record is None:
+        if is_kqbbq_chat(
+            chat_id=message.chat.id,
+            chat_title=message.chat.title,
+        ):
+            return _group_report_without_actions(request)
         return _group_report_message(
             request,
             chat_id=message.chat.id,
@@ -1542,7 +1552,13 @@ def _process_group_leave_report(
         record_id=open_record.id,
         back_at_utc=occurred_at,
         duration_minutes=duration_minutes,
-        remark_required=duration_minutes > 30,
+        remark_required=(
+            duration_minutes > 30
+            and not is_kqbbq_chat(
+                chat_id=message.chat.id,
+                chat_title=message.chat.title,
+            )
+        ),
     ):
         raise RuntimeError("temporary leave record close lost ownership")
     return _group_report_without_actions(request)

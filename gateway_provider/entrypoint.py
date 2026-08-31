@@ -7,7 +7,10 @@ from gateway_provider.app import (
     create_attendance_gateway_provider_app,
 )
 from gateway_provider.runtime_security import assert_no_telegram_owner_credentials
+from infra.logger import configure_logging
 from infra.runtime_config_validation import validate_attendance_process_environment
+
+configure_logging()
 
 
 def _required_environment(name: str) -> str:

@@ -16,6 +16,7 @@ class ClockRecordRow:
     shift_id: int
     clock_time: Any
     clock_action: str | None = None
+    matter_note: str | None = None
 
 
 def has_telegram_source_cur(
@@ -58,13 +59,14 @@ def _insert_gateway_clock_record_once_cur(
     shift_id: int | None,
     clock_time_utc: Any,
     clock_action: str,
+    matter_note: str | None = None,
 ) -> bool:
     cursor.execute(
         """
         INSERT INTO public.clock_records (
             chat_id, file_id, tg_id, employee_id, shift_id,
-            clock_time, clock_action, source_chat_id, source_message_id
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            clock_time, clock_action, matter_note, source_chat_id, source_message_id
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (
             source_chat_id, source_message_id
         ) WHERE source_chat_id IS NOT NULL
@@ -80,6 +82,7 @@ def _insert_gateway_clock_record_once_cur(
             shift_id,
             clock_time_utc,
             clock_action,
+            (str(matter_note).strip() or None) if matter_note else None,
             int(source_chat_id),
             int(source_message_id),
         ),
@@ -98,7 +101,9 @@ def insert_gateway_clock_record_cur(
     shift_id: int | None,
     clock_time_utc: Any,
     clock_action: str,
+    matter_note: str | None = None,
 ) -> bool:
+    ensure_matter_note_column()
     try:
         return _insert_gateway_clock_record_once_cur(
             cursor,
@@ -110,6 +115,7 @@ def insert_gateway_clock_record_cur(
             shift_id=shift_id,
             clock_time_utc=clock_time_utc,
             clock_action=clock_action,
+            matter_note=matter_note,
         )
     except psycopg2.errors.UniqueViolation as error:
         # Imported/migrated rows can leave clock_records_id_seq far behind MAX(id).
@@ -126,6 +132,7 @@ def insert_gateway_clock_record_cur(
             shift_id=shift_id,
             clock_time_utc=clock_time_utc,
             clock_action=clock_action,
+            matter_note=matter_note,
         )
 
 
@@ -149,6 +156,26 @@ def ensure_clock_action_column() -> None:
         )
 
 
+def ensure_matter_note_column() -> None:
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'clock_records'
+                      AND column_name = 'matter_note'
+                ) THEN
+                    ALTER TABLE public.clock_records
+                    ADD COLUMN matter_note TEXT;
+                END IF;
+            END $$;
+            """
+        )
+
+
 def insert_clock_record(
     *,
     chat_id: int,
@@ -158,17 +185,28 @@ def insert_clock_record(
     shift_id: int | None,
     clock_time_utc,
     clock_action: str | None = None,
+    matter_note: str | None = None,
 ) -> None:
     ensure_clock_action_column()
+    ensure_matter_note_column()
     with get_cursor() as cur:
         cur.execute(
             """
             INSERT INTO public.clock_records
-                (chat_id, file_id, tg_id, employee_id, shift_id, clock_time, clock_action)
+                (chat_id, file_id, tg_id, employee_id, shift_id, clock_time, clock_action, matter_note)
             VALUES
-                (%s, %s, %s, %s, %s, %s, %s)
+                (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (chat_id, file_id, tg_id, employee_id, shift_id, clock_time_utc, clock_action),
+            (
+                chat_id,
+                file_id,
+                tg_id,
+                employee_id,
+                shift_id,
+                clock_time_utc,
+                clock_action,
+                (str(matter_note).strip() or None) if matter_note else None,
+            ),
         )
 
 
@@ -198,10 +236,11 @@ def list_clock_records_by_employee_chat_in_range(
     start_at_utc: Any,
     end_at_utc: Any,
 ) -> List[ClockRecordRow]:
+    ensure_matter_note_column()
     with get_cursor() as cur:
         cur.execute(
             """
-            SELECT id, employee_id, shift_id, clock_time, clock_action
+            SELECT id, employee_id, shift_id, clock_time, clock_action, matter_note
             FROM public.clock_records
             WHERE employee_id = %s
               AND chat_id = %s
@@ -225,7 +264,7 @@ def list_clock_records_in_range(
     with get_cursor() as cur:
         cur.execute(
             """
-            SELECT id, employee_id, shift_id, clock_time, clock_action
+            SELECT id, employee_id, shift_id, clock_time, clock_action, matter_note
             FROM public.clock_records
             WHERE employee_id = %s
               AND shift_id = %s
@@ -273,7 +312,7 @@ def list_clock_times_for_shift_employees_in_range(
     with get_cursor() as cur:
         cur.execute(
             """
-            SELECT id, employee_id, shift_id, clock_time, clock_action
+            SELECT id, employee_id, shift_id, clock_time, clock_action, matter_note
             FROM public.clock_records
             WHERE shift_id = %s
               AND employee_id = ANY(%s)

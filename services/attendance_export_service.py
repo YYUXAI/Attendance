@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import logging
 from dataclasses import dataclass, field, replace
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Dict, Iterable, List, Literal, Optional, Set
 from zoneinfo import ZoneInfo
 
@@ -19,6 +19,7 @@ from services.shift_view_service import (
     roster_employee_ids,
     shift_view_for_tg_id,
 )
+from domain.clock_matter import format_export_status_with_note
 from services.group_attendance_summary_service import (
     AttendanceSummaryRow,
     build_rows_for_group,
@@ -176,6 +177,7 @@ class EmployeeExportPivot:
     english_name: str
     employee_id: str
     daily_status: Dict[date, str] = field(default_factory=dict)
+    daily_note: Dict[date, str] = field(default_factory=dict)
 
 
 def resolve_export_date_range(
@@ -246,12 +248,54 @@ def _fetch_leave_dates_in_range(*, start: date, end: date) -> Dict[str, Set[date
     return out
 
 
+_EXPORT_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def _parse_shift_hhmm(text: str) -> time | None:
+    raw = (text or "").strip()
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(raw, fmt).time()
+        except ValueError:
+            continue
+    return None
+
+
+def _shift_checkout_deadline(
+    *,
+    work_date: date,
+    shift_time_range: str,
+    tz: ZoneInfo,
+) -> datetime | None:
+    """从班次时段解析下班时刻；跨夜班次落到次日。"""
+    label = (shift_time_range or "").strip()
+    if not label or label in ("休息", "无班次"):
+        return None
+    normalized = label.replace("~", "-").replace("—", "-").replace("–", "-")
+    parts = [p.strip() for p in normalized.split("-") if p.strip()]
+    if len(parts) != 2:
+        return None
+    cin = _parse_shift_hhmm(parts[0])
+    cout = _parse_shift_hhmm(parts[1])
+    if cin is None or cout is None:
+        return None
+    checkin_dt = datetime.combine(work_date, cin, tzinfo=tz)
+    checkout_dt = datetime.combine(work_date, cout, tzinfo=tz)
+    if checkout_dt <= checkin_dt:
+        checkout_dt += timedelta(days=1)
+    return checkout_dt
+
+
 def normalize_export_status(
     row: AttendanceSummaryRow,
     *,
     on_leave: bool,
+    now: datetime | None = None,
 ) -> str:
-    """导出展示口径：缺勤=上下班皆无；缺卡=缺一侧打卡。"""
+    """导出展示口径：缺勤=上下班皆无；缺卡=缺一侧打卡。
+
+    只有上班、没有下班时：班次下班点尚未到视为正常；下班点已过（含跨夜）视为缺卡。
+    """
     if on_leave:
         return "请假"
     st = (row.status or "").strip()
@@ -268,6 +312,23 @@ def normalize_export_status(
     if st in ("迟到", "早退"):
         return st
     if st == "缺卡" and has_in and not has_out:
+        now_dt = now if now is not None else datetime.now(_EXPORT_TZ)
+        if now_dt.tzinfo is None:
+            now_dt = now_dt.replace(tzinfo=_EXPORT_TZ)
+        else:
+            now_dt = now_dt.astimezone(_EXPORT_TZ)
+        wd = row.work_date
+        if wd is None:
+            return "正常"
+        deadline = _shift_checkout_deadline(
+            work_date=wd,
+            shift_time_range=row.shift_time_range,
+            tz=_EXPORT_TZ,
+        )
+        if deadline is not None:
+            return "正常" if now_dt < deadline else "缺卡"
+        if wd < now_dt.date():
+            return "缺卡"
         return "正常"
     if has_in != has_out:
         return "缺卡"
@@ -465,6 +526,7 @@ def build_pivot_and_overview(
             )
         on_leave = wd in leave_map.get(eid, set())
         by_eid[eid].daily_status[wd] = normalize_export_status(r, on_leave=on_leave)
+        by_eid[eid].daily_note[wd] = (r.status_note or "").strip()
 
     pivot = sorted(by_eid.values(), key=lambda x: x.employee_id)
 
@@ -779,7 +841,12 @@ def build_attendance_export_grid(
     for p in pivot:
         row: List[object] = [p.group_name, p.english_name, p.employee_id]
         for d in dates:
-            row.append(p.daily_status.get(d, ""))
+            row.append(
+                format_export_status_with_note(
+                    p.daily_status.get(d, ""),
+                    p.daily_note.get(d),
+                )
+            )
         grid.append(row)
     return grid
 
@@ -892,7 +959,11 @@ def encode_attendance_export_xlsx(
         for j, d in enumerate(dates):
             col = fixed_cols + 1 + j
             st = p.daily_status.get(d, "")
-            cell = ws.cell(row=i, column=col, value=st)
+            cell = ws.cell(
+                row=i,
+                column=col,
+                value=format_export_status_with_note(st, p.daily_note.get(d)),
+            )
             cell.alignment = center
             if st in _ABNORMAL_STATUSES:
                 cell.fill = yellow

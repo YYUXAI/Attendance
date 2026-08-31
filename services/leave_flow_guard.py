@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from infra.attendance_group_policy import title_has_capability
+from infra.kqbbq_checkin_config import is_kqbbq_chat
 from infra.leave_return_keyboard_only_config import leave_overtime_minutes_for_chat
 from repositories import temporary_leave_records_repo
 
@@ -20,7 +21,8 @@ class OpenLeaveDraftInfo:
 def requires_leave_mutual_exclusion(
     *, chat_id: int, chat_title: str | None = None
 ) -> bool:
-    del chat_id
+    if is_kqbbq_chat(chat_id=chat_id, chat_title=chat_title):
+        return False
     return title_has_capability(chat_title, "leave-mutual-exclusion")
 
 
@@ -67,9 +69,12 @@ def compute_open_leave_draft_info(
         chat_id=chat_id,
         chat_title=chat_title,
     )
+    overtime = False
+    if not is_kqbbq_chat(chat_id=chat_id, chat_title=chat_title):
+        overtime = mins >= threshold
     return OpenLeaveDraftInfo(
         duration_text=format_leave_duration_minutes(mins),
-        overtime=mins >= threshold,
+        overtime=overtime,
     )
 
 

@@ -72,6 +72,7 @@ async def resolve_clock_time_with_ai_from_bytes(
 
     from infra.checkin_employee_id_only_config import requires_employee_id_only_checkin
     from infra.checkin_remote_diff_config import requires_remote_diff_checkin
+    from infra.kqbbq_checkin_config import is_kqbbq_chat
     from infra.leave_return_keyboard_only_config import is_qdyyz_chat
 
     is_remote_group = requires_remote_diff_checkin(chat_id=chat_id, chat_title=chat_title)
@@ -82,7 +83,9 @@ async def resolve_clock_time_with_ai_from_bytes(
     skip_name_verify = employee_id_only or is_qdyyz_chat(
         chat_id=chat_id, chat_title=chat_title
     )
-    require_clock_date = is_qdyyz_chat(chat_id=chat_id, chat_title=chat_title)
+    require_clock_date = is_qdyyz_chat(
+        chat_id=chat_id, chat_title=chat_title
+    ) or is_kqbbq_chat(chat_id=chat_id, chat_title=chat_title)
     if is_remote_group or employee_id_only:
         caption_err = validate_caption_for_remote_diff(
             caption=caption,

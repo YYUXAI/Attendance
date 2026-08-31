@@ -1,4 +1,4 @@
-"""OCR.space 基建失败回退智谱：flash + Google 北京时间 prompt。"""
+"""OCR.space 基建失败回退：QDYYZ 用 flash 只读时间；BBQ 用完整智谱识图。"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -124,3 +124,86 @@ async def test_ocrspace_infra_fail_uses_flash_google_beijing_fallback() -> None:
     assert ext is not None
     assert ext.clock_time == "21:20:00"
     assert captured["model"] == "glm-4v-flash"
+
+
+@pytest.mark.asyncio
+async def test_ocrspace_infra_fail_bbq_uses_full_vision_46v(monkeypatch: pytest.MonkeyPatch) -> None:
+    from services.checkin_image_ai_service import CheckinAiExtractError
+    from domain.checkin_image_extraction import CheckinImageExtraction
+
+    ref = datetime(2026, 8, 31, 15, 6, 0, tzinfo=timezone.utc)
+    cfg = _flash_config()
+    captured: dict[str, object] = {}
+    fallback_called = {"n": 0}
+
+    async def fake_ocrspace(**kwargs: object) -> tuple[None, CheckinAiExtractError]:
+        return None, CheckinAiExtractError("AI_HTTP_ERROR", "OCR.space 返回 HTTP 503")
+
+    async def fake_fallback(**kwargs: object) -> tuple[object, None]:
+        fallback_called["n"] += 1
+        raise AssertionError("QDYYZ-only flash fallback must not run for BBQ")
+
+    async def fake_vision(**kwargs: object) -> tuple[object, None]:
+        captured["model"] = kwargs["config"].model
+        captured["skip_name_verify"] = kwargs.get("skip_name_verify")
+        captured["expected_english_name"] = kwargs.get("expected_english_name")
+        captured["expected_tg_username"] = kwargs.get("expected_tg_username")
+        captured["chat_title"] = kwargs.get("chat_title")
+        return (
+            CheckinImageExtraction(
+                display_name="Y_UX_Nayxua",
+                username_hint="Y_UX_Nayxua",
+                clock_time="23:05",
+                clock_date="08-31",
+                timezone_iana=None,
+                confidence=None,
+            ),
+            None,
+        )
+
+    monkeypatch.setenv("CHECKIN_AI_PREMIUM_ENABLED", "true")
+    monkeypatch.setenv("CHECKIN_AI_PREMIUM_API_KEY", "premium-key")
+    monkeypatch.setenv("CHECKIN_AI_PREMIUM_MODEL", "glm-4.6v")
+
+    with (
+        patch(
+            "infra.checkin_ai_config.premium_zhipu_enabled",
+            return_value=True,
+        ),
+        patch(
+            "services.checkin_ocrspace_service.extract_checkin_from_ocrspace",
+            new_callable=AsyncMock,
+            side_effect=fake_ocrspace,
+        ),
+        patch(
+            "services.checkin_zhipu_vision_service.extract_checkin_from_zhipu_ocrspace_fallback",
+            new_callable=AsyncMock,
+            side_effect=fake_fallback,
+        ),
+        patch(
+            "services.checkin_zhipu_vision_service.extract_checkin_from_zhipu_vision",
+            new_callable=AsyncMock,
+            side_effect=fake_vision,
+        ),
+    ):
+        ext, err = await extract_checkin_from_image(
+            image_bytes=b"x",
+            config=cfg,
+            expected_tg_username="Y_UX_Nayxua",
+            expected_english_name="nayxua",
+            reference_utc=ref,
+            shift_timezone="Asia/Shanghai",
+            chat_id=-1003883297177,
+            chat_title="Y-UX-KQBBQ",
+            skip_name_verify=False,
+        )
+
+    assert err is None
+    assert ext is not None
+    assert fallback_called["n"] == 0
+    assert captured["model"] == "glm-4.6v"
+    assert captured["skip_name_verify"] is False
+    assert captured["expected_english_name"] == "nayxua"
+    assert captured["expected_tg_username"] == "Y_UX_Nayxua"
+    assert captured["chat_title"] == "Y-UX-KQBBQ"
+    assert ext.display_name == "Y_UX_Nayxua"

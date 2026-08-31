@@ -7,7 +7,7 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Sequence, Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from infra.bbq_google_sheets_config import (
@@ -18,17 +18,19 @@ from infra.checkin_remote_diff_config import (
     is_yymg_attendance_summary_chat,
     yymg_summary_excluded_employee_ids,
 )
+from domain.clock_matter import format_export_status_with_note
 from domain.daily_attendance_status import PunchAt, evaluate_calendar_day_status, is_midnight_noon_shift
 from domain.employee_region import (
     SCREENSHOT_TIMEZONE,
     local_shift_wall_times_to_beijing,
     resolve_employee_shift_timezone,
 )
+from infra.kqbbq_checkin_config import is_kqbbq_chat
 from infra.leave_return_keyboard_only_config import is_qdyyz_chat
 from infra.db import get_cursor
 from repositories import employee_shift_calendar_repo, employee_shift_config_repo, registrations_repo, shifts_repo
 from services.employee_shift_day_service import DailyShift, load_calendar_map
-from repositories.clock_records_repo import ensure_clock_action_column
+from repositories.clock_records_repo import ensure_clock_action_column, ensure_matter_note_column
 from repositories.temporary_leave_records_repo import TemporaryLeaveRecordRow, list_by_chat_and_range
 from services.shift_import_service import ATTENDANCE_EXPORT_HEADERS_CN
 from services.csv_security import safe_csv_cell
@@ -53,6 +55,7 @@ def _timezone_for_attendance_group(*, chat_id: int) -> str:
 class ClockPunch:
     at: datetime
     action: str | None
+    note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,7 @@ class AttendanceSummaryRow:
     leave_time_display: str
     status: str
     work_date: Optional[date] = None
+    status_note: str = ""
 
 
 @dataclass(frozen=True)
@@ -185,14 +189,14 @@ def _worker_timezone(*, chat_id: int, region_code: str, shift_timezone: str) -> 
     )
 
 
-def _qdyyz_shift_times_for_compare(
+def _local_shift_times_for_beijing_compare(
     *,
     d: date,
     cin: time,
     cout: time,
     row: dict,
 ) -> tuple[time, time, str]:
-    """QDYYZ：表上当地墙钟换算成北京墙钟，再与北京打卡比对。"""
+    """班表当地墙钟（如泰国）→ 北京墙钟，再与北京打卡 OCR 时刻比对。"""
     local_tz = str(row.get("local_tz") or row.get("tz") or SCREENSHOT_TIMEZONE)
     bj_in, bj_out = local_shift_wall_times_to_beijing(
         day=d,
@@ -235,6 +239,8 @@ def _fetch_group_workers(*, chat_id: int, year_month: str) -> List[dict]:
             shift_timezone=shift_timezone,
         )
         qdyyz = is_qdyyz_chat(chat_id=int(chat_id), chat_title=None)
+        kqbbq = is_kqbbq_chat(chat_id=int(chat_id), chat_title=None)
+        shift_times_are_local = qdyyz or kqbbq
         out.append(
             {
                 "employee_id": str(r[0]).strip(),
@@ -246,9 +252,9 @@ def _fetch_group_workers(*, chat_id: int, year_month: str) -> List[dict]:
                 "rest_days": str(r[6] or ""),
                 "region_code": region_code,
                 "local_tz": local_tz,
-                # QDYYZ：打卡按北京；班表当地时刻在比对前换算
-                "tz": SCREENSHOT_TIMEZONE if qdyyz else local_tz,
-                "shift_times_are_local": qdyyz,
+                # 打卡固定北京；谷歌班表/QDYYZ 班表为当地墙钟，比对前换算
+                "tz": SCREENSHOT_TIMEZONE if shift_times_are_local else local_tz,
+                "shift_times_are_local": shift_times_are_local,
             }
         )
     excluded: set[str] = set()
@@ -298,10 +304,11 @@ def _fetch_clock_map(
     *, chat_id: int, start_utc: datetime, end_utc: datetime
 ) -> Dict[str, List[ClockPunch]]:
     ensure_clock_action_column()
+    ensure_matter_note_column()
     with get_cursor() as cur:
         cur.execute(
             """
-            SELECT employee_id, clock_time, clock_action
+            SELECT employee_id, clock_time, clock_action, matter_note
             FROM public.clock_records
             WHERE chat_id = %s
               AND clock_time >= %s
@@ -312,9 +319,15 @@ def _fetch_clock_map(
         )
         rows = cur.fetchall() or []
     out: Dict[str, List[ClockPunch]] = defaultdict(list)
-    for eid, t, action in rows:
+    for eid, t, action, note in rows:
         if isinstance(t, datetime):
-            out[str(eid)].append(ClockPunch(at=t, action=str(action).strip() if action else None))
+            out[str(eid)].append(
+                ClockPunch(
+                    at=t,
+                    action=str(action).strip() if action else None,
+                    note=str(note).strip() if note else None,
+                )
+            )
     return out
 
 
@@ -383,6 +396,7 @@ def _punches_for_employee_in_range(
     end_utc: datetime,
 ) -> List[ClockPunch]:
     ensure_clock_action_column()
+    ensure_matter_note_column()
     if chat_id is not None:
         from repositories.clock_records_repo import list_clock_records_by_employee_chat_in_range
 
@@ -412,6 +426,7 @@ def _punches_for_employee_in_range(
                 ClockPunch(
                     at=r.clock_time,
                     action=str(r.clock_action).strip() if r.clock_action else None,
+                    note=str(r.matter_note).strip() if r.matter_note else None,
                 )
             )
     return out
@@ -431,6 +446,8 @@ def compute_month_stats_for_employee(
     rest_days_raw: str,
     tz_name: str,
     calendar_map: dict[tuple[str, date], DailyShift] | None = None,
+    shift_times_are_local: bool | None = None,
+    local_tz: str | None = None,
 ) -> EmployeeMonthAttendanceStats:
     """
     按自然日汇总本月考勤（与导出 CSV、群 23:00 统计同规则）：
@@ -443,10 +460,18 @@ def compute_month_stats_for_employee(
     if last_day < month_start:
         return EmployeeMonthAttendanceStats(0, 0, 0, 0)
 
+    if shift_times_are_local is None and chat_id is not None:
+        shift_times_are_local = is_qdyyz_chat(chat_id=int(chat_id)) or is_kqbbq_chat(
+            chat_id=int(chat_id)
+        )
+    shift_times_are_local = bool(shift_times_are_local)
+    resolved_local_tz = (local_tz or tz_name).strip() or tz_name
+    punch_tz_name = SCREENSHOT_TIMEZONE if shift_times_are_local else tz_name
+
     range_start = month_start - timedelta(days=1)
     range_end = last_day + timedelta(days=1)
-    start_utc, _ = _bounds_utc(d=range_start, tz_name=tz_name)
-    _, end_utc = _bounds_utc(d=range_end, tz_name=tz_name)
+    start_utc, _ = _bounds_utc(d=range_start, tz_name=punch_tz_name)
+    _, end_utc = _bounds_utc(d=range_end, tz_name=punch_tz_name)
     all_punches = _punches_for_employee_in_range(
         employee_id=employee_id,
         shift_id=shift_id,
@@ -468,9 +493,11 @@ def compute_month_stats_for_employee(
         checkin=checkin,
         checkout=checkout,
         rest_days_raw=rest_days_raw,
-        tz_name=tz_name,
+        tz_name=punch_tz_name,
         calendar_map=resolved_calendar,
         punches=all_punches,
+        shift_times_are_local=shift_times_are_local,
+        local_tz=resolved_local_tz,
     )
 
 
@@ -486,6 +513,8 @@ def compute_month_stats_from_punches(
     tz_name: str,
     calendar_map: dict[tuple[str, date], DailyShift] | None,
     punches: Iterable[ClockPunch],
+    shift_times_are_local: bool = False,
+    local_tz: str | None = None,
 ) -> EmployeeMonthAttendanceStats:
     """Pure month-stat policy over caller-owned attendance facts."""
     tz = ZoneInfo(tz_name)
@@ -500,6 +529,8 @@ def compute_month_stats_from_punches(
         "cout": checkout,
         "rest_days": rest_days_raw,
         "shift_range": "",
+        "shift_times_are_local": shift_times_are_local,
+        "local_tz": (local_tz or tz_name),
     }
     cal = calendar_map
 
@@ -651,11 +682,11 @@ def _status_for_row(
     )
     tz_name = str(row.get("tz") or SCREENSHOT_TIMEZONE)
     if row.get("shift_times_are_local"):
-        cin, cout, tz_name = _qdyyz_shift_times_for_compare(
+        cin, cout, tz_name = _local_shift_times_for_beijing_compare(
             d=d, cin=cin, cout=cout, row=row
         )
         if not prev_rest:
-            prev_cin, prev_cout, _ = _qdyyz_shift_times_for_compare(
+            prev_cin, prev_cout, _ = _local_shift_times_for_beijing_compare(
                 d=prev_d, cin=prev_cin, cout=prev_cout, row=row
             )
     tz = ZoneInfo(tz_name)
@@ -674,6 +705,31 @@ def _status_for_row(
     first = _fmt_local_hms(checkin_utc, tz=tz) if checkin_utc else ""
     last = _fmt_local_hms(checkout_utc, tz=tz) if checkout_utc else ""
     return status, first, last
+
+
+def _export_status_note(
+    *,
+    chat_id: int,
+    group_name: str,
+    punches_today: List[ClockPunch],
+) -> str:
+    if not is_qdyyz_chat(chat_id=int(chat_id), chat_title=group_name):
+        return ""
+    sign_in_note = ""
+    sign_out_note = ""
+    first_note = ""
+    for punch in punches_today:
+        note = (punch.note or "").strip()
+        if not note:
+            continue
+        if not first_note:
+            first_note = note
+        action = (punch.action or "").strip()
+        if action == "签到" and not sign_in_note:
+            sign_in_note = note
+        elif action == "签退" and not sign_out_note:
+            sign_out_note = note
+    return sign_in_note or sign_out_note or first_note
 
 
 def compute_shift_start_notice_buckets(
@@ -827,13 +883,85 @@ def build_rows_for_group(
                 last_clock_local=last,
                 leave_time_display=leave_display,
                 status=status,
+                status_note=_export_status_note(
+                    chat_id=int(chat_id),
+                    group_name=gname,
+                    punches_today=punches_today,
+                ),
             )
         )
     return out
 
 
+
+
+def _person_display_plain(person: ShiftStartNoticePerson) -> str:
+    name = (person.english_name or "").strip()
+    username = (person.tg_username or "").strip()
+    if username:
+        handle = username if username.startswith("@") else f"@{username}"
+        return f"{name} ({handle})" if name else handle
+    return name or "（无名）"
+
+
+def _list_people_plain(title: str, people: Sequence[ShiftStartNoticePerson]) -> str:
+    if not people:
+        return f"{title}：0\n"
+    lines = "\n".join(f"- {_person_display_plain(p)}" for p in people)
+    return f"{title}：{len(people)}\n{lines}\n"
+
+
+def build_shift_start_notice_text(
+    *,
+    work_date: date,
+    shift_label: str,
+    timezone_name: str,
+    buckets: ShiftStartNoticeBuckets,
+) -> str:
+    """开班群公告（纯文本，口径与 compute_shift_start_notice_buckets 一致）。"""
+    parts: list[str] = []
+    parts.append("开班考勤汇总：\n")
+    parts.append(f"日期：{work_date}\n")
+    parts.append(f"班次：{shift_label}\n")
+    parts.append(f"时区：{timezone_name}\n\n")
+    parts.append(f"今日应到岗人数：{buckets.should_count}\n")
+    parts.append(f"已到岗人数：{len(buckets.arrived)}\n\n")
+    parts.append(_list_people_plain("报备休假名单", buckets.on_rest))
+    parts.append(_list_people_plain("迟到名单", buckets.late))
+    parts.append(_list_people_plain("未打卡名单", buckets.absent))
+    return "".join(parts).rstrip()
+
+
+def build_shift_start_notice_text_for_shift(
+    *,
+    chat_id: int,
+    shift_id: int,
+    work_date: date,
+) -> str | None:
+    shift = shifts_repo.get_by_id(int(shift_id))
+    if shift is None or shift.attendance_group_id is None:
+        return None
+    if int(shift.attendance_group_id) != int(chat_id):
+        return None
+    buckets = compute_shift_start_notice_buckets(
+        chat_id=int(chat_id),
+        target_date=work_date,
+        shift_id=int(shift_id),
+    )
+    shift_label = _format_shift_range_label(
+        shift_range="",
+        cin=shift.checkin_time,
+        cout=shift.checkout_time,
+    )
+    return build_shift_start_notice_text(
+        work_date=work_date,
+        shift_label=shift_label,
+        timezone_name=str(shift.timezone or ""),
+        buckets=buckets,
+    )
+
 def summarize_text(
-    *, rows: Iterable[AttendanceSummaryRow], target_date: date, chat_id: int | None = None
+    *, rows: Iterable[AttendanceSummaryRow], target_date: date, chat_id: int | None = None, chat_title: str | None = None
 ) -> str:
     """群 23:00 汇总：聚焦异常，正常仅报人数。
 
@@ -862,7 +990,7 @@ def summarize_text(
     ]
     normal_count = len(by_status.get("正常", []))
     rest = names_for("月休")
-    show_not_back = not is_bbq_attendance_summary_chat(chat_id=chat_id)
+    show_not_back = not is_bbq_attendance_summary_chat(chat_id=chat_id, chat_title=chat_title)
 
     lines = [f"今日考勤概览-{target_date.strftime('%Y/%m/%d')}", ""]
 
@@ -934,7 +1062,7 @@ def encode_csv(*, rows: Iterable[AttendanceSummaryRow]) -> bytes:
                 r.first_clock_local,
                 r.last_clock_local,
                 r.leave_time_display,
-                r.status,
+                format_export_status_with_note(r.status, r.status_note),
             )]
         )
     return codecs.BOM_UTF8 + buf.getvalue().encode("utf-8")
@@ -1068,6 +1196,11 @@ def build_rows_for_roster_at_chat(
                 last_clock_local=last,
                 leave_time_display=leave_display,
                 status=status,
+                status_note=_export_status_note(
+                    chat_id=int(chat_id),
+                    group_name=gname,
+                    punches_today=punches_today,
+                ),
             )
         )
     return out
@@ -1164,6 +1297,11 @@ def build_rows_for_monthly_roster_remainder(
                 last_clock_local=last,
                 leave_time_display=leave_display,
                 status=status,
+                status_note=_export_status_note(
+                    chat_id=int(chat_id),
+                    group_name=gname,
+                    punches_today=punches_today,
+                ),
             )
         )
     return out

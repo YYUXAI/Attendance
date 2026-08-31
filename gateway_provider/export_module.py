@@ -30,6 +30,7 @@ from infra.admin_export_scope_config import admin_export_chat_id_for_employee
 from infra.leave_return_keyboard_only_config import (
     is_leave_return_keyboard_only_chat,
     is_qdyyz_chat,
+    leave_overtime_minutes_for_chat,
 )
 from repositories import registrations_repo, worker_schedule_repo
 from services import attendance_export_service, leave_export_service
@@ -204,7 +205,10 @@ def process_export_callback(
                 start=start,
                 end=end,
             )
-            body = leave_export_service.encode_leave_export_xlsx(rows=leave_rows)
+            body = leave_export_service.encode_leave_export_xlsx(
+                rows=leave_rows,
+                overtime_minutes=leave_overtime_minutes_for_chat(chat_id=export_chat_id),
+            )
             body = _deterministic_xlsx(body, generated_at=received_at)
             caption = f"{range_label}报备导出（{len(leave_rows)} 条）"
             file_name = leave_export_service.leave_export_filename(start=start, end=end)
