@@ -123,7 +123,7 @@ def _parse_day_columns(date_row: list[str]) -> dict[int, int]:
         if not text.isdigit():
             continue
         day = int(text)
-        if 1 <= day <= 31:
+        if 1 <= day <= 31 and day not in out:
             out[day] = col
     return out
 
