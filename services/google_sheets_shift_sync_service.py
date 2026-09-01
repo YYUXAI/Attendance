@@ -461,6 +461,9 @@ def sync_shifts_from_google_sheets(
     if not ym or not re.fullmatch(r"\d{4}-\d{2}", ym):
         return SyncResult(False, "缺少或无效 GOOGLE_SHEETS_YEAR_MONTH", ym, 0, 0)
 
+    primary_loaded = False
+    employees: list[ParsedEmployee] = []
+    sheet_title = ""
     try:
         # 主表只按月份 tab 名取数，避免 gid 回退把其它月份写入当前 year_month
         sheet_title, rows = fetch_shift_matrix_sheet(
@@ -471,6 +474,7 @@ def sync_shifts_from_google_sheets(
             fallback_gid=None,
         )
         _, employees = parse_shift_matrix(rows, year_month=ym)
+        primary_loaded = True
     except Exception as error:
         alt_cfg_probe = load_google_sheets_alt_config()
         if not alt_cfg_probe:
@@ -482,23 +486,34 @@ def sync_shifts_from_google_sheets(
             ym,
             type(error).__name__,
         )
-        employees = []
-        sheet_title = ""
 
     employee_shift_config_repo.ensure_table()
     employee_shift_calendar_repo.ensure_table()
     employee_shift_roster_repo.ensure_table()
-    emp_ids = [emp.employee_id for emp in employees]
-    export_roster_ids = main_export_roster_employee_ids(
-        employees,
-        excluded_employee_ids=bbq_summary_excluded_employee_ids(),
-    )
-    employee_shift_roster_repo.set_roster(
-        year_month=ym,
-        source="main",
-        employee_ids=export_roster_ids,
-    )
-    calendar_count = _upsert_employees(employees, year_month=ym)[1]
+    if primary_loaded:
+        emp_ids = [emp.employee_id for emp in employees]
+        export_roster_ids = main_export_roster_employee_ids(
+            employees,
+            excluded_employee_ids=bbq_summary_excluded_employee_ids(),
+        )
+        employee_shift_roster_repo.set_roster(
+            year_month=ym,
+            source="main",
+            employee_ids=export_roster_ids,
+        )
+        calendar_count = _upsert_employees(employees, year_month=ym)[1]
+    else:
+        emp_ids = []
+        export_roster_ids = employee_shift_roster_repo.list_roster(
+            year_month=ym,
+            source="main",
+        )
+        calendar_count = 0
+        log.warning(
+            "google_sheets: preserving main roster for %s (%d employees)",
+            ym,
+            len(export_roster_ids),
+        )
 
     alt_cfg = load_google_sheets_alt_config()
     alt_roster_ids: list[str] = []
@@ -536,7 +551,7 @@ def sync_shifts_from_google_sheets(
             log.error("google_sheets test group shift sync failed", extra={"error_type": type(error).__name__})
             return SyncResult(False, "主表成功但测试群班表失败", ym, len(employees), calendar_count)
 
-    protected = set(alt_roster_ids) | set(test_roster_ids)
+    protected = set(alt_roster_ids) | set(test_roster_ids) | set(export_roster_ids)
     if alt_cfg:
         protected |= set(alt_cfg.mirror_from_to.keys())
     keep_ids = list(set(emp_ids) | protected)

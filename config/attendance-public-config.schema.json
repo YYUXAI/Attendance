@@ -219,7 +219,7 @@
     "scheduler": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "pollSeconds", "leaseSeconds", "timezone", "dailySummaryEnabled", "dailySummaryTime", "dailySummarySkipDate", "dailyReportEnabled", "dailyReportTime"],
+      "required": ["enabled", "pollSeconds", "leaseSeconds", "timezone", "dailySummaryEnabled", "dailySummaryTime", "dailySummarySkipDate", "shiftStartNoticeEnabled", "dailyReportEnabled", "dailyReportTime"],
       "properties": {
         "enabled": { "type": "boolean" },
         "pollSeconds": { "type": "number", "minimum": 0.1, "maximum": 3600 },
@@ -228,6 +228,7 @@
         "dailySummaryEnabled": { "type": "boolean" },
         "dailySummaryTime": { "type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$" },
         "dailySummarySkipDate": { "type": "string", "pattern": "^(?:|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:,[0-9]{4}-[0-9]{2}-[0-9]{2})*)$" },
+        "shiftStartNoticeEnabled": { "type": "boolean" },
         "dailyReportEnabled": { "type": "boolean" },
         "dailyReportTime": { "type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$" }
       },

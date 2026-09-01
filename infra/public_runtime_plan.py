@@ -116,6 +116,9 @@ def derive_attendance_public_runtime_plan(
             "GROUP_DAILY_SUMMARY_TIME": str(scheduler["dailySummaryTime"]),
             "GROUP_DAILY_SUMMARY_TZ": str(scheduler["timezone"]),
             "GROUP_DAILY_SUMMARY_SKIP_DATE": str(scheduler["dailySummarySkipDate"]),
+            "GROUP_SHIFT_START_NOTICE_ENABLED": _enabled(
+                scheduler["shiftStartNoticeEnabled"]
+            ),
             "ATTENDANCE_PROVIDER_SCHEDULER_ENABLED": _enabled(scheduler["enabled"]),
             "ATTENDANCE_PROVIDER_SCHEDULER_POLL_SECONDS": str(scheduler["pollSeconds"]),
             "ATTENDANCE_PROVIDER_SCHEDULER_LEASE_SECONDS": str(scheduler["leaseSeconds"]),

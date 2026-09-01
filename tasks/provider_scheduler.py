@@ -61,6 +61,7 @@ class ProviderSchedulerConfig:
     group_summary_minute: int
     group_summary_timezone: str
     group_summary_skip_dates: frozenset[date]
+    shift_start_notice_enabled: bool
     daily_report_enabled: bool
     daily_report_hour: int
     daily_report_minute: int
@@ -82,7 +83,9 @@ class ProviderSchedulerConfig:
                 "gateway_base_url and gateway_bearer_token must be configured together"
             )
         if (
-            self.group_summary_enabled or self.daily_report_enabled
+            self.group_summary_enabled
+            or self.shift_start_notice_enabled
+            or self.daily_report_enabled
         ) and self.gateway_base_url is None:
             raise ValueError(
                 "Gateway dynamic group route directory is required when group schedules are enabled"
@@ -117,7 +120,11 @@ def run_scheduler_cycle(
     claimed = 0
     enqueued = 0
     group_routes: Sequence[AttendanceGroupRoute] = ()
-    if config.group_summary_enabled or config.daily_report_enabled:
+    if (
+        config.group_summary_enabled
+        or config.shift_start_notice_enabled
+        or config.daily_report_enabled
+    ):
         if group_route_reader is None:
             if config.gateway_base_url is None or config.gateway_bearer_token is None:
                 raise RuntimeError("Gateway dynamic group route directory is unavailable")
@@ -209,7 +216,7 @@ def run_scheduler_cycle(
                 break
 
 
-    if config.group_summary_enabled and group_routes:
+    if config.shift_start_notice_enabled and group_routes:
         claimed_shift, enqueued_shift = _run_shift_start_cycle(
             config,
             worker_id=worker_id,
@@ -867,6 +874,9 @@ def load_scheduler_config(environment: dict[str, str]) -> ProviderSchedulerConfi
             environment.get("GROUP_DAILY_SUMMARY_TZ") or "Asia/Shanghai"
         ).strip(),
         group_summary_skip_dates=skip_dates,
+        shift_start_notice_enabled=_enabled(
+            environment, "GROUP_SHIFT_START_NOTICE_ENABLED", False
+        ),
         daily_report_enabled=_enabled(
             environment, "DAILY_ATTENDANCE_REPORT_ENABLED", True
         ),

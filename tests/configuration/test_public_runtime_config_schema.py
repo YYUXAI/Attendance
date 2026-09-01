@@ -263,6 +263,7 @@ def _fixture() -> dict[str, object]:
             "dailySummaryEnabled": False,
             "dailySummaryTime": "23:30",
             "dailySummarySkipDate": "",
+            "shiftStartNoticeEnabled": False,
             "dailyReportEnabled": True,
             "dailyReportTime": "23:00",
         },
