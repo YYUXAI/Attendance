@@ -5,7 +5,7 @@ import base64
 import io
 import logging
 import zipfile
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
 
@@ -34,6 +34,7 @@ from infra.leave_return_keyboard_only_config import (
 )
 from repositories import registrations_repo, worker_schedule_repo
 from services import attendance_export_service, leave_export_service
+from services.shift_view_service import SHIFT_VIEW_ALT, roster_employee_ids
 
 
 log = logging.getLogger(__name__)
@@ -87,6 +88,34 @@ def is_leave_export_scope(*, chat_id: int | None) -> bool:
 def is_dual_admin_export_scope(*, chat_id: int | None) -> bool:
     """QDYYZ：管理员菜单同时提供考勤导出与报备导出。"""
     return is_qdyyz_chat(chat_id=chat_id, chat_title=None)
+
+
+async def _collect_attendance_export_rows(
+    *,
+    export_chat_id: int,
+    start: date,
+    end: date,
+) -> list:
+    if not is_dual_admin_export_scope(chat_id=export_chat_id):
+        return await attendance_export_service.collect_rows_for_single_group(
+            chat_id=export_chat_id,
+            start=start,
+            end=end,
+        )
+    months = {
+        (start + timedelta(days=offset)).strftime("%Y-%m")
+        for offset in range((end - start).days + 1)
+    }
+    roster_ids = frozenset().union(*(
+        roster_employee_ids(year_month=month, view=SHIFT_VIEW_ALT)
+        for month in months
+    ))
+    return await attendance_export_service.collect_rows_for_roster_at_chat(
+        chat_id=export_chat_id,
+        start=start,
+        end=end,
+        roster_ids=roster_ids,
+    )
 
 
 def ensure_admin_identity(
@@ -214,8 +243,8 @@ def process_export_callback(
             file_name = leave_export_service.leave_export_filename(start=start, end=end)
         else:
             rows = asyncio.run(
-                attendance_export_service.collect_rows_for_single_group(
-                    chat_id=export_chat_id,
+                _collect_attendance_export_rows(
+                    export_chat_id=int(export_chat_id),
                     start=start,
                     end=end,
                 )

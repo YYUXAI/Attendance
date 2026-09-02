@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, timezone
 
 import psycopg2
@@ -94,3 +95,46 @@ def test_admin_export_uses_configured_single_group(
     assert seen["chat_id"] == -1004248049456
     assert seen["start"] == date(2026, 8, 3)
     assert seen["end"] == date(2026, 8, 8)
+
+
+def test_dual_scope_export_uses_its_group_and_alt_roster(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        gateway_export_module,
+        "is_dual_admin_export_scope",
+        lambda **_kwargs: True,
+    )
+    seen_months: list[str] = []
+
+    def roster_for_month(*, year_month: str, view: str) -> frozenset[str]:
+        seen_months.append(year_month)
+        assert view == gateway_export_module.SHIFT_VIEW_ALT
+        return frozenset({f"employee-{year_month}"})
+
+    seen: dict[str, object] = {}
+
+    async def capture_roster_at_chat(**kwargs: object) -> list[object]:
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(gateway_export_module, "roster_employee_ids", roster_for_month)
+    monkeypatch.setattr(
+        gateway_export_module.attendance_export_service,
+        "collect_rows_for_roster_at_chat",
+        capture_roster_at_chat,
+    )
+
+    asyncio.run(gateway_export_module._collect_attendance_export_rows(
+        export_chat_id=-1004373351741,
+        start=date(2026, 7, 30),
+        end=date(2026, 8, 2),
+    ))
+
+    assert set(seen_months) == {"2026-07", "2026-08"}
+    assert seen == {
+        "chat_id": -1004373351741,
+        "start": date(2026, 7, 30),
+        "end": date(2026, 8, 2),
+        "roster_ids": frozenset({"employee-2026-07", "employee-2026-08"}),
+    }
