@@ -129,7 +129,12 @@ def process_group_checkin(
         source_chat_id=message.chat.id,
         source_message_id=message.message_id,
     ):
-        return _reply(request, update, "该打卡消息已处理，本次未重复记账。")
+        return _duplicate_checkin_response(
+            request,
+            cursor,
+            update,
+            caption=message.caption,
+        )
 
     if defer_long_operation:
         worker_schedule_repo.enqueue_run_cur(
@@ -218,6 +223,12 @@ def process_group_checkin(
         matter_note=parse_matter_note_from_text(message.caption),
     )
     if not inserted:
+        if _try_backfill_matter_note_on_edit(
+            cursor,
+            update,
+            caption=message.caption,
+        ):
+            return _silent_accepted_response(request)
         return _reply_after_progress(
             request,
             update,
@@ -454,6 +465,38 @@ def _silent_accepted_response(request: GatewayEventRequest) -> GatewayEventRespo
         session=UnchangedSessionDirective(directive="UNCHANGED"),
         actions=[],
     )
+
+
+def _try_backfill_matter_note_on_edit(
+    cursor: Cursor,
+    update: TelegramMessageUpdate | TelegramEditedMessageUpdate,
+    *,
+    caption: str | None,
+) -> bool:
+    if not isinstance(update, TelegramEditedMessageUpdate):
+        return False
+    message = _checkin_message(update)
+    note = parse_matter_note_from_text(caption)
+    if not note:
+        return False
+    return clock_records_repo.backfill_matter_note_if_empty_cur(
+        cursor,
+        source_chat_id=message.chat.id,
+        source_message_id=message.message_id,
+        matter_note=note,
+    )
+
+
+def _duplicate_checkin_response(
+    request: GatewayEventRequest,
+    cursor: Cursor,
+    update: TelegramMessageUpdate | TelegramEditedMessageUpdate,
+    *,
+    caption: str | None,
+) -> GatewayEventResponse:
+    if _try_backfill_matter_note_on_edit(cursor, update, caption=caption):
+        return _silent_accepted_response(request)
+    return _reply(request, update, "该打卡消息已处理，本次未重复记账。")
 
 
 def _checkin_message(

@@ -90,6 +90,30 @@ def _insert_gateway_clock_record_once_cur(
     return cursor.fetchone() is not None
 
 
+def backfill_matter_note_if_empty_cur(
+    cursor: Cursor,
+    *,
+    source_chat_id: int,
+    source_message_id: int,
+    matter_note: str | None,
+) -> bool:
+    note = (str(matter_note).strip() if matter_note else "") or None
+    if not note:
+        return False
+    cursor.execute(
+        """
+        UPDATE public.clock_records
+        SET matter_note = %s
+        WHERE source_chat_id = %s
+          AND source_message_id = %s
+          AND COALESCE(NULLIF(TRIM(matter_note), ''), '') = ''
+        RETURNING id
+        """,
+        (note, int(source_chat_id), int(source_message_id)),
+    )
+    return cursor.fetchone() is not None
+
+
 def insert_gateway_clock_record_cur(
     cursor: Cursor,
     *,

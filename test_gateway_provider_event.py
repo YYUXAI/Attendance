@@ -45,10 +45,12 @@ def _set_group_policy(
     monkeypatch: pytest.MonkeyPatch,
     *,
     capabilities: list[str] | None = None,
+    title: str = "Mutable title",
+    roster: str = "main",
 ) -> None:
     groups = [{
-        "title": "Mutable title",
-        "roster": "main",
+        "title": title,
+        "roster": roster,
         "capabilities": capabilities or ["standard-checkin"],
     }]
     policies = normalize_group_policies(groups)
@@ -131,6 +133,7 @@ def _apply_gateway_provider_migration() -> None:
             "0010_scheduler_fencing_and_sheets_outbox.sql",
             "0011_worker_action_dependencies.sql",
             "0012_attendance_group_policy_and_business_facts.sql",
+            "0013_clock_records_matter_note.sql",
         )
     ]
     with psycopg2.connect(_database_url()) as connection:
@@ -3543,6 +3546,82 @@ def test_group_photo_checkin_reads_gateway_file_and_persists_once(
         "replyToMessageId": 1401,
         "text": "签到成功",
     }]
+
+
+def test_edited_checkin_backfills_missing_matter_note_without_reprocessing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    qdyyz_chat_id = -1004373351741
+    _apply_gateway_provider_migration()
+    _set_group_policy(
+        monkeypatch,
+        title="QDYYZ 打卡报备群",
+        roster="alt",
+    )
+    monkeypatch.setenv("CHECKIN_AI_ENABLED", "false")
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO registrations (
+                    employee_id, english_name, tg_id, registered_chat_id
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                ("79999", "EDITNOTE", 82999, qdyyz_chat_id),
+            )
+            cursor.execute(
+                """
+                INSERT INTO clock_records (
+                    chat_id, file_id, tg_id, employee_id, clock_time,
+                    clock_action, matter_note, source_chat_id, source_message_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, NULL, %s, %s)
+                """,
+                (
+                    qdyyz_chat_id,
+                    "existing-file",
+                    82999,
+                    "79999",
+                    datetime(2026, 8, 8, 8, 0, tzinfo=timezone.utc),
+                    "签到",
+                    qdyyz_chat_id,
+                    1499,
+                ),
+            )
+
+    event = _group_checkin_event(
+        event_number=1499,
+        file_ref="tgf_2123456789abcdef0123456789abcdef01234567",
+        tg_id=82999,
+        edited=True,
+    )
+    event["telegramUpdate"]["edited_message"]["chat"] = {
+        "id": qdyyz_chat_id,
+        "type": "supergroup",
+        "title": "QDYYZ 打卡报备群",
+    }
+    event["conversationId"] = f"telegram:chat:{qdyyz_chat_id}"
+    event["telegramUpdate"]["edited_message"]["caption"] = (
+        "#打卡\n英文名：EDITNOTE\n工号：79999\n事项：签到（虚拟机无法登记）"
+    )
+    response = _provider_client().post(
+        "/integration/gateway/v1/events",
+        headers={"Authorization": f"Bearer {_TEST_GATEWAY_CREDENTIAL}"},
+        json=event,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["actions"] == []
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT matter_note
+                FROM clock_records
+                WHERE source_chat_id = %s AND source_message_id = %s
+                """,
+                (qdyyz_chat_id, 1499),
+            )
+            assert cursor.fetchone() == ("虚拟机无法登记",)
 
 
 def test_group_photo_checkin_outside_roster_is_no_longer_blocked(
