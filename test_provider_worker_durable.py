@@ -58,6 +58,34 @@ def _prepare_database() -> None:
             )
 
 
+def test_worker_loop_stops_before_claiming_another_cycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stopped = Event()
+    calls: list[str] = []
+
+    def run_once(*_args: object, **_kwargs: object) -> int:
+        calls.append("cycle")
+        stopped.set()
+        return 0
+
+    monkeypatch.setattr(provider_worker, "run_durable_worker_cycle", run_once)
+    config = provider_worker.DurableProviderWorkerConfig(
+        database_url="postgresql://unused",
+        gateway_base_url="http://gateway.test",
+        gateway_bearer_token=_ATTENDANCE_CREDENTIAL,
+        poll_interval_seconds=60,
+    )
+
+    provider_worker.run_durable_worker_loop(
+        config,
+        worker_id="shutdown-test",
+        stop_event=stopped,
+    )
+
+    assert calls == ["cycle"]
+
+
 class _FakeGateway:
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []

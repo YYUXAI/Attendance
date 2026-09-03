@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import socket
 import sys
-import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from threading import Event
 from typing import Sequence
 from urllib.parse import urlsplit
 
@@ -169,13 +170,22 @@ def run_durable_worker_loop(
     config: DurableProviderWorkerConfig,
     *,
     worker_id: str,
+    stop_event: Event | None = None,
+    public_config_fingerprint: str | None = None,
 ) -> None:
-    while True:
+    stopped = stop_event or Event()
+    while not stopped.is_set():
         try:
+            if public_config_fingerprint is not None:
+                runtime_component_repo.record_runtime_component(
+                    database_url=config.database_url,
+                    component="worker",
+                    public_config_fingerprint=public_config_fingerprint,
+                )
             run_durable_worker_cycle(config, worker_id=worker_id)
         except Exception:
             log.exception("attendance provider worker cycle failed")
-        time.sleep(config.poll_interval_seconds)
+        stopped.wait(config.poll_interval_seconds)
 
 
 def load_durable_worker_config(environment: dict[str, str]) -> DurableProviderWorkerConfig:
@@ -235,14 +245,15 @@ def main(arguments: Sequence[str] | None = None) -> int:
     if args == ["--once"]:
         run_durable_worker_cycle(config, worker_id=worker_id)
         return 0
-    while True:
-        runtime_component_repo.record_runtime_component(
-            database_url=config.database_url,
-            component="worker",
-            public_config_fingerprint=public_config_fingerprint,
-        )
-        run_durable_worker_cycle(config, worker_id=worker_id)
-        time.sleep(config.poll_interval_seconds)
+    stopped = Event()
+    signal.signal(signal.SIGINT, lambda *_args: stopped.set())
+    signal.signal(signal.SIGTERM, lambda *_args: stopped.set())
+    run_durable_worker_loop(
+        config,
+        worker_id=worker_id,
+        stop_event=stopped,
+        public_config_fingerprint=public_config_fingerprint,
+    )
     return 0
 
 

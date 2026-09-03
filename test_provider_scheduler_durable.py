@@ -30,6 +30,49 @@ _SUMMARY_ROUTE_KEY = "telegram-group-route.attendance-main"
 _EMPLOYEE_ID = "74891"
 
 
+def test_scheduler_loop_stops_before_claiming_another_cycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stopped = threading.Event()
+    calls: list[str] = []
+
+    def run_once(*_args: object, **_kwargs: object) -> object:
+        calls.append("cycle")
+        stopped.set()
+        return provider_scheduler.SchedulerCycleResult(0, 0)
+
+    monkeypatch.setattr(provider_scheduler, "run_scheduler_cycle", run_once)
+    monkeypatch.setattr(
+        provider_scheduler.runtime_component_repo,
+        "record_runtime_component",
+        lambda **_kwargs: None,
+    )
+    config = ProviderSchedulerConfig(
+        database_url="postgresql://unused",
+        poll_interval_seconds=60,
+        lease_seconds=30,
+        group_summary_enabled=False,
+        group_summary_hour=23,
+        group_summary_minute=30,
+        group_summary_timezone="Asia/Shanghai",
+        group_summary_skip_dates=frozenset(),
+        shift_start_notice_enabled=False,
+        daily_report_enabled=False,
+        daily_report_hour=23,
+        daily_report_minute=30,
+        daily_report_timezone="Asia/Shanghai",
+    )
+
+    provider_scheduler.run_scheduler_loop(
+        config,
+        worker_id="shutdown-test",
+        public_config_fingerprint="a" * 64,
+        stop_event=stopped,
+    )
+
+    assert calls == ["cycle"]
+
+
 def _daily_action_id(target_date: date) -> str:
     suffix = hashlib.sha256(_SUMMARY_ROUTE_KEY.encode("utf-8")).hexdigest()[:12]
     return f"attendance.daily-report.{target_date.isoformat()}.{suffix}"

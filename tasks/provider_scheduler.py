@@ -5,6 +5,7 @@ import base64
 import hashlib
 import logging
 import os
+import signal
 import socket
 import sys
 import time
@@ -893,6 +894,27 @@ def load_scheduler_config(environment: dict[str, str]) -> ProviderSchedulerConfi
     )
 
 
+def run_scheduler_loop(
+    config: ProviderSchedulerConfig,
+    *,
+    worker_id: str,
+    public_config_fingerprint: str,
+    stop_event: Event | None = None,
+) -> None:
+    stopped = stop_event or Event()
+    while not stopped.is_set():
+        try:
+            runtime_component_repo.record_runtime_component(
+                database_url=config.database_url,
+                component="scheduler",
+                public_config_fingerprint=public_config_fingerprint,
+            )
+            run_scheduler_cycle(config, worker_id=worker_id)
+        except Exception:
+            log.exception("Attendance provider scheduler cycle failed")
+        stopped.wait(config.poll_interval_seconds)
+
+
 def main(arguments: Sequence[str] | None = None) -> int:
     configure_logging()
     assert_no_telegram_owner_credentials(os.environ)
@@ -915,17 +937,16 @@ def main(arguments: Sequence[str] | None = None) -> int:
     if args == ["--once"]:
         run_scheduler_cycle(config, worker_id=worker_id)
         return 0
-    while True:
-        try:
-            runtime_component_repo.record_runtime_component(
-                database_url=config.database_url,
-                component="scheduler",
-                public_config_fingerprint=public_config_fingerprint,
-            )
-            run_scheduler_cycle(config, worker_id=worker_id)
-        except Exception:
-            log.exception("Attendance provider scheduler cycle failed")
-        time.sleep(config.poll_interval_seconds)
+    stopped = Event()
+    signal.signal(signal.SIGINT, lambda *_args: stopped.set())
+    signal.signal(signal.SIGTERM, lambda *_args: stopped.set())
+    run_scheduler_loop(
+        config,
+        worker_id=worker_id,
+        public_config_fingerprint=public_config_fingerprint,
+        stop_event=stopped,
+    )
+    return 0
 
 
 def _enabled(environment: dict[str, str], name: str, default: bool) -> bool:
