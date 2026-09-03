@@ -113,12 +113,12 @@ def test_attendance_differential_executes_every_matrix_scenario() -> None:
     expected = _attendance_matrix(matrix_path)
     expected_ids = sorted(item["scenarioId"] for item in expected)
     assert len(expected_ids) == 104
-    assert sum(item["classification"] == "PARITY" for item in expected) == 89
-    assert sum(item["classification"] == "BUGFIX_DELTA" for item in expected) == 15
+    assert sum(item["classification"] == "PARITY" for item in expected) == 83
+    assert sum(item["classification"] == "BUGFIX_DELTA" for item in expected) == 21
     assert report["scenarioIds"] == expected_ids
     assert report["counts"] == {
-        "BUGFIX_DELTA": 15,
-        "PARITY": 89,
+        "BUGFIX_DELTA": 21,
+        "PARITY": 83,
         "TOTAL": 104,
     }
     assert report["result"] == "PASS"

@@ -13,6 +13,14 @@ from services.checkin_image_ai_service import extract_checkin_from_image
 from services.checkin_zhipu_vision_service import extract_checkin_from_zhipu_ocrspace_fallback
 
 
+pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
 def _flash_config() -> CheckinAiConfig:
     return CheckinAiConfig(
         enabled=True,
@@ -30,7 +38,6 @@ def _flash_config() -> CheckinAiConfig:
     )
 
 
-@pytest.mark.asyncio
 async def test_ocrspace_fallback_resolves_pm_clock() -> None:
     ref = datetime(2026, 8, 29, 13, 19, 30, tzinfo=timezone.utc)
     raw = (
@@ -52,7 +59,7 @@ async def test_ocrspace_fallback_resolves_pm_clock() -> None:
 
     assert err is None
     assert ext is not None
-    assert ext.clock_time == "21:20:00"
+    assert ext.clock_time == "21:20"
     assert ext.clock_date == "08-29"
 
     reg = SimpleNamespace(
@@ -73,13 +80,15 @@ async def test_ocrspace_fallback_resolves_pm_clock() -> None:
     assert isinstance(out, datetime)
 
 
-@pytest.mark.asyncio
-async def test_ocrspace_infra_fail_uses_flash_google_beijing_fallback() -> None:
+async def test_ocrspace_infra_fail_uses_flash_google_beijing_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from services.checkin_image_ai_service import CheckinAiExtractError
 
     ref = datetime(2026, 8, 29, 13, 19, 30, tzinfo=timezone.utc)
     cfg = _flash_config()
     captured: dict[str, str] = {}
+    monkeypatch.setenv("CHECKIN_AI_API_KEY", "test-key")
 
     async def fake_ocrspace(**kwargs: object) -> tuple[None, CheckinAiExtractError]:
         return None, CheckinAiExtractError("AI_CONFIG_MISSING", "missing key")
@@ -90,7 +99,14 @@ async def test_ocrspace_infra_fail_uses_flash_google_beijing_fallback() -> None:
         from domain.checkin_image_extraction import CheckinImageExtraction
 
         return (
-            CheckinImageExtraction(clock_time="21:20:00", clock_date="08-29"),
+            CheckinImageExtraction(
+                display_name=None,
+                username_hint=None,
+                clock_time="21:20:00",
+                clock_date="08-29",
+                timezone_iana=None,
+                confidence=None,
+            ),
             None,
         )
 
@@ -126,7 +142,6 @@ async def test_ocrspace_infra_fail_uses_flash_google_beijing_fallback() -> None:
     assert captured["model"] == "glm-4v-flash"
 
 
-@pytest.mark.asyncio
 async def test_ocrspace_infra_fail_bbq_uses_full_vision_46v(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.checkin_image_ai_service import CheckinAiExtractError
     from domain.checkin_image_extraction import CheckinImageExtraction

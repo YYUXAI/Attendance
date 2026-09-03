@@ -13,7 +13,10 @@ from infra.attendance_group_policy import (
 )
 
 
-ROOT_DERIVED_ATTENDANCE_ENVIRONMENT = ("CHECKIN_AI_TESSERACT_CMD",)
+ROOT_DERIVED_ATTENDANCE_ENVIRONMENT = (
+    "CHECKIN_AI_TESSERACT_CMD",
+    "OCRSPACE_API_KEYS_FILE",
+)
 
 
 @dataclass(frozen=True)
@@ -182,6 +185,12 @@ def derive_attendance_public_runtime_plan(
                 "ai.enabled and ai.premium.enabled",
                 "CHECKIN_AI_PREMIUM_API_KEY_FILE",
                 "ZHIPU_PREMIUM_API_KEY_FILE",
+            ),
+            _secret(
+                "attendance_ocrspace_api_keys",
+                ("provider",),
+                "provider",
+                "OCRSPACE_API_KEYS_FILE",
             ),
             _secret(
                 "attendance_google_service_account",

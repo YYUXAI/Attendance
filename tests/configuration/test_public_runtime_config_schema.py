@@ -156,6 +156,7 @@ def test_attendance_runtime_plan_covers_every_non_database_legacy_binding() -> N
         for binding in plan.file_bindings
         for target in binding.target_file_variables
     }
+    secret_targets.add("OCRSPACE_API_KEY")
     identifier_targets = {
         target.removesuffix("_FILE")
         for derived in plan.derived_private_files

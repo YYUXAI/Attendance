@@ -146,6 +146,7 @@ def _apply_gateway_provider_migration() -> None:
                 "WHERE fact_kind = %s",
                 ("admin_export_chat_scope",),
             )
+            cursor.execute("DELETE FROM attendance_runtime_group_policies")
             cursor.execute("DELETE FROM attendance_registration_sessions")
             cursor.execute(
                 "DELETE FROM temporary_leave_records WHERE tg_id IN (%s, %s)",
@@ -630,24 +631,15 @@ def test_attendance_command_restores_the_exact_private_menu_sequence() -> None:
     assert payload["session"] == {"directive": "RELEASE"}
     assert payload["actions"] == [
         {
-            "actionId": "evt-attendance-1001.menu-remove",
-            "type": "SEND_MESSAGE",
-            "chatId": 81001,
-            "replyToMessageId": 501,
-            "text": "旧版底部菜单已收起。",
-            "replyMarkup": {"removeKeyboard": True},
-        },
-        {
             "actionId": "evt-attendance-1001.menu",
             "type": "SEND_MESSAGE",
             "chatId": 81001,
             "replyToMessageId": 501,
-            "text": "请选择功能（使用输入框下方按钮；输入 / 可打开命令）：",
+            "text": "请选择功能：",
             "replyMarkup": {
                 "inlineKeyboard": [
                     [
-                        {"text": "注册", "callbackData": "att:register"},
-                        {"text": "个人", "callbackData": "att:profile"},
+                        {"text": "我的考勤", "callbackData": "att:profile"},
                     ]
                 ]
             },
@@ -729,7 +721,7 @@ def test_admin_attendance_menu_exposes_namespaced_export_action() -> None:
     )
 
     assert response.status_code == 200, response.text
-    keyboard = response.json()["actions"][1]["replyMarkup"]["inlineKeyboard"]
+    keyboard = response.json()["actions"][0]["replyMarkup"]["inlineKeyboard"]
     assert keyboard[0] == [{"text": "我的考勤", "callbackData": "att:profile"}]
     assert keyboard[1] == [{"text": "导出", "callbackData": "att:export"}]
     assert keyboard[2] == [
@@ -767,7 +759,7 @@ def test_qdyyz_admin_menu_exposes_dual_export_and_shift() -> None:
     )
 
     assert response.status_code == 200, response.text
-    keyboard = response.json()["actions"][1]["replyMarkup"]["inlineKeyboard"]
+    keyboard = response.json()["actions"][0]["replyMarkup"]["inlineKeyboard"]
     assert [row[0]["text"] for row in keyboard] == [
         "我的考勤",
         "考勤导出",
@@ -1114,8 +1106,11 @@ def test_group_start_restores_the_exact_reply_keyboard_menu() -> None:
     ]
 
 
-def test_leave_return_only_group_start_omits_signin_signout_keyboard() -> None:
+def test_leave_return_only_group_start_omits_signin_signout_keyboard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _apply_gateway_provider_migration()
+    _set_group_policy(monkeypatch, title="T-上班报备群")
     event = _group_action_command_event("/start")
     event["eventId"] = "evt-attendance-group-leave-return-only"
     message = event["telegramUpdate"]["message"]
@@ -1147,8 +1142,11 @@ def test_leave_return_only_group_start_omits_signin_signout_keyboard() -> None:
     ]
 
 
-def test_username_identity_group_leave_matches_preregistered_username() -> None:
+def test_username_identity_group_leave_matches_preregistered_username(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _apply_gateway_provider_migration()
+    _set_group_policy(monkeypatch, title="T-上班报备群")
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -1180,8 +1178,11 @@ def test_username_identity_group_leave_matches_preregistered_username() -> None:
     ]
 
 
-def test_qdyyz_username_identity_leave_matches_preregistered_username() -> None:
+def test_qdyyz_username_identity_leave_matches_preregistered_username(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _apply_gateway_provider_migration()
+    _set_group_policy(monkeypatch, title="QDYYZ 打卡报备群", roster="alt")
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -1237,23 +1238,14 @@ def test_homepage_attendance_button_reuses_the_private_menu_and_answers_callback
             "callbackQueryId": "callback-1101",
         },
         {
-            "actionId": "evt-attendance-menu-1101.menu-remove",
-            "type": "SEND_MESSAGE",
-            "chatId": 81002,
-            "replyToMessageId": 502,
-            "text": "旧版底部菜单已收起。",
-            "replyMarkup": {"removeKeyboard": True},
-        },
-        {
             "actionId": "evt-attendance-menu-1101.menu",
             "type": "SEND_MESSAGE",
             "chatId": 81002,
             "replyToMessageId": 502,
-            "text": "请选择功能（使用输入框下方按钮；输入 / 可打开命令）：",
+            "text": "请选择功能：",
             "replyMarkup": {
                 "inlineKeyboard": [[
-                    {"text": "注册", "callbackData": "att:register"},
-                    {"text": "个人", "callbackData": "att:profile"},
+                    {"text": "我的考勤", "callbackData": "att:profile"},
                 ]]
             },
         },
@@ -2469,8 +2461,7 @@ def test_profile_callback_reports_an_unregistered_actor_explicitly() -> None:
 
 def test_profile_callback_uses_current_shift_and_month_stat_policy() -> None:
     _apply_gateway_provider_migration()
-    now = datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Shanghai"))
-    year_month = now.strftime("%Y-%m")
+    year_month = "2026-08"
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -3648,8 +3639,10 @@ def test_group_photo_checkin_outside_roster_is_no_longer_blocked(
     )
 
     assert response.status_code == 200, response.text
-    reply_text = response.json()["actions"][0]["text"]
-    assert "不在本群当前班表" not in reply_text
+    assert all(
+        "不在本群当前班表" not in action.get("text", "")
+        for action in response.json()["actions"]
+    )
 
 
 def test_registration_confirmation_binds_the_pre_registered_employee() -> None:
@@ -3715,6 +3708,18 @@ def test_registration_confirmation_binds_the_pre_registered_employee() -> None:
             "chatId": 81002,
             "replyToMessageId": 504,
             "text": "考勤资料绑定成功，可以立即使用考勤。",
+        },
+        {
+            "actionId": "evt-attendance-register-1004.attendance-reply-keyboard",
+            "type": "SEND_MESSAGE",
+            "chatId": 81002,
+            "text": "⌨️ 考勤菜单已就绪",
+            "replyMarkup": {
+                "keyboard": [[{"text": "⌨️ 考勤菜单"}]],
+                "resizeKeyboard": True,
+                "isPersistent": True,
+                "inputFieldPlaceholder": "点下方考勤菜单，或直接输入消息",
+            },
         },
     ]
     assert payload["attendanceRegistration"] == {

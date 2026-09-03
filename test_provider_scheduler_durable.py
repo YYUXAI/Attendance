@@ -113,7 +113,7 @@ def _prepare_database() -> None:
                 "DELETE FROM attendance_worker_actions WHERE action_id IN (%s, %s)",
                 (
                     f"attendance.group-summary.{_TARGET_DATE.isoformat()}.{abs(_CHAT_ID)}",
-                    f"attendance.daily-report.{_TARGET_DATE.isoformat()}",
+                    _daily_action_id(_TARGET_DATE),
                 ),
             )
             cursor.execute("DELETE FROM clock_records WHERE employee_id = %s", (_EMPLOYEE_ID,))
@@ -242,6 +242,16 @@ def test_scheduler_durably_enqueues_current_summary_daily_csv_and_sheets_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _prepare_database()
+    monkeypatch.setenv(
+        "ATTENDANCE_GROUPS_JSON",
+        json.dumps([
+            {
+                "title": "ux助手考勤测试群",
+                "roster": "main",
+                "capabilities": ["bbq-google-sheets"],
+            }
+        ]),
+    )
     monkeypatch.setenv("GOOGLE_SHEETS_ENABLED", "true")
     monkeypatch.setenv("GOOGLE_SHEETS_SYNC_INTERVAL_SECONDS", "3600")
     sheets_calls: list[str] = []
@@ -324,9 +334,8 @@ def test_scheduler_durably_enqueues_current_summary_daily_csv_and_sheets_once(
             "1.迟到：0人\n\n"
             "2.早退：0人\n\n"
             "3.缺卡：0人\n\n"
-            "4.未返岗：0人\n\n"
-            "5.正常：1人\n\n"
-            "6.月休：0人"
+            "4.正常：1人\n\n"
+            "5.月休：0人"
         ),
     }
     assert schedule_runs == [

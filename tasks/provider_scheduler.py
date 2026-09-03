@@ -62,11 +62,11 @@ class ProviderSchedulerConfig:
     group_summary_minute: int
     group_summary_timezone: str
     group_summary_skip_dates: frozenset[date]
-    shift_start_notice_enabled: bool
     daily_report_enabled: bool
     daily_report_hour: int
     daily_report_minute: int
     daily_report_timezone: str
+    shift_start_notice_enabled: bool = False
     gateway_base_url: str | None = None
     gateway_bearer_token: str | None = None
 

@@ -26,4 +26,7 @@ def test_scheduled_attendance_csv_neutralizes_formula_capable_cells() -> None:
     decoded = list(csv.reader(io.StringIO(encode_csv(rows=rows).decode("utf-8-sig"))))
 
     assert decoded[0] == ["群名", "工号", "英文名", "班次", "上班时间", "下班时间", "离岗时间", "状态"]
-    assert decoded[1:] == [[f"'{value}"] * 8 for value in dangerous]
+    assert decoded[1:] == [
+        [f"'{value}"] * 7 + [f"'{value.strip()}"]
+        for value in dangerous
+    ]

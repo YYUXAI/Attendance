@@ -82,6 +82,9 @@ def test_sync_preserves_main_roster_when_primary_tab_missing() -> None:
             "services.google_sheets_shift_sync_service.load_test_group_google_config",
             return_value=SimpleNamespace(enabled=False, shift_spreadsheet_id=""),
         ),
+        patch("services.google_sheets_shift_sync_service.employee_shift_config_repo.ensure_table"),
+        patch("services.google_sheets_shift_sync_service.employee_shift_calendar_repo.ensure_table"),
+        patch("services.google_sheets_shift_sync_service.employee_shift_roster_repo.ensure_table"),
         patch(
             "services.google_sheets_shift_sync_service.employee_shift_roster_repo.list_roster",
             return_value=["74306", "59242"],

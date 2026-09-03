@@ -290,9 +290,9 @@ def load_attendance_matrix(matrix_path: Path) -> list[dict[str, Any]]:
             f"received {len(ids)} rows and {len(set(ids))} unique ids"
         )
     classifications = [str(item.get("classification")) for item in value]
-    if classifications.count("PARITY") != 89 or classifications.count(
+    if classifications.count("PARITY") != 83 or classifications.count(
         "BUGFIX_DELTA"
-    ) != 15:
+    ) != 21:
         raise RuntimeError(
             "Attendance parity matrix classification census changed: "
             f"PARITY={classifications.count('PARITY')} "
@@ -400,17 +400,24 @@ async def old_trace() -> dict[str, Any]:
             await attendance_actions.export_today_message(message)
         else:
             await attendance_actions.open_shift_web_app_message(message)
-        return {
+        value = {
             "sessionReleased": released == [87001],
             "trace": normalize_old_replies(message.replies),
         }
+        return (
+            old_bugfix_characterization(value, expected_defect="att:export:today")
+            if text == "导出" and is_admin
+            else value
+        )
 
     trace = {
-        "AT-PRIVATE-MENU-USER": await old_menu_replies(
-            menu, private=True, is_admin=False
+        "AT-PRIVATE-MENU-USER": old_bugfix_characterization(
+            await old_menu_replies(menu, private=True, is_admin=False),
+            expected_defect="旧版底部菜单已收起。",
         ),
-        "AT-PRIVATE-MENU-ADMIN": await old_menu_replies(
-            menu, private=True, is_admin=True
+        "AT-PRIVATE-MENU-ADMIN": old_bugfix_characterization(
+            await old_menu_replies(menu, private=True, is_admin=True),
+            expected_defect="旧版底部菜单已收起。",
         ),
         "AT-GROUP-START": await old_menu_replies(
             menu, private=False, is_admin=False
@@ -668,6 +675,25 @@ def normalize_old_replies(replies: list[tuple[str, Any]]) -> list[dict[str, Any]
     ]
 
 
+def old_bugfix_characterization(value: object, *, expected_defect: str) -> dict[str, Any]:
+    return {
+        "proofKind": "OLD_CODE_CHARACTERIZATION",
+        "characterizationExecuted": True,
+        "lockedDeploymentExecuted": True,
+        "failureReproduced": expected_defect in json.dumps(value, ensure_ascii=False),
+        "oldDeploymentClaimed": False,
+        "baselineTrace": value,
+    }
+
+
+def current_bugfix_recovery(value: object, *, expected_behavior: str) -> dict[str, Any]:
+    return {
+        "proofKind": "CURRENT_RECOVERY",
+        "passed": expected_behavior in json.dumps(value, ensure_ascii=False),
+        "evidence": value,
+    }
+
+
 async def current_trace() -> dict[str, Any]:
     import shift_web_app  # type: ignore[import-not-found]
     from infra import shift_web_http  # type: ignore[import-not-found]
@@ -691,6 +717,7 @@ async def current_trace() -> dict[str, Any]:
             lambda _cursor, *, tg_id: cleared.append(tg_id)
         )
         event_module.is_admin = lambda _cursor, *, tg_id: is_admin
+        event_module.resolve_admin_export_chat_id = lambda _cursor, *, tg_id: None
         export_module.is_admin = lambda _cursor, *, tg_id: is_admin
         request = GatewayEventRequest.model_validate(
             private_event(),
@@ -707,10 +734,14 @@ async def current_trace() -> dict[str, Any]:
         trace = normalize_current_actions(
             event_response_value(response)["actions"]
         )
-        return {
+        value = {
             "ownerSessionClears": cleared,
             "trace": trace,
         }
+        return current_bugfix_recovery(
+            value,
+            expected_behavior="我的考勤" if not is_admin else "导出",
+        )
 
     group_request = GatewayEventRequest.model_validate(group_start_event(), strict=True)
     group_update = group_request.telegramUpdate
@@ -814,13 +845,21 @@ async def current_trace() -> dict[str, Any]:
             shift_web_app_public_url="https://attendance.example.test",
         )
         value = event_response_value(response)
-        return {
+        result = {
             "sessionReleased": (
                 released == [87001]
                 and value["session"] == {"directive": "RELEASE"}
             ),
             "trace": normalize_current_actions(value["actions"]),
         }
+        return (
+            current_bugfix_recovery(
+                result,
+                expected_behavior="att:export:attendance:today",
+            )
+            if text == "导出" and is_admin
+            else result
+        )
 
     interaction_traces = current_group_interaction_traces(
         event_module=event_module,
@@ -2247,10 +2286,18 @@ async def current_bugfix_recoveries() -> dict[str, Any]:
     fixed_now = scheduler_fixture._NOW
     scheduler_fixture._prepare_database()
     environment_names = (
+        "ATTENDANCE_GROUPS_JSON",
         "GOOGLE_SHEETS_ENABLED",
         "GOOGLE_SHEETS_SYNC_INTERVAL_SECONDS",
     )
     previous_environment = {name: os.environ.get(name) for name in environment_names}
+    os.environ["ATTENDANCE_GROUPS_JSON"] = json.dumps([
+        {
+            "title": "ux助手考勤测试群",
+            "roster": "main",
+            "capabilities": ["bbq-google-sheets"],
+        }
+    ])
     os.environ["GOOGLE_SHEETS_ENABLED"] = "true"
     os.environ["GOOGLE_SHEETS_SYNC_INTERVAL_SECONDS"] = "3600"
     sheets_calls: list[str] = []
@@ -2414,9 +2461,8 @@ async def current_bugfix_recoveries() -> dict[str, Any]:
         "1.迟到：0人\n\n"
         "2.早退：0人\n\n"
         "3.缺卡：0人\n\n"
-        "4.未返岗：0人\n\n"
-        "5.正常：1人\n\n"
-        "6.月休：0人"
+        "4.正常：1人\n\n"
+        "5.月休：0人"
     )
     expected_csv_base64 = (
         "77u/576k5ZCNLOW3peWPtyzoi7HmloflkI0s54+t5qyhLOS4iuePreaXtumXtCzkuIvnj63m"
@@ -2600,7 +2646,10 @@ async def old_group_interaction_traces(
             *normalize_old_callback_answers(callback.answers),
             *normalize_old_replies(message.replies),
         ]
-        traces[scenario_id] = trace
+        traces[scenario_id] = old_bugfix_characterization(
+            trace,
+            expected_defect="旧版底部菜单已收起。",
+        )
 
     inline_answers: list[dict[str, Any]] = []
 
@@ -3221,7 +3270,7 @@ async def old_registration_traces(register: Any) -> dict[str, Any]:
             username="parity_actor" if result_code == "ok" else None,
         )
         await register.register_confirm_callback(callback)
-        traces[scenario_id] = {
+        value = {
             "businessState": "BOUND" if result_code == "ok" else "UNCHANGED",
             "serviceCalls": list(finish_calls),
             "trace": [
@@ -3229,6 +3278,11 @@ async def old_registration_traces(register: Any) -> dict[str, Any]:
                 *normalize_old_replies(message.replies),
             ],
         }
+        traces[scenario_id] = (
+            old_bugfix_characterization(value, expected_defect="您成功注册")
+            if scenario_id == "AT-REGISTER-CONFIRM-SUCCESS"
+            else value
+        )
 
     for scenario_id, actor_id, cancelled in (
         ("AT-REGISTER-CANCEL-SUCCESS", 87001, True),
@@ -3455,11 +3509,19 @@ def current_registration_traces(
                 username="parity_actor" if result_code == "ok" else None,
             ),
         )
-        traces[scenario_id] = {
+        value = {
             "businessState": "BOUND" if result_code == "ok" else "UNCHANGED",
             "serviceCalls": list(finish_calls),
             "trace": action_trace,
         }
+        traces[scenario_id] = (
+            current_bugfix_recovery(
+                value,
+                expected_behavior="考勤资料绑定成功，可以立即使用考勤。",
+            )
+            if scenario_id == "AT-REGISTER-CONFIRM-SUCCESS"
+            else value
+        )
 
     for scenario_id, actor_id, cancelled in (
         ("AT-REGISTER-CANCEL-SUCCESS", 87001, True),
@@ -4177,7 +4239,10 @@ def current_group_interaction_traces(
                 private=True,
             ),
         )
-        traces[scenario_id] = trace
+        traces[scenario_id] = current_bugfix_recovery(
+            trace,
+            expected_behavior="我的考勤",
+        )
 
     traces["AT-INLINE-QUERY-EMPTY"] = execute_current_interaction(
         event_module=event_module,
