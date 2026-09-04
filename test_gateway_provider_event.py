@@ -123,23 +123,27 @@ def _apply_gateway_provider_migration() -> None:
     migrations = [
         (migration_directory / name).read_text(encoding="utf-8")
         for name in (
-                "0003_gateway_provider.sql",
-                "0004_registration_provider.sql",
-                "0005_webapp_sessions.sql",
-                "0006_delivery_receipts.sql",
-                "0007_admin_export_parity.sql",
-                "0008_worker_checkin_recovery.sql",
-                "0009_durable_provider_worker.sql",
+            "0003_gateway_provider.sql",
+            "0004_registration_provider.sql",
+            "0005_webapp_sessions.sql",
+            "0006_delivery_receipts.sql",
+            "0007_admin_export_parity.sql",
+            "0008_worker_checkin_recovery.sql",
+            "0009_durable_provider_worker.sql",
             "0010_scheduler_fencing_and_sheets_outbox.sql",
             "0011_worker_action_dependencies.sql",
             "0012_attendance_group_policy_and_business_facts.sql",
             "0013_clock_records_matter_note.sql",
+            "0014_operational_incident_acknowledgements.sql",
         )
     ]
     with psycopg2.connect(_database_url()) as connection:
         with connection.cursor() as cursor:
             for migration in migrations:
                 cursor.execute(migration)
+            cursor.execute(
+                "DELETE FROM attendance_operational_incident_acknowledgements"
+            )
             cursor.execute("DELETE FROM attendance_admin_export_sessions")
             cursor.execute(
                 "DELETE FROM attendance_business_facts "
@@ -314,6 +318,9 @@ def _apply_provider_health_migrations() -> None:
             cursor.execute(
                 "DELETE FROM attendance_worker_schedule_runs"
             )
+            cursor.execute(
+                "DELETE FROM attendance_operational_incident_acknowledgements"
+            )
 
 
 def test_provider_health_and_readiness_verify_owned_database() -> None:
@@ -364,8 +371,6 @@ def test_provider_readiness_exposes_terminal_delivery_failures() -> None:
                 "DELETE FROM attendance_gateway_delivery_receipts "
                 "WHERE receipt_id = 'receipt-health-terminal-0001'"
             )
-
-
             cursor.execute(
                 """
                 INSERT INTO attendance_gateway_delivery_receipts (
@@ -396,6 +401,193 @@ def test_provider_readiness_exposes_terminal_delivery_failures() -> None:
             cursor.execute(
                 "DELETE FROM attendance_gateway_delivery_receipts "
                 "WHERE receipt_id = 'receipt-health-terminal-0001'"
+            )
+
+
+def test_provider_readiness_allows_acknowledged_terminal_history() -> None:
+    _apply_provider_health_migrations()
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO attendance_gateway_delivery_receipts (
+                    receipt_id, action_id, correlation_id, request_hash,
+                    status, receipt_payload, processed_at
+                ) VALUES (
+                    'receipt-health-acknowledged-0001',
+                    'action-health-acknowledged-0001',
+                    'health-acknowledged-correlation', %s,
+                    'PERMANENTLY_FAILED', '{}'::jsonb, clock_timestamp()
+                )
+                """,
+                ("a" * 64,),
+            )
+            cursor.execute(
+                """
+                INSERT INTO attendance_operational_incident_acknowledgements (
+                    incident_kind, incident_id, reason
+                ) VALUES
+                    ('delivery-receipt', 'receipt-health-acknowledged-0001', 'reviewed test incident'),
+                    ('worker-action', 'action-health-acknowledged-0001', 'reviewed test incident'),
+                    ('schedule-run', 'schedule-health-acknowledged-0001', 'reviewed test incident')
+                """
+            )
+            cursor.execute(
+                """
+                INSERT INTO attendance_worker_actions (
+                    action_id, correlation_id, action_kind, owner_key,
+                    action_payload, status, attempt_count, created_at,
+                    terminal_at, next_attempt_at, updated_at, max_attempts
+                ) VALUES (
+                    'action-health-acknowledged-0001', 'health-acknowledged-correlation',
+                    'SEND_MESSAGE', 'health:acknowledged:0001', '{}'::jsonb,
+                    'UNDELIVERABLE', 1, clock_timestamp(), clock_timestamp(),
+                    clock_timestamp(), clock_timestamp(), 3
+                )
+                """
+            )
+            cursor.execute(
+                """
+                INSERT INTO attendance_worker_schedule_runs (
+                    run_key, job_kind, status, attempt_count, next_attempt_at,
+                    last_error_code, created_at, updated_at, payload, lease_version
+                ) VALUES (
+                    'schedule-health-acknowledged-0001', 'HEALTH_TEST', 'FAILED', 1,
+                    clock_timestamp(), 'TEST_FAILURE', clock_timestamp(),
+                    clock_timestamp(), '{}'::jsonb, 1
+                )
+                """
+            )
+
+    readiness = _provider_client().get("/readyz")
+
+    assert readiness.status_code == 200
+    assert readiness.json()["operational"]["permanentDeliveryFailures"] == 0
+    assert readiness.json()["operational"]["workerPermanentFailures"] == 0
+    assert readiness.json()["operational"]["schedulerFailed"] == 0
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM attendance_operational_incident_acknowledgements "
+                "WHERE incident_id IN ('receipt-health-acknowledged-0001', "
+                "'action-health-acknowledged-0001', 'schedule-health-acknowledged-0001')"
+            )
+            cursor.execute(
+                "DELETE FROM attendance_worker_schedule_runs "
+                "WHERE run_key = 'schedule-health-acknowledged-0001'"
+            )
+            cursor.execute(
+                "DELETE FROM attendance_worker_actions "
+                "WHERE action_id = 'action-health-acknowledged-0001'"
+            )
+            cursor.execute(
+                "DELETE FROM attendance_gateway_delivery_receipts "
+                "WHERE receipt_id = 'receipt-health-acknowledged-0001'"
+            )
+
+
+def test_incident_acknowledgement_migration_never_auto_acknowledges_history() -> None:
+    _apply_provider_health_migrations()
+    receipt_ids = (
+        "receipt-health-baseline-old-0001",
+        "receipt-health-baseline-new-0001",
+    )
+    action_ids = (
+        "action-health-baseline-old-0001",
+        "action-health-baseline-new-0001",
+    )
+    schedule_ids = (
+        "schedule-health-baseline-old-0001",
+        "schedule-health-baseline-new-0001",
+    )
+    incident_ids = [*receipt_ids, *action_ids, *schedule_ids]
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM attendance_operational_incident_acknowledgements "
+                "WHERE incident_id = ANY(%s)",
+                (incident_ids,),
+            )
+            cursor.execute(
+                "DELETE FROM attendance_gateway_delivery_receipts "
+                "WHERE receipt_id = ANY(%s)",
+                (list(receipt_ids),),
+            )
+            cursor.execute(
+                """
+                INSERT INTO attendance_gateway_delivery_receipts (
+                    receipt_id, action_id, correlation_id, request_hash,
+                    status, receipt_payload, processed_at
+                ) VALUES
+                    (%s, 'action-health-baseline-old-0001', 'baseline-old', %s,
+                     'PERMANENTLY_FAILED', '{}'::jsonb, '2026-09-03T23:59:59Z'),
+                    (%s, 'action-health-baseline-new-0001', 'baseline-new', %s,
+                     'PERMANENTLY_FAILED', '{}'::jsonb, '2026-09-04T00:00:00Z')
+                """,
+                (receipt_ids[0], "b" * 64, receipt_ids[1], "c" * 64),
+            )
+            cursor.execute(
+                """
+                INSERT INTO attendance_worker_actions (
+                    action_id, correlation_id, action_kind, owner_key,
+                    action_payload, status, attempt_count, created_at,
+                    terminal_at, next_attempt_at, updated_at, max_attempts
+                ) VALUES
+                    (%s, 'baseline-action-old', 'SEND_MESSAGE', 'baseline:action:old',
+                     '{}'::jsonb, 'UNDELIVERABLE', 1, '2026-09-03T23:59:59Z',
+                     '2026-09-03T23:59:59Z', '2026-09-03T23:59:59Z',
+                     '2026-09-03T23:59:59Z', 3),
+                    (%s, 'baseline-action-new', 'SEND_MESSAGE', 'baseline:action:new',
+                     '{}'::jsonb, 'UNDELIVERABLE', 1, '2026-09-04T00:00:00Z',
+                     '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z',
+                     '2026-09-04T00:00:00Z', 3)
+                """,
+                action_ids,
+            )
+            cursor.execute(
+                """
+                INSERT INTO attendance_worker_schedule_runs (
+                    run_key, job_kind, status, attempt_count, next_attempt_at,
+                    last_error_code, created_at, updated_at, payload, lease_version
+                ) VALUES
+                    (%s, 'HEALTH_TEST', 'FAILED', 1, '2026-09-03T23:59:59Z',
+                     'TEST_FAILURE', '2026-09-03T23:59:59Z',
+                     '2026-09-03T23:59:59Z', '{}'::jsonb, 1),
+                    (%s, 'HEALTH_TEST', 'FAILED', 1, '2026-09-04T00:00:00Z',
+                     'TEST_FAILURE', '2026-09-04T00:00:00Z',
+                     '2026-09-04T00:00:00Z', '{}'::jsonb, 1)
+                """,
+                schedule_ids,
+            )
+            cursor.execute(
+                (Path(__file__).parent / "migrations" / "0014_operational_incident_acknowledgements.sql").read_text(
+                    encoding="utf-8"
+                )
+            )
+            cursor.execute(
+                "SELECT incident_kind, incident_id "
+                "FROM attendance_operational_incident_acknowledgements "
+                "WHERE incident_id = ANY(%s) ORDER BY incident_kind, incident_id",
+                (incident_ids,),
+            )
+            assert cursor.fetchall() == []
+            cursor.execute(
+                "DELETE FROM attendance_operational_incident_acknowledgements "
+                "WHERE incident_id = ANY(%s)",
+                (incident_ids,),
+            )
+            cursor.execute(
+                "DELETE FROM attendance_gateway_delivery_receipts "
+                "WHERE receipt_id = ANY(%s)",
+                (list(receipt_ids),),
+            )
+            cursor.execute(
+                "DELETE FROM attendance_worker_actions WHERE action_id = ANY(%s)",
+                (list(action_ids),),
+            )
+            cursor.execute(
+                "DELETE FROM attendance_worker_schedule_runs WHERE run_key = ANY(%s)",
+                (list(schedule_ids),),
             )
 
 

@@ -38,7 +38,7 @@ Gateway 文件只通过 `GET /internal/v1/telegram-files/{fileRef}` 读取。Att
 - Attendance 进程发现任何 Telegram owner credential 时拒绝启动。
 - canonical protocol 只存在于 UXAssistant-Gateway `contracts/v1`；本仓库仅保留本地严格验证实现。
 - Provider 启动和 readiness 暴露的协议指纹必须等于 Gateway 对 `contracts/v1` 排序内容计算出的 canonical SHA-256；手写日期或版本字符串不能替代内容摘要。
-- `/readyz` 只检查 Attendance 自有数据库、必需表和 terminal receipt operational state；`PERMANENTLY_FAILED` 或 `UNCERTAIN` receipt 会使 readiness fail closed，不读取 Gateway transport truth。后台 scheduler 的 fresh retry 计数保持可观测但不阻塞 readiness；stale、failed 或 expired 工作仍 fail closed。
+- `/readyz` 只检查 Attendance 自有数据库、必需表和未确认的 terminal operational state；`PERMANENTLY_FAILED`、`UNDELIVERABLE`、`UNCERTAIN` 或 scheduler `FAILED` 会使 readiness fail closed，不读取 Gateway transport truth。`attendance_operational_incident_acknowledgements` 只表示人工逐项查看并接受的保留事件，不改写原始投递状态；迁移不会按时间或状态自动确认事故。后台 scheduler 的 fresh retry 计数保持可观测但不阻塞 readiness；未确认的 stale、failed 或 expired 工作仍 fail closed。
 
 ## Durable Provider worker
 

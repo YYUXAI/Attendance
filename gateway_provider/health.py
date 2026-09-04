@@ -80,7 +80,11 @@ def read_provider_readiness(database_url: str) -> dict[str, object]:
                                 WHERE status = 'PERMANENTLY_FAILED'
                             ),
                             count(*) FILTER (WHERE status = 'UNCERTAIN')
-                        FROM attendance_gateway_delivery_receipts
+                        FROM attendance_gateway_delivery_receipts AS receipt
+                        LEFT JOIN attendance_operational_incident_acknowledgements AS acknowledgement
+                          ON acknowledgement.incident_kind = 'delivery-receipt'
+                         AND acknowledgement.incident_id = receipt.receipt_id
+                        WHERE acknowledgement.incident_id IS NULL
                         """
                     )
                     operational = cursor.fetchone()
@@ -107,7 +111,11 @@ def read_provider_readiness(database_url: str) -> dict[str, object]:
                                       clock_timestamp() - interval '5 minutes'
                                   )
                             )
-                        FROM attendance_worker_actions
+                        FROM attendance_worker_actions AS action
+                        LEFT JOIN attendance_operational_incident_acknowledgements AS acknowledgement
+                          ON acknowledgement.incident_kind = 'worker-action'
+                         AND acknowledgement.incident_id = action.action_id
+                        WHERE acknowledgement.incident_id IS NULL
                         """
                     )
                     worker_operational = cursor.fetchone()
@@ -140,7 +148,11 @@ def read_provider_readiness(database_url: str) -> dict[str, object]:
                                       clock_timestamp() - interval '5 minutes'
                                   )
                             )
-                        FROM attendance_worker_schedule_runs
+                        FROM attendance_worker_schedule_runs AS schedule
+                        LEFT JOIN attendance_operational_incident_acknowledgements AS acknowledgement
+                          ON acknowledgement.incident_kind = 'schedule-run'
+                         AND acknowledgement.incident_id = schedule.run_key
+                        WHERE acknowledgement.incident_id IS NULL
                         """
                     )
                     schedule_operational = cursor.fetchone()
