@@ -594,7 +594,7 @@ def apply_delivery_receipt_cur(
     if cursor.rowcount != 1:
         raise RuntimeError("worker receipt does not match current action attempt")
     if root_status == "DELIVERED" and action_kind == "DAILY_REPORT":
-        report_date = datetime.fromisoformat(owner_key).date()
+        report_date = datetime.fromisoformat(owner_key.split(":", 1)[0]).date()
         cursor.execute(
             """
             INSERT INTO attendance_daily_report_ledger (

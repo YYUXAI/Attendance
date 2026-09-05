@@ -185,6 +185,10 @@ def _delete_worker_action(action_id: str) -> None:
                 (f"{action_id}%",),
             )
             cursor.execute(
+                "DELETE FROM attendance_daily_report_ledger WHERE action_id = %s",
+                (action_id,),
+            )
+            cursor.execute(
                 "DELETE FROM attendance_worker_actions WHERE action_id = %s",
                 (action_id,),
             )
@@ -325,6 +329,54 @@ def test_worker_delivers_a_durable_action_and_receipt_finishes_it_once() -> None
                 (_ROOT_ACTION_ID,),
             )
             assert cursor.fetchone() == ("DELIVERED", 1, _ROOT_ACTION_ID)
+
+
+def test_daily_report_receipt_accepts_a_route_scoped_owner_key() -> None:
+    _prepare_database()
+    action_id = "attendance.daily-report.2026-08-15.integration"
+    _delete_worker_action(action_id)
+    request = _worker_request(action_id, text="考勤日报")
+    worker_action_repo.enqueue_action(
+        database_url=_database_url(),
+        owner_key="2026-08-15:telegram-group-route.integration",
+        action_kind="DAILY_REPORT",
+        request=request,
+        max_attempts=3,
+    )
+
+    with _FakeGateway() as gateway:
+        submitted = _run_worker_once(gateway.base_url)
+        assert submitted.returncode == 0, submitted.stderr
+        receipt = _provider_client().post(
+            "/integration/gateway/v1/delivery-receipts",
+            headers={"Authorization": f"Bearer {_GATEWAY_CREDENTIAL}"},
+            json={
+                "protocolVersion": "1.0",
+                "receiptId": "receipt.attendance.daily-report.2026-08-15",
+                "provider": "ATTENDANCE",
+                "actionId": action_id,
+                "correlationId": action_id,
+                "status": "DELIVERED",
+                "attemptedAt": "2026-08-15T15:00:01Z",
+                "telegramResult": {"accepted": True, "messageId": 91015},
+            },
+        )
+
+    assert receipt.status_code == 200, receipt.text
+    assert receipt.json()["result"] == "PROCESSED"
+    with psycopg2.connect(_database_url()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT action.status, ledger.report_date::text, ledger.action_id
+                FROM attendance_worker_actions AS action
+                LEFT JOIN attendance_daily_report_ledger AS ledger
+                  ON ledger.action_id = action.action_id
+                WHERE action.action_id = %s
+                """,
+                (action_id,),
+            )
+            assert cursor.fetchone() == ("DELIVERED", "2026-08-15", action_id)
 
 
 def test_concurrent_worker_processes_claim_one_action_once() -> None:
